@@ -1,0 +1,39 @@
+[package]
+name = "mcp-gateway"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "Standalone MCP gateway -- config-driven proxy with auth, rate limiting, and observability"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "mcp_gateway"
+
+[[bin]]
+name = "mcp-gateway"
+path = "src/main.rs"
+
+[dependencies]
+# Using local dep until from_service() ships on crates.io
+tower-mcp = { path = "../tower-mcp/crates/tower-mcp", features = ["http", "http-client", "proxy", "oauth", "jwks"] }
+tower-mcp-types = { path = "../tower-mcp/crates/tower-mcp-types" }
+axum = "0.8"
+tower = { version = "0.5", features = ["util", "timeout", "limit"] }
+tower-resilience = { version = "0.8", default-features = false, features = ["circuitbreaker", "ratelimiter"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+metrics = "0.24.3"
+metrics-exporter-prometheus = "0.18.1"
+opentelemetry = "0.29"
+opentelemetry_sdk = { version = "0.29", features = ["rt-tokio"] }
+opentelemetry-otlp = "0.29"
+tracing-opentelemetry = "0.30"
+moka = { version = "0.12.14", features = ["future"] }
+notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
+notify-debouncer-mini = "0.5"

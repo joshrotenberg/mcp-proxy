@@ -1,0 +1,151 @@
+# mcp-gateway configuration
+
+[gateway]
+name = "my-gateway"
+version = "0.1.0"
+# Separator between namespace and tool/resource/prompt names
+separator = "/"
+# Graceful shutdown timeout (seconds, default: 30)
+# shutdown_timeout_seconds = 30
+# Watch config file for new backends and add them without restart
+# hot_reload = true
+
+[gateway.listen]
+# HTTP transport binding
+host = "127.0.0.1"
+port = 8080
+
+# Optional: custom instructions sent to clients on initialize
+# instructions = "This gateway aggregates multiple MCP backends."
+
+# --- Backends ---
+# Each backend is an MCP server the gateway proxies to.
+# The name becomes the namespace prefix for all tools/resources/prompts.
+
+[[backends]]
+name = "files"
+# Subprocess backend -- spawns a child process
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+# Per-backend timeout (seconds)
+[backends.timeout]
+seconds = 30
+
+# Per-backend concurrency limit
+[backends.concurrency]
+max_concurrent = 10
+
+# Per-backend response caching
+# [backends.cache]
+# resource_ttl_seconds = 300   # cache resource reads for 5 minutes
+# tool_ttl_seconds = 60        # cache tool call results for 1 minute
+# max_entries = 1000            # max cached entries (default: 1000)
+
+# --- Tool Aliasing ---
+# Rename tools exposed by this backend
+# [[backends.aliases]]
+# from = "read_file"        # backend's original tool name
+# to = "read"               # exposed as files/read
+
+# --- Capability Filtering ---
+# Only expose specific tools (allowlist -- mutually exclusive with hide_tools)
+# expose_tools = ["read_file", "list_directory", "search_files"]
+# Or hide specific tools (denylist)
+# hide_tools = ["write_file", "delete_file"]
+# Same for resources and prompts
+# expose_resources = ["file:///public"]
+# hide_resources = ["file:///etc/shadow"]
+# expose_prompts = ["help"]
+# hide_prompts = ["admin_prompt"]
+
+[[backends]]
+name = "github"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+
+[backends.timeout]
+seconds = 60
+
+# Environment variables passed to the subprocess
+[backends.env]
+GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}"
+
+# Circuit breaker -- trips open after 50% failure rate
+[backends.circuit_breaker]
+failure_rate_threshold = 0.5     # 0.0-1.0
+minimum_calls = 5                # min calls before evaluating
+wait_duration_seconds = 30       # seconds in open before half-open
+permitted_calls_in_half_open = 3
+
+# Rate limit -- max requests per period
+[backends.rate_limit]
+requests = 30
+period_seconds = 1
+
+# HTTP backend -- connects to a remote MCP server
+# [[backends]]
+# name = "remote"
+# transport = "http"
+# url = "http://mcp-server:8080"
+# [backends.timeout]
+# seconds = 60
+
+# --- Auth (optional) ---
+# Uncomment ONE of the following auth blocks.
+
+# Bearer token auth:
+# [auth]
+# type = "bearer"
+# tokens = ["my-secret-token"]
+
+# JWT/JWKS auth with RBAC:
+# [auth]
+# type = "jwt"
+# issuer = "https://auth.example.com"
+# audience = "mcp-gateway"
+# jwks_uri = "https://auth.example.com/.well-known/jwks.json"
+#
+# # Define roles with tool access control
+# [[auth.roles]]
+# name = "reader"
+# allow_tools = ["files/read_file", "files/list_directory"]
+#
+# [[auth.roles]]
+# name = "admin"
+# # Empty allow_tools = all tools allowed
+#
+# # Map JWT claims to roles
+# [auth.role_mapping]
+# claim = "scope"
+# mapping = { "mcp:read" = "reader", "mcp:admin" = "admin" }
+
+# --- Performance ---
+# [performance]
+# coalesce_requests = true   # deduplicate identical concurrent tool calls
+
+# --- Security ---
+# [security]
+# max_argument_size = 1048576  # 1MB limit on tool call arguments
+
+# --- Observability ---
+
+[observability]
+# Structured audit logging (target: mcp::audit)
+audit = true
+# Log level (trace, debug, info, warn, error)
+log_level = "info"
+# JSON structured logging (for production log aggregation)
+json_logs = false
+
+# Prometheus metrics (exposed at /admin/metrics)
+[observability.metrics]
+enabled = true
+
+# OpenTelemetry distributed tracing (OTLP export)
+# [observability.tracing]
+# enabled = true
+# endpoint = "http://localhost:4317"
+# service_name = "mcp-gateway"
