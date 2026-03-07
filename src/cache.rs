@@ -58,6 +58,9 @@ impl CacheStats {
 }
 
 /// Snapshot of cache statistics for a single backend.
+///
+/// Returned by [`CacheHandle::stats()`] to report hit/miss rates
+/// and entry counts per cached namespace.
 #[derive(Serialize, Clone)]
 pub struct CacheStatsSnapshot {
     pub namespace: String,
