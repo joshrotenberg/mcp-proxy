@@ -70,6 +70,13 @@ pub struct BackendConfig {
     pub retry: Option<RetryConfig>,
     /// Per-backend cache policy
     pub cache: Option<BackendCacheConfig>,
+    /// Static bearer token for authenticating to this backend (HTTP only).
+    /// Supports `${ENV_VAR}` syntax for env var resolution.
+    pub bearer_token: Option<String>,
+    /// Forward the client's inbound auth token to this backend.
+    /// Only works with HTTP backends when the gateway has auth enabled.
+    #[serde(default)]
+    pub forward_auth: bool,
     /// Tool aliases: rename tools exposed by this backend
     #[serde(default)]
     pub aliases: Vec<AliasConfig>,
@@ -493,6 +500,12 @@ impl GatewayConfig {
                 {
                     *value = env_val;
                 }
+            }
+            if let Some(ref mut token) = backend.bearer_token
+                && let Some(var_name) = token.strip_prefix("${").and_then(|s| s.strip_suffix('}'))
+                && let Ok(env_val) = std::env::var(var_name)
+            {
+                *token = env_val;
             }
         }
     }
@@ -965,6 +978,63 @@ mod tests {
 
         // SAFETY: same as above
         unsafe { std::env::remove_var("MCP_GW_TEST_TOKEN") };
+    }
+
+    #[test]
+    fn test_parse_bearer_token_and_forward_auth() {
+        let toml = r#"
+        [gateway]
+        name = "token-gw"
+        [gateway.listen]
+
+        [[backends]]
+        name = "github"
+        transport = "http"
+        url = "http://localhost:3000"
+        bearer_token = "ghp_abc123"
+        forward_auth = true
+
+        [[backends]]
+        name = "db"
+        transport = "http"
+        url = "http://localhost:5432"
+        "#;
+
+        let config = GatewayConfig::parse(toml).unwrap();
+        assert_eq!(
+            config.backends[0].bearer_token.as_deref(),
+            Some("ghp_abc123")
+        );
+        assert!(config.backends[0].forward_auth);
+        assert!(config.backends[1].bearer_token.is_none());
+        assert!(!config.backends[1].forward_auth);
+    }
+
+    #[test]
+    fn test_resolve_bearer_token_env_var() {
+        unsafe { std::env::set_var("MCP_GW_TEST_BEARER", "resolved-token") };
+
+        let toml = r#"
+        [gateway]
+        name = "env-token"
+        [gateway.listen]
+
+        [[backends]]
+        name = "api"
+        transport = "http"
+        url = "http://localhost:3000"
+        bearer_token = "${MCP_GW_TEST_BEARER}"
+        "#;
+
+        let mut config = GatewayConfig::parse(toml).unwrap();
+        config.resolve_env_vars();
+
+        assert_eq!(
+            config.backends[0].bearer_token.as_deref(),
+            Some("resolved-token")
+        );
+
+        unsafe { std::env::remove_var("MCP_GW_TEST_BEARER") };
     }
 
     // ========================================================================

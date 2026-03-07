@@ -179,7 +179,10 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
                 .url
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("http backend requires 'url'"))?;
-            let transport = tower_mcp::client::HttpClientTransport::new(url);
+            let mut transport = tower_mcp::client::HttpClientTransport::new(url);
+            if let Some(token) = &backend.bearer_token {
+                transport = transport.bearer_token(token);
+            }
 
             if has_middleware {
                 let layer = build_backend_layer(backend);

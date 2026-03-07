@@ -214,7 +214,10 @@ async fn build_proxy(config: &GatewayConfig) -> Result<McpProxy> {
             }
             TransportType::Http => {
                 let url = backend.url.as_deref().unwrap();
-                let transport = tower_mcp::client::HttpClientTransport::new(url);
+                let mut transport = tower_mcp::client::HttpClientTransport::new(url);
+                if let Some(token) = &backend.bearer_token {
+                    transport = transport.bearer_token(token);
+                }
 
                 builder = builder.backend(&backend.name, transport).await;
             }
@@ -415,6 +418,25 @@ fn build_middleware_stack(
 
     if let Some(rbac) = rbac_config {
         service = BoxCloneService::new(RbacService::new(service, rbac));
+    }
+
+    // Token passthrough (inject ClientToken for forward_auth backends)
+    let forward_namespaces: std::collections::HashSet<String> = config
+        .backends
+        .iter()
+        .filter(|b| b.forward_auth)
+        .map(|b| format!("{}{}", b.name, config.gateway.separator))
+        .collect();
+
+    if !forward_namespaces.is_empty() {
+        tracing::info!(
+            backends = ?forward_namespaces,
+            "Enabling token passthrough for forward_auth backends"
+        );
+        service = BoxCloneService::new(crate::token::TokenPassthroughService::new(
+            service,
+            forward_namespaces,
+        ));
     }
 
     // Metrics
