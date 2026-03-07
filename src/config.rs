@@ -154,6 +154,15 @@ pub struct RetryConfig {
     /// Maximum backoff in milliseconds (default: 5000)
     #[serde(default = "default_max_backoff_ms")]
     pub max_backoff_ms: u64,
+    /// Maximum percentage of requests that can be retries (default: none / unlimited).
+    /// When set, prevents retry storms by capping retries as a fraction of total
+    /// request volume. Envoy uses 20% as a default. Evaluated over a 10-second
+    /// rolling window.
+    pub budget_percent: Option<f64>,
+    /// Minimum retries per second allowed regardless of budget (default: 10).
+    /// Ensures low-traffic backends can still retry.
+    #[serde(default = "default_min_retries_per_sec")]
+    pub min_retries_per_sec: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -311,6 +320,10 @@ fn default_initial_backoff_ms() -> u64 {
 
 fn default_max_backoff_ms() -> u64 {
     5000
+}
+
+fn default_min_retries_per_sec() -> u32 {
+    10
 }
 
 fn default_max_cache_entries() -> u64 {
