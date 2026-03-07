@@ -34,9 +34,9 @@ opentelemetry_sdk = { version = "0.29", features = ["rt-tokio"] }
 opentelemetry-otlp = "0.29"
 tracing-opentelemetry = "0.30"
 chrono = { version = "0.4", features = ["serde"] }
+schemars = "1"
 moka = { version = "0.12.14", features = ["future"] }
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.5"
 
 [dev-dependencies]
-schemars = "1"

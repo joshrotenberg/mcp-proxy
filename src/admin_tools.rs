@@ -6,7 +6,8 @@
 
 use std::sync::Arc;
 
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use tower_mcp::client::ChannelTransport;
 use tower_mcp::proxy::{AddBackendError, McpProxy};
 use tower_mcp::{CallToolResult, McpRouter, NoParams, SessionHandle, ToolBuilder};
@@ -20,6 +21,7 @@ struct AdminToolState {
     admin_state: AdminState,
     session_handle: SessionHandle,
     config_snapshot: Arc<String>,
+    proxy: McpProxy,
 }
 
 #[derive(Serialize)]
@@ -52,7 +54,9 @@ struct SessionResult {
 ///
 /// Tools are added under the `gateway/` namespace:
 /// - `gateway/list_backends` -- list backends with health status
+/// - `gateway/health_check` -- cached health check results
 /// - `gateway/session_count` -- active session count
+/// - `gateway/add_backend` -- dynamically add an HTTP backend
 /// - `gateway/config` -- dump current config (TOML)
 pub async fn register_admin_tools(
     proxy: &McpProxy,
@@ -67,6 +71,7 @@ pub async fn register_admin_tools(
         admin_state,
         session_handle,
         config_snapshot: Arc::new(config_toml),
+        proxy: proxy.clone(),
     };
 
     let router = build_admin_router(state);
@@ -135,9 +140,86 @@ fn build_admin_router(state: AdminToolState) -> McpRouter {
         })
         .build();
 
+    let state_for_health = state.clone();
+    let health_check = ToolBuilder::new("health_check")
+        .description("Get cached health check results for all backends")
+        .handler(move |_: NoParams| {
+            let s = state_for_health.clone();
+            async move {
+                let health = s.admin_state.health().await;
+                let backends: Vec<BackendInfo> = health
+                    .iter()
+                    .map(|b| BackendInfo {
+                        namespace: b.namespace.clone(),
+                        healthy: b.healthy,
+                        last_checked_at: b.last_checked_at.map(|t| t.to_rfc3339()),
+                        consecutive_failures: b.consecutive_failures,
+                        error: b.error.clone(),
+                        transport: b.transport.clone(),
+                    })
+                    .collect();
+                let healthy_count = backends.iter().filter(|b| b.healthy).count();
+                let total = backends.len();
+                let result = HealthCheckResult {
+                    status: if healthy_count == total {
+                        "healthy"
+                    } else {
+                        "degraded"
+                    }
+                    .to_string(),
+                    healthy_count,
+                    total_count: total,
+                    backends,
+                };
+                Ok(CallToolResult::text(
+                    serde_json::to_string_pretty(&result).unwrap(),
+                ))
+            }
+        })
+        .build();
+
+    let state_for_add = state.clone();
+    let add_backend = ToolBuilder::new("add_backend")
+        .description("Dynamically add an HTTP backend to the gateway")
+        .handler(move |input: AddBackendInput| {
+            let s = state_for_add.clone();
+            async move {
+                let transport = tower_mcp::client::HttpClientTransport::new(&input.url);
+                match s.proxy.add_backend(&input.name, transport).await {
+                    Ok(()) => Ok(CallToolResult::text(format!(
+                        "Backend '{}' added successfully at {}",
+                        input.name, input.url
+                    ))),
+                    Err(e) => Ok(CallToolResult::text(format!(
+                        "Failed to add backend '{}': {e}",
+                        input.name
+                    ))),
+                }
+            }
+        })
+        .build();
+
     McpRouter::new()
         .server_info("mcp-gateway-admin", "0.1.0")
         .tool(list_backends)
+        .tool(health_check)
         .tool(session_count)
+        .tool(add_backend)
         .tool(config_tool)
+}
+
+#[derive(Serialize)]
+struct HealthCheckResult {
+    status: String,
+    healthy_count: usize,
+    total_count: usize,
+    backends: Vec<BackendInfo>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct AddBackendInput {
+    /// Name/namespace for the new backend
+    name: String,
+    /// URL of the HTTP MCP server
+    url: String,
 }
