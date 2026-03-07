@@ -277,6 +277,146 @@ async fn test_proxy_with_cache_returns_cached_result() {
     }
 }
 
+// --- Admin tools via proxy ---
+
+#[tokio::test]
+async fn test_admin_tools_list_backends() {
+    let mut proxy = build_proxy().await;
+
+    // Register admin tools as a gateway/ backend
+    let admin_router = tower_mcp::McpRouter::new()
+        .server_info("admin", "1.0.0")
+        .tool(
+            ToolBuilder::new("list_backends")
+                .description("List backends")
+                .handler(
+                    |_: tower_mcp::NoParams| async move { Ok(CallToolResult::text("math,text")) },
+                )
+                .build(),
+        );
+    let admin_transport = ChannelTransport::new(admin_router);
+    proxy
+        .add_backend("gateway", admin_transport)
+        .await
+        .expect("add gateway backend");
+
+    // List tools should include gateway/list_backends
+    let resp = call(&mut proxy, McpRequest::ListTools(Default::default())).await;
+    match resp.inner.unwrap() {
+        McpResponse::ListTools(result) => {
+            let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+            assert!(
+                names.contains(&"gateway/list_backends"),
+                "should have admin tool: {:?}",
+                names
+            );
+            assert!(names.contains(&"math/add"), "original tools present");
+        }
+        other => panic!("expected ListTools, got: {:?}", other),
+    }
+
+    // Call admin tool
+    let resp = call(
+        &mut proxy,
+        tool_call("gateway/list_backends", serde_json::json!({})),
+    )
+    .await;
+    match resp.inner.unwrap() {
+        McpResponse::CallTool(result) => {
+            assert_eq!(result.all_text(), "math,text");
+        }
+        other => panic!("expected CallTool, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_dynamic_add_backend() {
+    let mut proxy = build_proxy().await;
+
+    // Verify we start with 3 tools (math/add, text/echo, text/upper)
+    let resp = call(&mut proxy, McpRequest::ListTools(Default::default())).await;
+    let initial_count = match resp.inner.unwrap() {
+        McpResponse::ListTools(result) => result.tools.len(),
+        _ => panic!("expected ListTools"),
+    };
+    assert_eq!(initial_count, 3);
+
+    // Dynamically add another backend
+    let extra_router = McpRouter::new().server_info("extra", "1.0.0").tool(
+        ToolBuilder::new("ping")
+            .description("Ping")
+            .handler(|_: tower_mcp::NoParams| async move { Ok(CallToolResult::text("pong")) })
+            .build(),
+    );
+    let extra_transport = ChannelTransport::new(extra_router);
+    proxy
+        .add_backend("extra", extra_transport)
+        .await
+        .expect("add extra backend");
+
+    // Should now have 4 tools
+    let resp = call(&mut proxy, McpRequest::ListTools(Default::default())).await;
+    match resp.inner.unwrap() {
+        McpResponse::ListTools(result) => {
+            let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+            assert_eq!(names.len(), 4, "should have 4 tools: {:?}", names);
+            assert!(names.contains(&"extra/ping"));
+        }
+        other => panic!("expected ListTools, got: {:?}", other),
+    }
+
+    // Call the new tool
+    let resp = call(&mut proxy, tool_call("extra/ping", serde_json::json!({}))).await;
+    match resp.inner.unwrap() {
+        McpResponse::CallTool(result) => assert_eq!(result.all_text(), "pong"),
+        other => panic!("expected CallTool, got: {:?}", other),
+    }
+}
+
+// --- Cache stats ---
+
+#[tokio::test]
+async fn test_cache_stats_through_proxy() {
+    let proxy = build_proxy().await;
+    let cfg = BackendCacheConfig {
+        resource_ttl_seconds: 60,
+        tool_ttl_seconds: 60,
+        max_entries: 100,
+    };
+    let (mut svc, handle) = CacheService::new(proxy, vec![("math/".to_string(), &cfg)]);
+
+    // Miss
+    let _ = call(
+        &mut svc,
+        tool_call("math/add", serde_json::json!({"a": 1, "b": 2})),
+    )
+    .await;
+    // Hit
+    let _ = call(
+        &mut svc,
+        tool_call("math/add", serde_json::json!({"a": 1, "b": 2})),
+    )
+    .await;
+    // Miss (different args)
+    let _ = call(
+        &mut svc,
+        tool_call("math/add", serde_json::json!({"a": 3, "b": 4})),
+    )
+    .await;
+
+    let stats = handle.stats();
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].namespace, "math/");
+    assert_eq!(stats[0].hits, 1);
+    assert_eq!(stats[0].misses, 2);
+
+    // Clear and verify counters reset
+    handle.clear();
+    let stats = handle.stats();
+    assert_eq!(stats[0].hits, 0);
+    assert_eq!(stats[0].misses, 0);
+}
+
 // --- Stacked middleware ---
 
 #[tokio::test]

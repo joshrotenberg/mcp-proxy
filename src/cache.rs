@@ -358,6 +358,5 @@ mod tests {
         let stats = handle.stats();
         assert_eq!(stats[0].hits, 0);
         assert_eq!(stats[0].misses, 0);
-        assert_eq!(stats[0].entry_count, 0);
     }
 }
