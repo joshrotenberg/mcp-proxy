@@ -343,6 +343,24 @@ pub enum NameFilter {
 }
 
 impl NameFilter {
+    /// Check if a capability name is allowed by this filter.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashSet;
+    /// use mcp_gateway::config::NameFilter;
+    ///
+    /// let filter = NameFilter::DenyList(["delete".to_string()].into());
+    /// assert!(filter.allows("read"));
+    /// assert!(!filter.allows("delete"));
+    ///
+    /// let filter = NameFilter::AllowList(["read".to_string()].into());
+    /// assert!(filter.allows("read"));
+    /// assert!(!filter.allows("write"));
+    ///
+    /// assert!(NameFilter::PassAll.allows("anything"));
+    /// ```
     pub fn allows(&self, name: &str) -> bool {
         match self {
             Self::PassAll => true,
@@ -407,6 +425,26 @@ impl GatewayConfig {
     }
 
     /// Parse and validate a config from a TOML string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mcp_gateway::GatewayConfig;
+    ///
+    /// let config = GatewayConfig::parse(r#"
+    ///     [gateway]
+    ///     name = "my-gateway"
+    ///     [gateway.listen]
+    ///
+    ///     [[backends]]
+    ///     name = "echo"
+    ///     transport = "stdio"
+    ///     command = "echo"
+    /// "#).unwrap();
+    ///
+    /// assert_eq!(config.gateway.name, "my-gateway");
+    /// assert_eq!(config.backends.len(), 1);
+    /// ```
     pub fn parse(toml: &str) -> Result<Self> {
         let config: Self = toml::from_str(toml).context("parsing config")?;
         config.validate()?;
