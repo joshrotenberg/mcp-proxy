@@ -369,11 +369,19 @@ impl BackendConfig {
 }
 
 impl GatewayConfig {
+    /// Load and validate a config from a file path.
     pub fn load(path: &Path) -> Result<Self> {
         let content =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let config: Self =
             toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Parse and validate a config from a TOML string.
+    pub fn parse(toml: &str) -> Result<Self> {
+        let config: Self = toml::from_str(toml).context("parsing config")?;
         config.validate()?;
         Ok(config)
     }
@@ -460,5 +468,536 @@ impl GatewayConfig {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_config() -> &'static str {
+        r#"
+        [gateway]
+        name = "test"
+        [gateway.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+        "#
+    }
+
+    #[test]
+    fn test_parse_minimal_config() {
+        let config = GatewayConfig::parse(minimal_config()).unwrap();
+        assert_eq!(config.gateway.name, "test");
+        assert_eq!(config.gateway.version, "0.1.0"); // default
+        assert_eq!(config.gateway.separator, "/"); // default
+        assert_eq!(config.gateway.listen.host, "127.0.0.1"); // default
+        assert_eq!(config.gateway.listen.port, 8080); // default
+        assert_eq!(config.gateway.shutdown_timeout_seconds, 30); // default
+        assert!(!config.gateway.hot_reload); // default false
+        assert_eq!(config.backends.len(), 1);
+        assert_eq!(config.backends[0].name, "echo");
+        assert!(config.auth.is_none());
+        assert!(!config.observability.audit);
+        assert!(!config.observability.metrics.enabled);
+    }
+
+    #[test]
+    fn test_parse_full_config() {
+        let toml = r#"
+        [gateway]
+        name = "full-gw"
+        version = "2.0.0"
+        separator = "."
+        shutdown_timeout_seconds = 60
+        hot_reload = true
+        instructions = "A test gateway"
+        [gateway.listen]
+        host = "0.0.0.0"
+        port = 9090
+
+        [[backends]]
+        name = "files"
+        transport = "stdio"
+        command = "file-server"
+        args = ["--root", "/tmp"]
+        expose_tools = ["read_file"]
+
+        [backends.env]
+        LOG_LEVEL = "debug"
+
+        [backends.timeout]
+        seconds = 30
+
+        [backends.concurrency]
+        max_concurrent = 5
+
+        [backends.rate_limit]
+        requests = 100
+        period_seconds = 10
+
+        [backends.circuit_breaker]
+        failure_rate_threshold = 0.5
+        minimum_calls = 10
+        wait_duration_seconds = 60
+        permitted_calls_in_half_open = 2
+
+        [backends.cache]
+        resource_ttl_seconds = 300
+        tool_ttl_seconds = 60
+        max_entries = 500
+
+        [[backends.aliases]]
+        from = "read_file"
+        to = "read"
+
+        [[backends]]
+        name = "remote"
+        transport = "http"
+        url = "http://localhost:3000"
+
+        [observability]
+        audit = true
+        log_level = "debug"
+        json_logs = true
+
+        [observability.metrics]
+        enabled = true
+
+        [observability.tracing]
+        enabled = true
+        endpoint = "http://jaeger:4317"
+        service_name = "test-gw"
+
+        [performance]
+        coalesce_requests = true
+
+        [security]
+        max_argument_size = 1048576
+        "#;
+
+        let config = GatewayConfig::parse(toml).unwrap();
+        assert_eq!(config.gateway.name, "full-gw");
+        assert_eq!(config.gateway.version, "2.0.0");
+        assert_eq!(config.gateway.separator, ".");
+        assert_eq!(config.gateway.shutdown_timeout_seconds, 60);
+        assert!(config.gateway.hot_reload);
+        assert_eq!(
+            config.gateway.instructions.as_deref(),
+            Some("A test gateway")
+        );
+        assert_eq!(config.gateway.listen.host, "0.0.0.0");
+        assert_eq!(config.gateway.listen.port, 9090);
+
+        assert_eq!(config.backends.len(), 2);
+
+        let files = &config.backends[0];
+        assert_eq!(files.command.as_deref(), Some("file-server"));
+        assert_eq!(files.args, vec!["--root", "/tmp"]);
+        assert_eq!(files.expose_tools, vec!["read_file"]);
+        assert_eq!(files.env.get("LOG_LEVEL").unwrap(), "debug");
+        assert_eq!(files.timeout.as_ref().unwrap().seconds, 30);
+        assert_eq!(files.concurrency.as_ref().unwrap().max_concurrent, 5);
+        assert_eq!(files.rate_limit.as_ref().unwrap().requests, 100);
+        assert_eq!(files.cache.as_ref().unwrap().resource_ttl_seconds, 300);
+        assert_eq!(files.cache.as_ref().unwrap().tool_ttl_seconds, 60);
+        assert_eq!(files.cache.as_ref().unwrap().max_entries, 500);
+        assert_eq!(files.aliases.len(), 1);
+        assert_eq!(files.aliases[0].from, "read_file");
+        assert_eq!(files.aliases[0].to, "read");
+
+        let cb = files.circuit_breaker.as_ref().unwrap();
+        assert_eq!(cb.failure_rate_threshold, 0.5);
+        assert_eq!(cb.minimum_calls, 10);
+        assert_eq!(cb.wait_duration_seconds, 60);
+        assert_eq!(cb.permitted_calls_in_half_open, 2);
+
+        let remote = &config.backends[1];
+        assert_eq!(remote.url.as_deref(), Some("http://localhost:3000"));
+
+        assert!(config.observability.audit);
+        assert_eq!(config.observability.log_level, "debug");
+        assert!(config.observability.json_logs);
+        assert!(config.observability.metrics.enabled);
+        assert!(config.observability.tracing.enabled);
+        assert_eq!(config.observability.tracing.endpoint, "http://jaeger:4317");
+
+        assert!(config.performance.coalesce_requests);
+        assert_eq!(config.security.max_argument_size, Some(1048576));
+    }
+
+    #[test]
+    fn test_parse_bearer_auth() {
+        let toml = r#"
+        [gateway]
+        name = "auth-gw"
+        [gateway.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "bearer"
+        tokens = ["token-1", "token-2"]
+        "#;
+
+        let config = GatewayConfig::parse(toml).unwrap();
+        match &config.auth {
+            Some(AuthConfig::Bearer { tokens }) => {
+                assert_eq!(tokens, &["token-1", "token-2"]);
+            }
+            other => panic!("expected Bearer auth, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_jwt_auth_with_rbac() {
+        let toml = r#"
+        [gateway]
+        name = "jwt-gw"
+        [gateway.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "jwt"
+        issuer = "https://auth.example.com"
+        audience = "mcp-gateway"
+        jwks_uri = "https://auth.example.com/.well-known/jwks.json"
+
+        [[auth.roles]]
+        name = "reader"
+        allow_tools = ["echo/read"]
+
+        [[auth.roles]]
+        name = "admin"
+
+        [auth.role_mapping]
+        claim = "scope"
+        mapping = { "mcp:read" = "reader", "mcp:admin" = "admin" }
+        "#;
+
+        let config = GatewayConfig::parse(toml).unwrap();
+        match &config.auth {
+            Some(AuthConfig::Jwt {
+                issuer,
+                audience,
+                jwks_uri,
+                roles,
+                role_mapping,
+            }) => {
+                assert_eq!(issuer, "https://auth.example.com");
+                assert_eq!(audience, "mcp-gateway");
+                assert_eq!(jwks_uri, "https://auth.example.com/.well-known/jwks.json");
+                assert_eq!(roles.len(), 2);
+                assert_eq!(roles[0].name, "reader");
+                assert_eq!(roles[0].allow_tools, vec!["echo/read"]);
+                let mapping = role_mapping.as_ref().unwrap();
+                assert_eq!(mapping.claim, "scope");
+                assert_eq!(mapping.mapping.get("mcp:read").unwrap(), "reader");
+            }
+            other => panic!("expected Jwt auth, got: {:?}", other),
+        }
+    }
+
+    // ========================================================================
+    // Validation errors
+    // ========================================================================
+
+    #[test]
+    fn test_reject_no_backends() {
+        let toml = r#"
+        [gateway]
+        name = "empty"
+        [gateway.listen]
+        "#;
+
+        let err = GatewayConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("at least one backend"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_stdio_without_command() {
+        let toml = r#"
+        [gateway]
+        name = "bad"
+        [gateway.listen]
+
+        [[backends]]
+        name = "broken"
+        transport = "stdio"
+        "#;
+
+        let err = GatewayConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("stdio transport requires 'command'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_http_without_url() {
+        let toml = r#"
+        [gateway]
+        name = "bad"
+        [gateway.listen]
+
+        [[backends]]
+        name = "broken"
+        transport = "http"
+        "#;
+
+        let err = GatewayConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("http transport requires 'url'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_invalid_circuit_breaker_threshold() {
+        let toml = r#"
+        [gateway]
+        name = "bad"
+        [gateway.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "stdio"
+        command = "echo"
+
+        [backends.circuit_breaker]
+        failure_rate_threshold = 1.5
+        "#;
+
+        let err = GatewayConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("failure_rate_threshold must be in (0.0, 1.0]"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_zero_rate_limit() {
+        let toml = r#"
+        [gateway]
+        name = "bad"
+        [gateway.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "stdio"
+        command = "echo"
+
+        [backends.rate_limit]
+        requests = 0
+        "#;
+
+        let err = GatewayConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("rate_limit.requests must be > 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_zero_concurrency() {
+        let toml = r#"
+        [gateway]
+        name = "bad"
+        [gateway.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "stdio"
+        command = "echo"
+
+        [backends.concurrency]
+        max_concurrent = 0
+        "#;
+
+        let err = GatewayConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("concurrency.max_concurrent must be > 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_expose_and_hide_tools() {
+        let toml = r#"
+        [gateway]
+        name = "bad"
+        [gateway.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "stdio"
+        command = "echo"
+        expose_tools = ["read"]
+        hide_tools = ["write"]
+        "#;
+
+        let err = GatewayConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("cannot specify both expose_tools and hide_tools"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_expose_and_hide_resources() {
+        let toml = r#"
+        [gateway]
+        name = "bad"
+        [gateway.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "stdio"
+        command = "echo"
+        expose_resources = ["file:///a"]
+        hide_resources = ["file:///b"]
+        "#;
+
+        let err = GatewayConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("cannot specify both expose_resources and hide_resources"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_expose_and_hide_prompts() {
+        let toml = r#"
+        [gateway]
+        name = "bad"
+        [gateway.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "stdio"
+        command = "echo"
+        expose_prompts = ["help"]
+        hide_prompts = ["admin"]
+        "#;
+
+        let err = GatewayConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("cannot specify both expose_prompts and hide_prompts"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ========================================================================
+    // Env var resolution
+    // ========================================================================
+
+    #[test]
+    fn test_resolve_env_vars() {
+        // SAFETY: test runs single-threaded, no other threads reading this var
+        unsafe { std::env::set_var("MCP_GW_TEST_TOKEN", "secret-123") };
+
+        let toml = r#"
+        [gateway]
+        name = "env-test"
+        [gateway.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "stdio"
+        command = "echo"
+
+        [backends.env]
+        API_TOKEN = "${MCP_GW_TEST_TOKEN}"
+        STATIC_VAL = "unchanged"
+        "#;
+
+        let mut config = GatewayConfig::parse(toml).unwrap();
+        config.resolve_env_vars();
+
+        assert_eq!(
+            config.backends[0].env.get("API_TOKEN").unwrap(),
+            "secret-123"
+        );
+        assert_eq!(
+            config.backends[0].env.get("STATIC_VAL").unwrap(),
+            "unchanged"
+        );
+
+        // SAFETY: same as above
+        unsafe { std::env::remove_var("MCP_GW_TEST_TOKEN") };
+    }
+
+    // ========================================================================
+    // Capability filter building
+    // ========================================================================
+
+    #[test]
+    fn test_build_filter_allowlist() {
+        let toml = r#"
+        [gateway]
+        name = "filter"
+        [gateway.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "stdio"
+        command = "echo"
+        expose_tools = ["read", "list"]
+        "#;
+
+        let config = GatewayConfig::parse(toml).unwrap();
+        let filter = config.backends[0]
+            .build_filter(&config.gateway.separator)
+            .expect("should have filter");
+        assert_eq!(filter.namespace, "svc/");
+        assert!(filter.tool_filter.allows("read"));
+        assert!(filter.tool_filter.allows("list"));
+        assert!(!filter.tool_filter.allows("delete"));
+    }
+
+    #[test]
+    fn test_build_filter_denylist() {
+        let toml = r#"
+        [gateway]
+        name = "filter"
+        [gateway.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "stdio"
+        command = "echo"
+        hide_tools = ["delete", "write"]
+        "#;
+
+        let config = GatewayConfig::parse(toml).unwrap();
+        let filter = config.backends[0]
+            .build_filter(&config.gateway.separator)
+            .expect("should have filter");
+        assert!(filter.tool_filter.allows("read"));
+        assert!(!filter.tool_filter.allows("delete"));
+        assert!(!filter.tool_filter.allows("write"));
+    }
+
+    #[test]
+    fn test_build_filter_none_when_no_filtering() {
+        let config = GatewayConfig::parse(minimal_config()).unwrap();
+        assert!(
+            config.backends[0]
+                .build_filter(&config.gateway.separator)
+                .is_none()
+        );
     }
 }

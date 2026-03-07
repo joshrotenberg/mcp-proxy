@@ -186,3 +186,147 @@ fn check_prompt_denied(filters: &[BackendFilter], namespaced_name: &str) -> Opti
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use tower_mcp::protocol::{McpRequest, McpResponse};
+
+    use super::CapabilityFilterService;
+    use crate::config::{BackendFilter, NameFilter};
+    use crate::test_util::{MockService, call_service};
+
+    fn allow_filter(namespace: &str, tools: &[&str]) -> BackendFilter {
+        BackendFilter {
+            namespace: namespace.to_string(),
+            tool_filter: NameFilter::AllowList(tools.iter().map(|s| s.to_string()).collect()),
+            resource_filter: NameFilter::PassAll,
+            prompt_filter: NameFilter::PassAll,
+        }
+    }
+
+    fn deny_filter(namespace: &str, tools: &[&str]) -> BackendFilter {
+        BackendFilter {
+            namespace: namespace.to_string(),
+            tool_filter: NameFilter::DenyList(tools.iter().map(|s| s.to_string()).collect()),
+            resource_filter: NameFilter::PassAll,
+            prompt_filter: NameFilter::PassAll,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_filter_allow_list_tools() {
+        let mock = MockService::with_tools(&["fs/read", "fs/write", "fs/delete"]);
+        let filters = vec![allow_filter("fs/", &["read", "write"])];
+        let mut svc = CapabilityFilterService::new(mock, filters);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+                assert!(names.contains(&"fs/read"));
+                assert!(names.contains(&"fs/write"));
+                assert!(!names.contains(&"fs/delete"), "delete should be filtered");
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_filter_deny_list_tools() {
+        let mock = MockService::with_tools(&["fs/read", "fs/write", "fs/delete"]);
+        let filters = vec![deny_filter("fs/", &["delete"])];
+        let mut svc = CapabilityFilterService::new(mock, filters);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+                assert!(names.contains(&"fs/read"));
+                assert!(names.contains(&"fs/write"));
+                assert!(!names.contains(&"fs/delete"));
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_filter_denies_call_to_hidden_tool() {
+        let mock = MockService::with_tools(&["fs/read", "fs/delete"]);
+        let filters = vec![allow_filter("fs/", &["read"])];
+        let mut svc = CapabilityFilterService::new(mock, filters);
+
+        let resp = call_service(
+            &mut svc,
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/delete".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await;
+
+        let err = resp.inner.unwrap_err();
+        assert!(
+            err.message.contains("not available"),
+            "should deny: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_allows_call_to_permitted_tool() {
+        let mock = MockService::with_tools(&["fs/read"]);
+        let filters = vec![allow_filter("fs/", &["read"])];
+        let mut svc = CapabilityFilterService::new(mock, filters);
+
+        let resp = call_service(
+            &mut svc,
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/read".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await;
+
+        assert!(resp.inner.is_ok(), "allowed tool should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_filter_pass_all_allows_everything() {
+        let mock = MockService::with_tools(&["fs/read", "fs/write", "fs/delete"]);
+        let filters = vec![BackendFilter {
+            namespace: "fs/".to_string(),
+            tool_filter: NameFilter::PassAll,
+            resource_filter: NameFilter::PassAll,
+            prompt_filter: NameFilter::PassAll,
+        }];
+        let mut svc = CapabilityFilterService::new(mock, filters);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                assert_eq!(result.tools.len(), 3);
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_filter_unmatched_namespace_passes_through() {
+        let mock = MockService::with_tools(&["db/query"]);
+        let filters = vec![allow_filter("fs/", &["read"])];
+        let mut svc = CapabilityFilterService::new(mock, filters);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                assert_eq!(result.tools.len(), 1, "unmatched namespace should pass");
+                assert_eq!(result.tools[0].name, "db/query");
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+}

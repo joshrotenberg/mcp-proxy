@@ -109,3 +109,62 @@ where
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tower_mcp::protocol::{McpRequest, McpResponse};
+
+    use super::CoalesceService;
+    use crate::test_util::{MockService, call_service};
+
+    #[tokio::test]
+    async fn test_coalesce_passes_through_single_request() {
+        let mock = MockService::with_tools(&["fs/read"]);
+        let mut svc = CoalesceService::new(mock);
+
+        let resp = call_service(
+            &mut svc,
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/read".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await;
+
+        match resp.inner.unwrap() {
+            McpResponse::CallTool(r) => assert_eq!(r.all_text(), "called: fs/read"),
+            other => panic!("expected CallTool, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_coalesce_non_coalesceable_passes_through() {
+        let mock = MockService::with_tools(&["tool"]);
+        let mut svc = CoalesceService::new(mock);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        assert!(resp.inner.is_ok(), "list_tools should pass through");
+    }
+
+    #[tokio::test]
+    async fn test_coalesce_key_includes_arguments() {
+        // Different arguments should produce different keys
+        let key1 =
+            super::coalesce_key(&McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "tool".to_string(),
+                arguments: serde_json::json!({"a": 1}),
+                meta: None,
+                task: None,
+            }));
+        let key2 =
+            super::coalesce_key(&McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "tool".to_string(),
+                arguments: serde_json::json!({"a": 2}),
+                meta: None,
+                task: None,
+            }));
+        assert_ne!(key1, key2, "different args should have different keys");
+    }
+}

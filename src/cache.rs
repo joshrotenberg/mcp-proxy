@@ -149,3 +149,85 @@ where
         Box::pin(fut)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tower_mcp::protocol::{McpRequest, McpResponse};
+
+    use super::CacheService;
+    use crate::config::BackendCacheConfig;
+    use crate::test_util::{MockService, call_service};
+
+    fn tool_call(name: &str) -> McpRequest {
+        McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+            name: name.to_string(),
+            arguments: serde_json::json!({"key": "value"}),
+            meta: None,
+            task: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn test_cache_hit_returns_same_result() {
+        let mock = MockService::with_tools(&["fs/read"]);
+        let cfg = BackendCacheConfig {
+            resource_ttl_seconds: 60,
+            tool_ttl_seconds: 60,
+            max_entries: 100,
+        };
+        let mut svc = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+
+        let resp1 = call_service(&mut svc, tool_call("fs/read")).await;
+        let resp2 = call_service(&mut svc, tool_call("fs/read")).await;
+
+        // Both should succeed with same content
+        match (resp1.inner.unwrap(), resp2.inner.unwrap()) {
+            (McpResponse::CallTool(r1), McpResponse::CallTool(r2)) => {
+                assert_eq!(r1.all_text(), r2.all_text());
+            }
+            _ => panic!("expected CallTool responses"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cache_disabled_passes_through() {
+        let mock = MockService::with_tools(&["fs/read"]);
+        let cfg = BackendCacheConfig {
+            resource_ttl_seconds: 0,
+            tool_ttl_seconds: 0,
+            max_entries: 100,
+        };
+        let mut svc = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+
+        let resp = call_service(&mut svc, tool_call("fs/read")).await;
+        assert!(resp.inner.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cache_non_matching_namespace_passes_through() {
+        let mock = MockService::with_tools(&["db/query"]);
+        let cfg = BackendCacheConfig {
+            resource_ttl_seconds: 60,
+            tool_ttl_seconds: 60,
+            max_entries: 100,
+        };
+        let mut svc = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+
+        let resp = call_service(&mut svc, tool_call("db/query")).await;
+        assert!(resp.inner.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cache_list_tools_not_cached() {
+        let mock = MockService::with_tools(&["fs/read"]);
+        let cfg = BackendCacheConfig {
+            resource_ttl_seconds: 60,
+            tool_ttl_seconds: 60,
+            max_entries: 100,
+        };
+        let mut svc = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        assert!(resp.inner.is_ok(), "list_tools should pass through");
+    }
+}

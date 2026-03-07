@@ -73,3 +73,39 @@ where
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tower_mcp::protocol::McpRequest;
+
+    use super::MetricsService;
+    use crate::test_util::{MockService, call_service};
+
+    #[tokio::test]
+    async fn test_metrics_passes_through_request() {
+        let mock = MockService::with_tools(&["tool"]);
+        let mut svc = MetricsService::new(mock);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        assert!(resp.inner.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_metrics_passes_through_tool_call() {
+        let mock = MockService::with_tools(&["tool"]);
+        let mut svc = MetricsService::new(mock);
+
+        let resp = call_service(
+            &mut svc,
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "tool".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await;
+
+        assert!(resp.inner.is_ok());
+    }
+}

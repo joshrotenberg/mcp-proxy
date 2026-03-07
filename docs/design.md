@@ -595,9 +595,50 @@ programmatically build and run a gateway without the CLI/config file.
 24. **Dual crate structure** -- `mcp-gateway` (lib) + `mcp-gateway-cli` (bin), or
     single crate with `[[bin]]` and `[lib]`
 
-**Status:** Not started. The current code structure (all logic in `main()`) is
-straightforward to refactor -- the middleware stack composition is already
-linear and config-driven.
+**Status:** Done. Single crate with `[lib]` + `[[bin]]` targets.
+- `Gateway::from_config()` builds proxy + middleware + auth + admin
+- `gateway.serve()` for standalone, `gateway.into_router()` for embedding
+- `gateway.proxy()` exposes McpProxy for dynamic operations
+- `gateway.enable_hot_reload()` watches config for new backends
+
+### Phase 7: Testing
+
+Comprehensive test coverage across three categories.
+
+25. **Config parsing tests** -- TOML loading, env var resolution, validation errors,
+    default values, invalid configs rejected with clear messages
+26. **Middleware unit tests** -- each middleware module tested in isolation:
+    - `CacheService`: cache hits/misses, TTL expiry, per-backend isolation
+    - `CoalesceService`: deduplication of concurrent requests, non-interference
+    - `AliasService`: forward/reverse name rewriting
+    - `CapabilityFilterService`: allow/deny lists, pass-through
+    - `ValidationService`: argument size limits, pass-through for valid requests
+    - `MetricsService`: counter/histogram recording
+    - `RbacService`: role-based allow/deny
+27. **Integration tests** -- full gateway stack with in-process backends:
+    - End-to-end: config -> Gateway::from_config() -> list/call through middleware
+    - Auth: bearer token acceptance/rejection
+    - Per-backend middleware: timeout, circuit breaker, rate limit
+    - Hot reload: add backend via config change, verify new tools appear
+    - Admin API: `/admin/backends` returns correct health and session count
+
+**Status:** Not started.
+
+### Phase 8: MCP Admin Tools
+
+Expose gateway management as MCP tools, so any MCP client can introspect
+and manage the gateway.
+
+28. **Admin MCP server** -- register tools on the gateway's own McpRouter:
+    - `gateway/list_backends` -- list backends with health status
+    - `gateway/health_check` -- trigger health check, return results
+    - `gateway/session_count` -- active HTTP sessions
+    - `gateway/add_backend` -- dynamically add a backend (name, transport, url/command)
+    - `gateway/config` -- dump current running config
+29. **Separate namespace** -- admin tools live under a `gateway/` namespace,
+    clearly separated from proxied backend tools
+
+**Status:** Not started.
 
 ## Config Schema (Target)
 

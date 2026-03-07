@@ -39,6 +39,9 @@ pub mod rbac;
 pub mod reload;
 pub mod validation;
 
+#[cfg(test)]
+mod test_util;
+
 mod gateway;
 
 pub use config::GatewayConfig;

@@ -133,3 +133,99 @@ where
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tower_mcp::protocol::{McpRequest, McpResponse};
+
+    use super::{AliasMap, AliasService};
+    use crate::test_util::{MockService, call_service};
+
+    fn test_aliases() -> AliasMap {
+        AliasMap::new(vec![
+            ("files/".into(), "read_file".into(), "read".into()),
+            ("files/".into(), "write_file".into(), "write".into()),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn test_alias_map_empty_returns_none() {
+        assert!(AliasMap::new(vec![]).is_none());
+    }
+
+    #[test]
+    fn test_alias_map_forward_and_reverse() {
+        let aliases = test_aliases();
+        assert_eq!(
+            aliases.forward.get("files/read_file").unwrap(),
+            "files/read"
+        );
+        assert_eq!(aliases.forward.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_alias_rewrites_list_tools() {
+        let mock = MockService::with_tools(&["files/read_file", "files/write_file", "db/query"]);
+        let mut svc = AliasService::new(mock, test_aliases());
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+                assert!(names.contains(&"files/read"));
+                assert!(names.contains(&"files/write"));
+                assert!(names.contains(&"db/query")); // unchanged
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_alias_reverse_maps_call_tool() {
+        let mock = MockService::with_tools(&["files/read_file"]);
+        let mut svc = AliasService::new(mock, test_aliases());
+
+        let resp = call_service(
+            &mut svc,
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "files/read".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await;
+
+        match resp.inner.unwrap() {
+            McpResponse::CallTool(result) => {
+                assert_eq!(result.all_text(), "called: files/read_file");
+            }
+            other => panic!("expected CallTool, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_alias_passthrough_non_aliased() {
+        let mock = MockService::with_tools(&["db/query"]);
+        let mut svc = AliasService::new(mock, test_aliases());
+
+        let resp = call_service(
+            &mut svc,
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "db/query".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await;
+
+        match resp.inner.unwrap() {
+            McpResponse::CallTool(result) => {
+                assert_eq!(result.all_text(), "called: db/query");
+            }
+            other => panic!("expected CallTool, got: {:?}", other),
+        }
+    }
+}

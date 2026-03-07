@@ -192,3 +192,152 @@ where
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use tower::Service;
+    use tower_mcp::oauth::token::TokenClaims;
+    use tower_mcp::protocol::{McpRequest, McpResponse, RequestId};
+    use tower_mcp::router::Extensions;
+
+    use super::{RbacConfig, RbacService};
+    use crate::config::{RoleConfig, RoleMappingConfig};
+    use crate::test_util::MockService;
+
+    fn test_rbac_config() -> RbacConfig {
+        let roles = vec![
+            RoleConfig {
+                name: "admin".into(),
+                allow_tools: vec![],
+                deny_tools: vec![],
+            },
+            RoleConfig {
+                name: "reader".into(),
+                allow_tools: vec!["fs/read".into()],
+                deny_tools: vec![],
+            },
+        ];
+        let mapping = RoleMappingConfig {
+            claim: "scope".into(),
+            mapping: HashMap::from([
+                ("admin".into(), "admin".into()),
+                ("read-only".into(), "reader".into()),
+            ]),
+        };
+        RbacConfig::new(&roles, &mapping)
+    }
+
+    fn request_with_scope(scope: &str, inner: McpRequest) -> tower_mcp::RouterRequest {
+        let mut extensions = Extensions::new();
+        extensions.insert(TokenClaims {
+            sub: None,
+            iss: None,
+            aud: None,
+            exp: None,
+            scope: Some(scope.to_string()),
+            client_id: None,
+            extra: HashMap::new(),
+        });
+        tower_mcp::RouterRequest {
+            id: RequestId::Number(1),
+            inner,
+            extensions,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rbac_admin_can_call_any_tool() {
+        let mock = MockService::with_tools(&["fs/read", "fs/write"]);
+        let mut svc = RbacService::new(mock, test_rbac_config());
+
+        let req = request_with_scope(
+            "admin",
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/write".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        );
+        let resp = svc.call(req).await.unwrap();
+        assert!(resp.inner.is_ok(), "admin should call any tool");
+    }
+
+    #[tokio::test]
+    async fn test_rbac_reader_denied_write() {
+        let mock = MockService::with_tools(&["fs/read", "fs/write"]);
+        let mut svc = RbacService::new(mock, test_rbac_config());
+
+        let req = request_with_scope(
+            "read-only",
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/write".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        );
+        let resp = svc.call(req).await.unwrap();
+        let err = resp.inner.unwrap_err();
+        assert!(err.message.contains("not authorized"));
+    }
+
+    #[tokio::test]
+    async fn test_rbac_reader_allowed_read() {
+        let mock = MockService::with_tools(&["fs/read"]);
+        let mut svc = RbacService::new(mock, test_rbac_config());
+
+        let req = request_with_scope(
+            "read-only",
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/read".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        );
+        let resp = svc.call(req).await.unwrap();
+        assert!(resp.inner.is_ok(), "reader should call allowed tools");
+    }
+
+    #[tokio::test]
+    async fn test_rbac_filters_list_tools_for_role() {
+        let mock = MockService::with_tools(&["fs/read", "fs/write", "fs/delete"]);
+        let mut svc = RbacService::new(mock, test_rbac_config());
+
+        let req = request_with_scope("read-only", McpRequest::ListTools(Default::default()));
+        let resp = svc.call(req).await.unwrap();
+
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+                assert!(names.contains(&"fs/read"));
+                assert!(!names.contains(&"fs/write"));
+                assert!(!names.contains(&"fs/delete"));
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rbac_no_claims_passes_through() {
+        let mock = MockService::with_tools(&["fs/write"]);
+        let mut svc = RbacService::new(mock, test_rbac_config());
+
+        // No TokenClaims in extensions
+        let req = tower_mcp::RouterRequest {
+            id: RequestId::Number(1),
+            inner: McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/write".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+            extensions: Extensions::new(),
+        };
+        let resp = svc.call(req).await.unwrap();
+        assert!(resp.inner.is_ok(), "no claims should pass through");
+    }
+}

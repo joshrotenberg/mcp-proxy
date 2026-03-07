@@ -14,9 +14,8 @@ name = "mcp-gateway"
 path = "src/main.rs"
 
 [dependencies]
-# Using local dep until from_service() ships on crates.io
-tower-mcp = { path = "../tower-mcp/crates/tower-mcp", features = ["http", "http-client", "proxy", "oauth", "jwks"] }
-tower-mcp-types = { path = "../tower-mcp/crates/tower-mcp-types" }
+tower-mcp = { version = "0.8.3", features = ["http", "http-client", "proxy", "oauth", "jwks"] }
+tower-mcp-types = "0.8.3"
 axum = "0.8"
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 tower-resilience = { version = "0.8", default-features = false, features = ["circuitbreaker", "ratelimiter"] }
