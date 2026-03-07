@@ -3,9 +3,9 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GatewayConfig {
     pub gateway: Gateway,
     #[serde(default)]
@@ -19,7 +19,7 @@ pub struct GatewayConfig {
     pub observability: ObservabilityConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Gateway {
     pub name: String,
     #[serde(default = "default_version")]
@@ -36,7 +36,7 @@ pub struct Gateway {
     pub hot_reload: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ListenConfig {
     #[serde(default = "default_host")]
     pub host: String,
@@ -44,7 +44,7 @@ pub struct ListenConfig {
     pub port: u16,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct BackendConfig {
     pub name: String,
     pub transport: TransportType,
@@ -91,19 +91,19 @@ pub struct BackendConfig {
     pub hide_prompts: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransportType {
     Stdio,
     Http,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TimeoutConfig {
     pub seconds: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CircuitBreakerConfig {
     /// Failure rate threshold (0.0-1.0) to trip open (default: 0.5)
     #[serde(default = "default_failure_rate")]
@@ -119,7 +119,7 @@ pub struct CircuitBreakerConfig {
     pub permitted_calls_in_half_open: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RateLimitConfig {
     /// Maximum requests per period
     pub requests: usize,
@@ -128,13 +128,13 @@ pub struct RateLimitConfig {
     pub period_seconds: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ConcurrencyConfig {
     /// Maximum concurrent requests
     pub max_concurrent: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AuthConfig {
     Bearer {
@@ -152,7 +152,7 @@ pub enum AuthConfig {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RoleConfig {
     pub name: String,
     /// Tools this role can access (namespaced, e.g. "files/read_file")
@@ -163,7 +163,7 @@ pub struct RoleConfig {
     pub deny_tools: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RoleMappingConfig {
     /// JWT claim to read for role resolution (e.g. "scope", "role", "groups")
     pub claim: String,
@@ -171,7 +171,7 @@ pub struct RoleMappingConfig {
     pub mapping: HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AliasConfig {
     /// Original tool name (backend-local, without namespace prefix)
     pub from: String,
@@ -179,7 +179,7 @@ pub struct AliasConfig {
     pub to: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct BackendCacheConfig {
     /// TTL for cached resource reads in seconds (0 = disabled)
     #[serde(default)]
@@ -192,20 +192,20 @@ pub struct BackendCacheConfig {
     pub max_entries: u64,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct PerformanceConfig {
     /// Deduplicate identical concurrent tool calls and resource reads
     #[serde(default)]
     pub coalesce_requests: bool,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct SecurityConfig {
     /// Maximum size of tool call arguments in bytes (default: unlimited)
     pub max_argument_size: Option<usize>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct ObservabilityConfig {
     #[serde(default)]
     pub audit: bool,
@@ -219,13 +219,13 @@ pub struct ObservabilityConfig {
     pub tracing: TracingConfig,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct MetricsConfig {
     #[serde(default)]
     pub enabled: bool,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct TracingConfig {
     #[serde(default)]
     pub enabled: bool,

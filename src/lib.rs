@@ -29,6 +29,7 @@
 //! backends. The gateway will add them dynamically without restart.
 
 pub mod admin;
+pub mod admin_tools;
 pub mod alias;
 pub mod cache;
 pub mod coalesce;

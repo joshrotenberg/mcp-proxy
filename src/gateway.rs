@@ -72,9 +72,23 @@ impl Gateway {
         );
         let router = router.nest(
             "/admin",
-            crate::admin::admin_router(admin_state, metrics_handle, session_handle.clone()),
+            crate::admin::admin_router(admin_state.clone(), metrics_handle, session_handle.clone()),
         );
         tracing::info!("Admin API enabled at /admin/backends");
+
+        // MCP admin tools (gateway/ namespace)
+        if let Err(e) = crate::admin_tools::register_admin_tools(
+            &proxy_for_caller,
+            admin_state,
+            session_handle.clone(),
+            &config,
+        )
+        .await
+        {
+            tracing::warn!("Failed to register admin tools: {e}");
+        } else {
+            tracing::info!("MCP admin tools registered under gateway/ namespace");
+        }
 
         Ok(Self {
             router,

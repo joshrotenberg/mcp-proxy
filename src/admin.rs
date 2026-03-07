@@ -23,10 +23,32 @@ pub struct AdminState {
     backend_count: usize,
 }
 
+impl AdminState {
+    /// Get a snapshot of backend health status.
+    pub async fn health(&self) -> Vec<BackendStatus> {
+        self.health.read().await.clone()
+    }
+
+    /// Gateway name from config.
+    pub fn gateway_name(&self) -> &str {
+        &self.gateway_name
+    }
+
+    /// Gateway version from config.
+    pub fn gateway_version(&self) -> &str {
+        &self.gateway_version
+    }
+
+    /// Number of configured backends.
+    pub fn backend_count(&self) -> usize {
+        self.backend_count
+    }
+}
+
 #[derive(Serialize, Clone)]
-struct BackendStatus {
-    namespace: String,
-    healthy: bool,
+pub struct BackendStatus {
+    pub namespace: String,
+    pub healthy: bool,
 }
 
 #[derive(Serialize)]
