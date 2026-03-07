@@ -222,7 +222,20 @@ async fn build_proxy(config: &GatewayConfig) -> Result<McpProxy> {
 
         // Per-backend middleware stack (applied in order: inner -> outer)
 
-        // Concurrency limit (innermost)
+        // Retry (innermost -- retries happen before other middleware)
+        if let Some(retry_cfg) = &backend.retry {
+            tracing::info!(
+                backend = %backend.name,
+                max_retries = retry_cfg.max_retries,
+                initial_backoff_ms = retry_cfg.initial_backoff_ms,
+                max_backoff_ms = retry_cfg.max_backoff_ms,
+                "Applying retry policy"
+            );
+            let policy = crate::retry::McpRetryPolicy::from_config(retry_cfg);
+            builder = builder.backend_layer(tower::retry::RetryLayer::new(policy));
+        }
+
+        // Concurrency limit
         if let Some(cc) = &backend.concurrency {
             tracing::info!(
                 backend = %backend.name,

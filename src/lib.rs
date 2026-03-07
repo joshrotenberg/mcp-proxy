@@ -38,6 +38,7 @@ pub mod filter;
 pub mod metrics;
 pub mod rbac;
 pub mod reload;
+pub mod retry;
 pub mod validation;
 
 #[cfg(test)]

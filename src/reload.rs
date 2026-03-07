@@ -141,7 +141,8 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
     let has_middleware = backend.timeout.is_some()
         || backend.circuit_breaker.is_some()
         || backend.rate_limit.is_some()
-        || backend.concurrency.is_some();
+        || backend.concurrency.is_some()
+        || backend.retry.is_some();
 
     match backend.transport {
         TransportType::Stdio => {
@@ -231,6 +232,7 @@ impl tower::Layer<BackendService> for BackendMiddlewareLayer {
 ///
 /// Layers are applied inner to outer: concurrency -> rate limit -> timeout -> circuit breaker.
 fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
+    let retry_config = backend.retry.clone();
     let concurrency = backend.concurrency.as_ref().map(|cc| cc.max_concurrent);
     let rate_limit = backend
         .rate_limit
@@ -252,7 +254,14 @@ fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
             let mut svc: BoxCloneService<RouterRequest, RouterResponse, Infallible> =
                 BoxCloneService::new(inner);
 
-            // Concurrency limit (innermost)
+            // Retry (innermost)
+            if let Some(ref retry_cfg) = retry_config {
+                let policy = crate::retry::McpRetryPolicy::from_config(retry_cfg);
+                let retried = tower::Layer::layer(&tower::retry::RetryLayer::new(policy), svc);
+                svc = BoxCloneService::new(tower_mcp::CatchError::new(retried));
+            }
+
+            // Concurrency limit
             if let Some(max) = concurrency {
                 let limited =
                     tower::Layer::layer(&tower::limit::ConcurrencyLimitLayer::new(max), svc);

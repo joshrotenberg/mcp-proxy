@@ -66,6 +66,8 @@ pub struct BackendConfig {
     pub rate_limit: Option<RateLimitConfig>,
     /// Per-backend concurrency limit
     pub concurrency: Option<ConcurrencyConfig>,
+    /// Per-backend retry policy
+    pub retry: Option<RetryConfig>,
     /// Per-backend cache policy
     pub cache: Option<BackendCacheConfig>,
     /// Tool aliases: rename tools exposed by this backend
@@ -132,6 +134,19 @@ pub struct RateLimitConfig {
 pub struct ConcurrencyConfig {
     /// Maximum concurrent requests
     pub max_concurrent: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RetryConfig {
+    /// Maximum number of retry attempts (default: 3)
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    /// Initial backoff in milliseconds (default: 100)
+    #[serde(default = "default_initial_backoff_ms")]
+    pub initial_backoff_ms: u64,
+    /// Maximum backoff in milliseconds (default: 5000)
+    #[serde(default = "default_max_backoff_ms")]
+    pub max_backoff_ms: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -277,6 +292,18 @@ fn default_half_open_calls() -> usize {
 
 fn default_rate_period() -> u64 {
     1
+}
+
+fn default_max_retries() -> u32 {
+    3
+}
+
+fn default_initial_backoff_ms() -> u64 {
+    100
+}
+
+fn default_max_backoff_ms() -> u64 {
+    5000
 }
 
 fn default_max_cache_entries() -> u64 {
