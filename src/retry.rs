@@ -3,6 +3,20 @@
 //! Only retries requests that result in MCP error responses with transient
 //! error codes (internal errors, timeouts). Tool-not-found and other client
 //! errors are not retried.
+//!
+//! # Configuration
+//!
+//! ```toml
+//! [[backends]]
+//! name = "flaky-api"
+//! transport = "http"
+//! url = "http://localhost:8080"
+//!
+//! [backends.retry]
+//! max_retries = 3
+//! initial_backoff_ms = 100
+//! max_backoff_ms = 5000
+//! ```
 
 use std::future::Future;
 use std::pin::Pin;

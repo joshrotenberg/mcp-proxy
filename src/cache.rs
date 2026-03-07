@@ -2,6 +2,20 @@
 //!
 //! Caches `ReadResource` and `CallTool` responses with per-backend TTL.
 //! Cache keys are derived from the request type, name/URI, and arguments.
+//!
+//! # Configuration
+//!
+//! ```toml
+//! [[backends]]
+//! name = "slow-api"
+//! transport = "http"
+//! url = "http://localhost:8080"
+//!
+//! [backends.cache]
+//! resource_ttl_seconds = 300
+//! tool_ttl_seconds = 60
+//! max_entries = 1000
+//! ```
 
 use std::convert::Infallible;
 use std::future::Future;
