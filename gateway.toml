@@ -1,0 +1,27 @@
+# Test config for local development
+
+[gateway]
+name = "test-gateway"
+version = "0.1.0"
+separator = "/"
+
+[gateway.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "files"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+[backends.timeout]
+seconds = 30
+
+[backends.concurrency]
+max_concurrent = 5
+
+[observability]
+audit = true
+log_level = "debug"
+json_logs = false
