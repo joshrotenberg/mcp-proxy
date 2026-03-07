@@ -1,0 +1,83 @@
+# Testing Sandbox Gateway
+#
+# Isolated environment for testing MCP integrations. Uses in-process
+# channel backends and stdio mocks. Safe to run in CI with no external
+# dependencies.
+#
+# See: docs/architectures.md #9
+
+[gateway]
+name = "test-sandbox"
+version = "1.0.0"
+separator = "/"
+instructions = "Testing sandbox. All backends are mocked or sandboxed."
+
+[gateway.listen]
+host = "127.0.0.1"
+port = 0  # OS-assigned port for test isolation
+
+# --- Backends ---
+
+# Mock filesystem with read-only access to test fixtures
+[[backends]]
+name = "fs"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "--read-only", "./test-fixtures"]
+
+[backends.timeout]
+seconds = 5
+
+# Mock database -- read-only SQLite for deterministic test data
+[[backends]]
+name = "db"
+transport = "stdio"
+command = "/usr/local/bin/db-mcp-server"
+args = ["--read-only", "--connection-string", "sqlite:./test-fixtures/test.db"]
+expose_tools = ["query"]
+
+[backends.timeout]
+seconds = 5
+
+[backends.concurrency]
+max_concurrent = 1
+
+# Echo server for integration testing -- returns inputs as outputs
+[[backends]]
+name = "echo"
+transport = "stdio"
+command = "/usr/local/bin/echo-mcp-server"
+
+[backends.timeout]
+seconds = 2
+
+[backends.retry]
+max_retries = 0
+
+# Slow/flaky backend for resilience testing
+[[backends]]
+name = "flaky"
+transport = "http"
+url = "http://localhost:9999"
+
+[backends.timeout]
+seconds = 2
+
+[backends.retry]
+max_retries = 3
+initial_backoff_ms = 50
+max_backoff_ms = 500
+
+[backends.circuit_breaker]
+failure_rate_threshold = 0.5
+minimum_calls = 3
+wait_duration_seconds = 5
+
+# --- Observability ---
+
+[observability]
+audit = true
+log_level = "debug"
+
+[security]
+max_argument_size = 1048576

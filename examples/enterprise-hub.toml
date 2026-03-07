@@ -1,0 +1,147 @@
+# Enterprise Tool Consolidation Hub
+#
+# Central IT-managed gateway for all developer MCP tooling.
+# Replaces per-developer mcp.json configs with a single managed endpoint.
+# JWT auth via corporate IdP, RBAC per team, full audit trail.
+#
+# See: docs/architectures.md #1
+
+[gateway]
+name = "enterprise-hub"
+version = "1.0.0"
+separator = "/"
+instructions = "Enterprise MCP gateway. Tools are organized by namespace. Contact platform-team@corp.com for access."
+
+[gateway.listen]
+host = "0.0.0.0"
+port = 8080
+
+# JWT auth via corporate Okta
+[auth]
+type = "jwt"
+issuer = "https://corp.okta.com"
+audience = "mcp-gateway"
+jwks_uri = "https://corp.okta.com/oauth2/default/v1/keys"
+
+# Role definitions
+[[auth.roles]]
+name = "developer"
+allow_tools = [
+    "github/search_repositories",
+    "github/get_file_contents",
+    "github/list_commits",
+    "jira/search_issues",
+    "jira/get_issue",
+    "docs/search",
+    "docs/get_page",
+]
+
+[[auth.roles]]
+name = "senior-dev"
+allow_tools = [
+    "github/*",
+    "jira/*",
+    "docs/*",
+    "db/query",           # read-only DB access
+]
+
+[[auth.roles]]
+name = "admin"
+# Empty = all tools allowed
+
+[auth.role_mapping]
+claim = "scope"
+mapping = { "mcp:dev" = "developer", "mcp:senior" = "senior-dev", "mcp:admin" = "admin" }
+
+# --- Backends ---
+
+[[backends]]
+name = "github"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+hide_tools = ["delete_repository", "delete_branch"]  # too dangerous
+
+[backends.env]
+GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}"
+
+[backends.timeout]
+seconds = 60
+
+[backends.rate_limit]
+requests = 30
+period_seconds = 1
+
+[backends.circuit_breaker]
+failure_rate_threshold = 0.5
+minimum_calls = 10
+wait_duration_seconds = 30
+
+[[backends]]
+name = "jira"
+transport = "http"
+url = "http://jira-mcp.internal:8080"
+hide_tools = ["delete_issue"]
+
+[backends.timeout]
+seconds = 30
+
+[backends.rate_limit]
+requests = 20
+period_seconds = 1
+
+[backends.cache]
+resource_ttl_seconds = 120
+tool_ttl_seconds = 30
+max_entries = 500
+
+[[backends]]
+name = "docs"
+transport = "http"
+url = "http://confluence-mcp.internal:8080"
+
+[backends.timeout]
+seconds = 30
+
+[backends.cache]
+resource_ttl_seconds = 300
+tool_ttl_seconds = 60
+max_entries = 1000
+
+[[backends]]
+name = "db"
+transport = "stdio"
+command = "/usr/local/bin/db-mcp-server"
+args = ["--read-only", "--connection-string", "${DB_CONNECTION_STRING}"]
+expose_tools = ["query"]  # only expose read-only query tool
+
+[backends.timeout]
+seconds = 10
+
+[backends.concurrency]
+max_concurrent = 5
+
+[backends.rate_limit]
+requests = 10
+period_seconds = 1
+
+# --- Observability ---
+
+[performance]
+coalesce_requests = true
+
+[security]
+max_argument_size = 1048576  # 1MB
+
+[observability]
+audit = true
+log_level = "info"
+json_logs = true
+
+[observability.metrics]
+enabled = true
+
+[observability.tracing]
+enabled = true
+endpoint = "http://jaeger.internal:4317"
+service_name = "mcp-gateway"

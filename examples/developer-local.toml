@@ -1,0 +1,52 @@
+# Developer Local Gateway
+#
+# Lightweight config for individual developers. Consolidates personal
+# MCP servers behind a single endpoint. No auth needed for local use.
+#
+# Usage: mcp-gateway --config examples/developer-local.toml
+#
+# See: docs/architectures.md #3
+
+[gateway]
+name = "dev-local"
+version = "1.0.0"
+separator = "/"
+
+[gateway.listen]
+host = "127.0.0.1"
+port = 3001
+
+# --- Backends ---
+
+[[backends]]
+name = "github"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+
+[backends.env]
+GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}"
+
+[[backends]]
+name = "filesystem"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "${HOME}/projects"]
+
+[[backends]]
+name = "postgres"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-postgres"]
+
+[backends.env]
+POSTGRES_CONNECTION_STRING = "${DATABASE_URL}"
+
+[backends.timeout]
+seconds = 15
+
+[[backends]]
+name = "memory"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-memory"]
