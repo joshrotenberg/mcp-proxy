@@ -36,6 +36,7 @@ pub mod coalesce;
 pub mod config;
 pub mod filter;
 pub mod metrics;
+pub mod mirror;
 pub mod outlier;
 pub mod rbac;
 pub mod reload;

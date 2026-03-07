@@ -349,7 +349,34 @@ fn build_middleware_stack(
         BoxCloneService::new(proxy);
     let mut cache_handle: Option<cache::CacheHandle> = None;
 
-    // Response caching (innermost)
+    // Traffic mirroring (innermost -- sends cloned requests through the proxy)
+    let mirror_mappings: std::collections::HashMap<String, (String, u32)> = config
+        .backends
+        .iter()
+        .filter_map(|b| {
+            b.mirror_of
+                .as_ref()
+                .map(|source| (source.clone(), (b.name.clone(), b.mirror_percent)))
+        })
+        .collect();
+
+    if !mirror_mappings.is_empty() {
+        for (source, (mirror, pct)) in &mirror_mappings {
+            tracing::info!(
+                source = %source,
+                mirror = %mirror,
+                percent = pct,
+                "Enabling traffic mirroring"
+            );
+        }
+        service = BoxCloneService::new(crate::mirror::MirrorService::new(
+            service,
+            mirror_mappings,
+            &config.gateway.separator,
+        ));
+    }
+
+    // Response caching
     let cache_configs: Vec<_> = config
         .backends
         .iter()

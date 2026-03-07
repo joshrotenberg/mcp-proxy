@@ -70,6 +70,12 @@ pub struct BackendConfig {
     pub retry: Option<RetryConfig>,
     /// Per-backend outlier detection (passive health checks)
     pub outlier_detection: Option<OutlierDetectionConfig>,
+    /// Mirror traffic from another backend (fire-and-forget).
+    /// Set to the name of the source backend to mirror.
+    pub mirror_of: Option<String>,
+    /// Percentage of requests to mirror (1-100, default: 100).
+    #[serde(default = "default_mirror_percent")]
+    pub mirror_percent: u32,
     /// Per-backend cache policy
     pub cache: Option<BackendCacheConfig>,
     /// Static bearer token for authenticating to this backend (HTTP only).
@@ -363,6 +369,10 @@ fn default_max_ejection_percent() -> u32 {
     50
 }
 
+fn default_mirror_percent() -> u32 {
+    100
+}
+
 fn default_max_cache_entries() -> u64 {
     1000
 }
@@ -575,6 +585,27 @@ impl GatewayConfig {
                 );
             }
         }
+
+        // Validate mirror_of references
+        let backend_names: HashSet<&str> = self.backends.iter().map(|b| b.name.as_str()).collect();
+        for backend in &self.backends {
+            if let Some(ref source) = backend.mirror_of {
+                if !backend_names.contains(source.as_str()) {
+                    anyhow::bail!(
+                        "backend '{}': mirror_of references unknown backend '{}'",
+                        backend.name,
+                        source
+                    );
+                }
+                if source == &backend.name {
+                    anyhow::bail!(
+                        "backend '{}': mirror_of cannot reference itself",
+                        backend.name
+                    );
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -1179,6 +1210,97 @@ mod tests {
         assert_eq!(od.interval_seconds, 10);
         assert_eq!(od.base_ejection_seconds, 30);
         assert_eq!(od.max_ejection_percent, 50);
+    }
+
+    #[test]
+    fn test_parse_mirror_config() {
+        let toml = r#"
+        [gateway]
+        name = "mirror-gw"
+        [gateway.listen]
+
+        [[backends]]
+        name = "api"
+        transport = "http"
+        url = "http://localhost:8080"
+
+        [[backends]]
+        name = "api-v2"
+        transport = "http"
+        url = "http://localhost:8081"
+        mirror_of = "api"
+        mirror_percent = 10
+        "#;
+
+        let config = GatewayConfig::parse(toml).unwrap();
+        assert!(config.backends[0].mirror_of.is_none());
+        assert_eq!(config.backends[1].mirror_of.as_deref(), Some("api"));
+        assert_eq!(config.backends[1].mirror_percent, 10);
+    }
+
+    #[test]
+    fn test_mirror_percent_defaults_to_100() {
+        let toml = r#"
+        [gateway]
+        name = "mirror-gw"
+        [gateway.listen]
+
+        [[backends]]
+        name = "api"
+        transport = "http"
+        url = "http://localhost:8080"
+
+        [[backends]]
+        name = "api-v2"
+        transport = "http"
+        url = "http://localhost:8081"
+        mirror_of = "api"
+        "#;
+
+        let config = GatewayConfig::parse(toml).unwrap();
+        assert_eq!(config.backends[1].mirror_percent, 100);
+    }
+
+    #[test]
+    fn test_reject_mirror_unknown_backend() {
+        let toml = r#"
+        [gateway]
+        name = "bad"
+        [gateway.listen]
+
+        [[backends]]
+        name = "api-v2"
+        transport = "http"
+        url = "http://localhost:8081"
+        mirror_of = "nonexistent"
+        "#;
+
+        let err = GatewayConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("mirror_of references unknown backend"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_mirror_self() {
+        let toml = r#"
+        [gateway]
+        name = "bad"
+        [gateway.listen]
+
+        [[backends]]
+        name = "api"
+        transport = "http"
+        url = "http://localhost:8080"
+        mirror_of = "api"
+        "#;
+
+        let err = GatewayConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("mirror_of cannot reference itself"),
+            "unexpected error: {err}"
+        );
     }
 
     // ========================================================================
