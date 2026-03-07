@@ -4,13 +4,16 @@
 //! since the proxy currently supports add-only dynamic updates.
 
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::process::Command;
-use tower_mcp::proxy::McpProxy;
+use tower::util::BoxCloneService;
+use tower_mcp::proxy::{BackendService, McpProxy};
+use tower_mcp::{RouterRequest, RouterResponse};
 
 use crate::config::{BackendConfig, GatewayConfig, TransportType};
 
@@ -133,8 +136,13 @@ async fn watch_loop(config_path: PathBuf, proxy: McpProxy) {
     }
 }
 
-/// Connect and add a single backend to the proxy.
+/// Connect and add a single backend to the proxy, including per-backend middleware.
 async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Result<()> {
+    let has_middleware = backend.timeout.is_some()
+        || backend.circuit_breaker.is_some()
+        || backend.rate_limit.is_some()
+        || backend.concurrency.is_some();
+
     match backend.transport {
         TransportType::Stdio => {
             let command = backend
@@ -151,10 +159,19 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
 
             let transport =
                 tower_mcp::client::StdioClientTransport::spawn_command(&mut cmd).await?;
-            proxy
-                .add_backend(&backend.name, transport)
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            if has_middleware {
+                let layer = build_backend_layer(backend);
+                proxy
+                    .add_backend_with_layer(&backend.name, transport, layer)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            } else {
+                proxy
+                    .add_backend(&backend.name, transport)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            }
         }
         TransportType::Http => {
             let url = backend
@@ -162,25 +179,120 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("http backend requires 'url'"))?;
             let transport = tower_mcp::client::HttpClientTransport::new(url);
-            proxy
-                .add_backend(&backend.name, transport)
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            if has_middleware {
+                let layer = build_backend_layer(backend);
+                proxy
+                    .add_backend_with_layer(&backend.name, transport, layer)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            } else {
+                proxy
+                    .add_backend(&backend.name, transport)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            }
         }
     }
 
-    // Log warnings for per-backend middleware that won't be applied
-    if backend.timeout.is_some()
-        || backend.circuit_breaker.is_some()
-        || backend.rate_limit.is_some()
-        || backend.concurrency.is_some()
-    {
-        tracing::warn!(
+    if has_middleware {
+        tracing::info!(
             backend = %backend.name,
-            "Per-backend middleware (timeout, circuit_breaker, rate_limit, concurrency) \
-             is not applied to hot-reloaded backends"
+            timeout = backend.timeout.is_some(),
+            circuit_breaker = backend.circuit_breaker.is_some(),
+            rate_limit = backend.rate_limit.is_some(),
+            concurrency = backend.concurrency.is_some(),
+            "Per-backend middleware applied to hot-reloaded backend"
         );
     }
 
     Ok(())
+}
+
+/// A type-erasing layer that builds the full per-backend middleware stack.
+///
+/// Uses `BoxCloneService` to erase the composed middleware types, allowing
+/// arbitrary combinations of optional layers.
+struct BackendMiddlewareLayer {
+    build_fn: Box<
+        dyn Fn(BackendService) -> BoxCloneService<RouterRequest, RouterResponse, Infallible> + Send,
+    >,
+}
+
+impl tower::Layer<BackendService> for BackendMiddlewareLayer {
+    type Service = BoxCloneService<RouterRequest, RouterResponse, Infallible>;
+
+    fn layer(&self, inner: BackendService) -> Self::Service {
+        (self.build_fn)(inner)
+    }
+}
+
+/// Build a type-erased layer for per-backend middleware from config.
+///
+/// Layers are applied inner to outer: concurrency -> rate limit -> timeout -> circuit breaker.
+fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
+    let concurrency = backend.concurrency.as_ref().map(|cc| cc.max_concurrent);
+    let rate_limit = backend
+        .rate_limit
+        .as_ref()
+        .map(|rl| (rl.requests, rl.period_seconds));
+    let timeout_secs = backend.timeout.as_ref().map(|t| t.seconds);
+    let circuit_breaker = backend.circuit_breaker.as_ref().map(|cb| {
+        (
+            cb.failure_rate_threshold,
+            cb.minimum_calls,
+            cb.wait_duration_seconds,
+            cb.permitted_calls_in_half_open,
+        )
+    });
+    let name = backend.name.clone();
+
+    BackendMiddlewareLayer {
+        build_fn: Box::new(move |inner: BackendService| {
+            let mut svc: BoxCloneService<RouterRequest, RouterResponse, Infallible> =
+                BoxCloneService::new(inner);
+
+            // Concurrency limit (innermost)
+            if let Some(max) = concurrency {
+                let limited =
+                    tower::Layer::layer(&tower::limit::ConcurrencyLimitLayer::new(max), svc);
+                svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
+            }
+
+            // Rate limit
+            if let Some((requests, period_seconds)) = rate_limit {
+                let layer = tower_resilience::ratelimiter::RateLimiterLayer::builder()
+                    .limit_for_period(requests)
+                    .refresh_period(Duration::from_secs(period_seconds))
+                    .name(format!("{}-ratelimit", name))
+                    .build();
+                let limited = tower::Layer::layer(&layer, svc);
+                svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
+            }
+
+            // Timeout
+            if let Some(seconds) = timeout_secs {
+                let limited = tower::Layer::layer(
+                    &tower::timeout::TimeoutLayer::new(Duration::from_secs(seconds)),
+                    svc,
+                );
+                svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
+            }
+
+            // Circuit breaker (outermost)
+            if let Some((failure_rate, min_calls, wait_secs, half_open)) = circuit_breaker {
+                let layer = tower_resilience::circuitbreaker::CircuitBreakerLayer::builder()
+                    .failure_rate_threshold(failure_rate)
+                    .minimum_number_of_calls(min_calls)
+                    .wait_duration_in_open(Duration::from_secs(wait_secs))
+                    .permitted_calls_in_half_open(half_open)
+                    .name(format!("{}-cb", name))
+                    .build();
+                let limited = tower::Layer::layer(&layer, svc);
+                svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
+            }
+
+            svc
+        }),
+    }
 }
