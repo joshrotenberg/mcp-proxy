@@ -35,6 +35,7 @@ pub mod cache;
 pub mod coalesce;
 pub mod config;
 pub mod filter;
+pub mod inject;
 pub mod metrics;
 pub mod mirror;
 pub mod outlier;

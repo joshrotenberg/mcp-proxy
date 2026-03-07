@@ -90,6 +90,13 @@ pub struct BackendConfig {
     /// Tool aliases: rename tools exposed by this backend
     #[serde(default)]
     pub aliases: Vec<AliasConfig>,
+    /// Default arguments injected into all tool calls for this backend.
+    /// Merged into tool call arguments (does not overwrite existing keys).
+    #[serde(default)]
+    pub default_args: serde_json::Map<String, serde_json::Value>,
+    /// Per-tool argument injection rules.
+    #[serde(default)]
+    pub inject_args: Vec<InjectArgsConfig>,
     /// Capability filtering: only expose these tools (allowlist)
     #[serde(default)]
     pub expose_tools: Vec<String>,
@@ -192,6 +199,19 @@ pub struct OutlierDetectionConfig {
     /// Maximum percentage of backends that can be ejected (default: 50)
     #[serde(default = "default_max_ejection_percent")]
     pub max_ejection_percent: u32,
+}
+
+/// Per-tool argument injection configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct InjectArgsConfig {
+    /// Tool name (backend-local, without namespace prefix).
+    pub tool: String,
+    /// Arguments to inject. Merged into the tool call arguments.
+    /// Does not overwrite existing keys unless `overwrite` is true.
+    pub args: serde_json::Map<String, serde_json::Value>,
+    /// Whether injected args should overwrite existing values (default: false).
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 /// Request hedging configuration.
@@ -1428,6 +1448,55 @@ mod tests {
         assert!(filter.tool_filter.allows("read"));
         assert!(!filter.tool_filter.allows("delete"));
         assert!(!filter.tool_filter.allows("write"));
+    }
+
+    #[test]
+    fn test_parse_inject_args() {
+        let toml = r#"
+        [gateway]
+        name = "inject-gw"
+        [gateway.listen]
+
+        [[backends]]
+        name = "db"
+        transport = "http"
+        url = "http://localhost:8080"
+
+        [backends.default_args]
+        timeout = 30
+
+        [[backends.inject_args]]
+        tool = "query"
+        args = { read_only = true, max_rows = 1000 }
+
+        [[backends.inject_args]]
+        tool = "dangerous_op"
+        args = { dry_run = true }
+        overwrite = true
+        "#;
+
+        let config = GatewayConfig::parse(toml).unwrap();
+        let backend = &config.backends[0];
+
+        assert_eq!(backend.default_args.len(), 1);
+        assert_eq!(backend.default_args["timeout"], 30);
+
+        assert_eq!(backend.inject_args.len(), 2);
+        assert_eq!(backend.inject_args[0].tool, "query");
+        assert_eq!(backend.inject_args[0].args["read_only"], true);
+        assert_eq!(backend.inject_args[0].args["max_rows"], 1000);
+        assert!(!backend.inject_args[0].overwrite);
+
+        assert_eq!(backend.inject_args[1].tool, "dangerous_op");
+        assert_eq!(backend.inject_args[1].args["dry_run"], true);
+        assert!(backend.inject_args[1].overwrite);
+    }
+
+    #[test]
+    fn test_parse_inject_args_defaults_to_empty() {
+        let config = GatewayConfig::parse(minimal_config()).unwrap();
+        assert!(config.backends[0].default_args.is_empty());
+        assert!(config.backends[0].inject_args.is_empty());
     }
 
     #[test]
