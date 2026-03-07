@@ -191,6 +191,18 @@ async fn build_proxy(config: &GatewayConfig) -> Result<McpProxy> {
         builder = builder.instructions(instructions);
     }
 
+    // Create shared outlier detector if any backend has outlier_detection configured.
+    // Use the max of all max_ejection_percent values.
+    let outlier_detector = {
+        let max_pct = config
+            .backends
+            .iter()
+            .filter_map(|b| b.outlier_detection.as_ref())
+            .map(|od| od.max_ejection_percent)
+            .max();
+        max_pct.map(crate::outlier::OutlierDetector::new)
+    };
+
     for backend in &config.backends {
         tracing::info!(name = %backend.name, transport = ?backend.transport, "Adding backend");
 
@@ -276,7 +288,7 @@ async fn build_proxy(config: &GatewayConfig) -> Result<McpProxy> {
                 builder.backend_layer(TimeoutLayer::new(Duration::from_secs(timeout.seconds)));
         }
 
-        // Circuit breaker (outermost)
+        // Circuit breaker
         if let Some(cb) = &backend.circuit_breaker {
             tracing::info!(
                 backend = %backend.name,
@@ -291,6 +303,25 @@ async fn build_proxy(config: &GatewayConfig) -> Result<McpProxy> {
                 .permitted_calls_in_half_open(cb.permitted_calls_in_half_open)
                 .name(format!("{}-cb", backend.name))
                 .build();
+            builder = builder.backend_layer(layer);
+        }
+
+        // Outlier detection (outermost -- observes errors after all other middleware)
+        if let Some(od) = &backend.outlier_detection
+            && let Some(ref detector) = outlier_detector
+        {
+            tracing::info!(
+                backend = %backend.name,
+                consecutive_errors = od.consecutive_errors,
+                base_ejection_seconds = od.base_ejection_seconds,
+                max_ejection_percent = od.max_ejection_percent,
+                "Applying outlier detection"
+            );
+            let layer = crate::outlier::OutlierDetectionLayer::new(
+                backend.name.clone(),
+                od.clone(),
+                detector.clone(),
+            );
             builder = builder.backend_layer(layer);
         }
     }

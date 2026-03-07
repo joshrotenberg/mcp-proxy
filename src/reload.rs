@@ -142,7 +142,8 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
         || backend.circuit_breaker.is_some()
         || backend.rate_limit.is_some()
         || backend.concurrency.is_some()
-        || backend.retry.is_some();
+        || backend.retry.is_some()
+        || backend.outlier_detection.is_some();
 
     match backend.transport {
         TransportType::Stdio => {
@@ -233,7 +234,8 @@ impl tower::Layer<BackendService> for BackendMiddlewareLayer {
 
 /// Build a type-erased layer for per-backend middleware from config.
 ///
-/// Layers are applied inner to outer: concurrency -> rate limit -> timeout -> circuit breaker.
+/// Layers are applied inner to outer:
+/// retry -> concurrency -> rate limit -> timeout -> circuit breaker -> outlier detection.
 fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
     let retry_config = backend.retry.clone();
     let concurrency = backend.concurrency.as_ref().map(|cc| cc.max_concurrent);
@@ -250,6 +252,7 @@ fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
             cb.permitted_calls_in_half_open,
         )
     });
+    let outlier = backend.outlier_detection.clone();
     let name = backend.name.clone();
 
     BackendMiddlewareLayer {
@@ -291,7 +294,7 @@ fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
                 svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
             }
 
-            // Circuit breaker (outermost)
+            // Circuit breaker
             if let Some((failure_rate, min_calls, wait_secs, half_open)) = circuit_breaker {
                 let layer = tower_resilience::circuitbreaker::CircuitBreakerLayer::builder()
                     .failure_rate_threshold(failure_rate)
@@ -302,6 +305,20 @@ fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
                     .build();
                 let limited = tower::Layer::layer(&layer, svc);
                 svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
+            }
+
+            // Outlier detection (outermost)
+            if let Some(ref od_config) = outlier {
+                // Hot-reloaded backends get their own detector (single-backend scope).
+                // The main gateway build path uses a shared detector across all backends.
+                let detector = crate::outlier::OutlierDetector::new(od_config.max_ejection_percent);
+                let layer = crate::outlier::OutlierDetectionLayer::new(
+                    name.clone(),
+                    od_config.clone(),
+                    detector,
+                );
+                let od_svc = tower::Layer::layer(&layer, svc);
+                svc = BoxCloneService::new(od_svc);
             }
 
             svc
