@@ -1,0 +1,140 @@
+# Compliance & Financial Services Gateway
+#
+# Strict controls for regulated environments. Every tool call is audited,
+# argument sizes are limited, and only explicitly approved tools are exposed.
+# Rate limits and circuit breakers protect downstream systems.
+#
+# See: docs/architectures.md #2
+
+[gateway]
+name = "compliance-gateway"
+version = "1.0.0"
+separator = "/"
+instructions = "Compliance-controlled gateway. All actions are audited. Contact compliance@corp.com for tool access requests."
+
+[gateway.listen]
+host = "0.0.0.0"
+port = 8080
+
+# JWT auth via internal IdP
+[auth]
+type = "jwt"
+issuer = "https://auth.internal.corp.com"
+audience = "mcp-compliance"
+jwks_uri = "https://auth.internal.corp.com/.well-known/jwks.json"
+
+[[auth.roles]]
+name = "analyst"
+allow_tools = [
+    "market-data/get_quote",
+    "market-data/get_history",
+    "docs/search",
+    "docs/get_page",
+]
+
+[[auth.roles]]
+name = "trader"
+allow_tools = [
+    "market-data/*",
+    "orders/create_order",
+    "orders/cancel_order",
+    "orders/get_status",
+    "risk/check_exposure",
+]
+
+[[auth.roles]]
+name = "compliance-officer"
+# Empty = all tools allowed
+
+[auth.role_mapping]
+claim = "roles"
+mapping = { "mcp:analyst" = "analyst", "mcp:trader" = "trader", "mcp:compliance" = "compliance-officer" }
+
+# --- Backends ---
+
+[[backends]]
+name = "market-data"
+transport = "http"
+url = "http://market-data-mcp.internal:8080"
+expose_tools = ["get_quote", "get_history", "get_instrument"]
+
+[backends.timeout]
+seconds = 5
+
+[backends.rate_limit]
+requests = 100
+period_seconds = 1
+
+[backends.circuit_breaker]
+failure_rate_threshold = 0.3
+minimum_calls = 20
+wait_duration_seconds = 60
+
+[backends.cache]
+resource_ttl_seconds = 10
+tool_ttl_seconds = 5
+max_entries = 5000
+
+[[backends]]
+name = "orders"
+transport = "http"
+url = "http://order-mcp.internal:8080"
+expose_tools = ["create_order", "cancel_order", "get_status"]
+
+[backends.timeout]
+seconds = 10
+
+[backends.rate_limit]
+requests = 5
+period_seconds = 1
+
+[backends.retry]
+max_retries = 2
+initial_backoff_ms = 200
+max_backoff_ms = 2000
+
+[backends.concurrency]
+max_concurrent = 3
+
+[[backends]]
+name = "risk"
+transport = "http"
+url = "http://risk-mcp.internal:8080"
+expose_tools = ["check_exposure", "get_limits"]
+
+[backends.timeout]
+seconds = 15
+
+[[backends]]
+name = "docs"
+transport = "http"
+url = "http://docs-mcp.internal:8080"
+
+[backends.timeout]
+seconds = 30
+
+[backends.cache]
+resource_ttl_seconds = 600
+tool_ttl_seconds = 120
+max_entries = 2000
+
+# --- Security & Observability ---
+
+[security]
+max_argument_size = 65536  # 64KB -- strict limit
+
+[performance]
+coalesce_requests = true
+
+[observability]
+audit = true
+log_level = "info"
+json_logs = true
+
+[observability.metrics]
+enabled = true
+
+[observability.tracing]
+enabled = true
+endpoint = "http://otel-collector.internal:4317"
+service_name = "mcp-compliance-gateway"

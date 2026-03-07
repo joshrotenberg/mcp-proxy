@@ -1,0 +1,115 @@
+# Cost Optimization Gateway
+#
+# Controls AI tool usage costs by rate limiting expensive backends,
+# caching aggressively, and limiting concurrency. Useful when backends
+# call paid APIs (LLMs, search engines, cloud services).
+#
+# See: docs/architectures.md #11
+
+[gateway]
+name = "cost-optimizer"
+version = "1.0.0"
+separator = "/"
+instructions = "Cost-optimized gateway. Expensive tool calls are rate-limited and cached."
+
+[gateway.listen]
+host = "0.0.0.0"
+port = 8080
+
+# --- Backends ---
+
+# Free/cheap backend -- minimal restrictions
+[[backends]]
+name = "local-docs"
+transport = "stdio"
+command = "/usr/local/bin/docs-mcp-server"
+args = ["--index", "/var/data/docs"]
+
+[backends.cache]
+resource_ttl_seconds = 3600  # 1 hour
+tool_ttl_seconds = 600       # 10 minutes
+max_entries = 10000
+
+# Moderate cost -- search API with per-query pricing
+[[backends]]
+name = "search"
+transport = "http"
+url = "http://search-mcp.internal:8080"
+
+[backends.rate_limit]
+requests = 10
+period_seconds = 60  # 10 req/min
+
+[backends.cache]
+resource_ttl_seconds = 300
+tool_ttl_seconds = 120
+max_entries = 5000
+
+[backends.timeout]
+seconds = 15
+
+[backends.circuit_breaker]
+failure_rate_threshold = 0.5
+minimum_calls = 5
+wait_duration_seconds = 120
+
+# High cost -- LLM-backed summarization/analysis
+[[backends]]
+name = "ai-analysis"
+transport = "http"
+url = "http://analysis-mcp.internal:8080"
+expose_tools = ["summarize", "classify", "extract_entities"]
+
+[backends.rate_limit]
+requests = 5
+period_seconds = 60  # 5 req/min -- expensive calls
+
+[backends.concurrency]
+max_concurrent = 2
+
+[backends.cache]
+resource_ttl_seconds = 0
+tool_ttl_seconds = 300  # Cache analysis results 5 min
+max_entries = 1000
+
+[backends.timeout]
+seconds = 120  # LLM calls can be slow
+
+[backends.retry]
+max_retries = 1
+initial_backoff_ms = 1000
+max_backoff_ms = 5000
+
+# Very high cost -- cloud infrastructure operations
+[[backends]]
+name = "cloud"
+transport = "http"
+url = "http://cloud-mcp.internal:8080"
+expose_tools = ["list_instances", "get_costs", "get_metrics"]
+hide_tools = ["create_instance", "delete_instance", "resize_instance"]
+
+[backends.rate_limit]
+requests = 2
+period_seconds = 60  # 2 req/min
+
+[backends.concurrency]
+max_concurrent = 1
+
+[backends.timeout]
+seconds = 30
+
+# --- Observability ---
+
+[performance]
+coalesce_requests = true
+
+[security]
+max_argument_size = 262144  # 256KB
+
+[observability]
+audit = true
+log_level = "info"
+json_logs = true
+
+[observability.metrics]
+enabled = true
