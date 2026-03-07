@@ -14,6 +14,7 @@ use tower_mcp::client::StdioClientTransport;
 use tower_mcp::proxy::McpProxy;
 use tower_mcp::{RouterRequest, RouterResponse};
 
+use crate::admin::BackendMeta;
 use crate::alias;
 use crate::cache;
 use crate::coalesce;
@@ -63,12 +64,27 @@ impl Gateway {
         // Inbound authentication (axum-level middleware)
         let router = apply_auth(&config, router).await?;
 
+        // Collect backend metadata for the health checker
+        let backend_meta: std::collections::HashMap<String, BackendMeta> = config
+            .backends
+            .iter()
+            .map(|b| {
+                (
+                    b.name.clone(),
+                    BackendMeta {
+                        transport: format!("{:?}", b.transport).to_lowercase(),
+                    },
+                )
+            })
+            .collect();
+
         // Admin API
         let admin_state = crate::admin::spawn_health_checker(
             proxy_for_admin,
             config.gateway.name.clone(),
             config.gateway.version.clone(),
             config.backends.len(),
+            backend_meta,
         );
         let router = router.nest(
             "/admin",

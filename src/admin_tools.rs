@@ -26,6 +26,13 @@ struct AdminToolState {
 struct BackendInfo {
     namespace: String,
     healthy: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_checked_at: Option<String>,
+    consecutive_failures: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transport: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -81,6 +88,10 @@ fn build_admin_router(state: AdminToolState) -> McpRouter {
                     .map(|b| BackendInfo {
                         namespace: b.namespace.clone(),
                         healthy: b.healthy,
+                        last_checked_at: b.last_checked_at.map(|t| t.to_rfc3339()),
+                        consecutive_failures: b.consecutive_failures,
+                        error: b.error.clone(),
+                        transport: b.transport.clone(),
                     })
                     .collect();
 

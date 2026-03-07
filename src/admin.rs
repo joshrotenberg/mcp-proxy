@@ -2,6 +2,7 @@
 //!
 //! Provides endpoints for checking backend health and gateway status.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,6 +10,7 @@ use axum::Router;
 use axum::extract::Extension;
 use axum::response::{IntoResponse, Json};
 use axum::routing::get;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::RwLock;
 use tower_mcp::SessionHandle;
@@ -49,6 +51,10 @@ impl AdminState {
 pub struct BackendStatus {
     pub namespace: String,
     pub healthy: bool,
+    pub last_checked_at: Option<DateTime<Utc>>,
+    pub consecutive_failures: u32,
+    pub error: Option<String>,
+    pub transport: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -65,6 +71,12 @@ struct GatewayInfo {
     active_sessions: usize,
 }
 
+/// Per-backend metadata passed in from config at startup.
+#[derive(Clone)]
+pub struct BackendMeta {
+    pub transport: String,
+}
+
 /// Spawn a background task that periodically health-checks backends.
 /// Returns the AdminState that admin endpoints read from.
 pub fn spawn_health_checker(
@@ -72,6 +84,7 @@ pub fn spawn_health_checker(
     gateway_name: String,
     gateway_version: String,
     backend_count: usize,
+    backend_meta: HashMap<String, BackendMeta>,
 ) -> AdminState {
     let health: Arc<RwLock<Vec<BackendStatus>>> = Arc::new(RwLock::new(Vec::new()));
     let health_writer = Arc::clone(&health);
@@ -85,14 +98,36 @@ pub fn spawn_health_checker(
             .enable_all()
             .build()
             .expect("admin health check runtime");
+
+        // Track consecutive failure counts across check cycles.
+        let mut failure_counts: HashMap<String, u32> = HashMap::new();
+
         rt.block_on(async move {
             loop {
                 let results = proxy.health_check().await;
+                let now = Utc::now();
                 let statuses: Vec<BackendStatus> = results
                     .into_iter()
-                    .map(|h| BackendStatus {
-                        namespace: h.namespace,
-                        healthy: h.healthy,
+                    .map(|h| {
+                        let count = failure_counts.entry(h.namespace.clone()).or_insert(0);
+                        if h.healthy {
+                            *count = 0;
+                        } else {
+                            *count += 1;
+                        }
+                        let meta = backend_meta.get(&h.namespace);
+                        BackendStatus {
+                            namespace: h.namespace,
+                            healthy: h.healthy,
+                            last_checked_at: Some(now),
+                            consecutive_failures: *count,
+                            error: if h.healthy {
+                                None
+                            } else {
+                                Some("ping failed".to_string())
+                            },
+                            transport: meta.map(|m| m.transport.clone()),
+                        }
                     })
                     .collect();
                 *health_writer.write().await = statuses;
@@ -127,6 +162,26 @@ async fn handle_backends(
     })
 }
 
+async fn handle_health(Extension(state): Extension<AdminState>) -> Json<HealthResponse> {
+    let backends = state.health.read().await;
+    let all_healthy = backends.iter().all(|b| b.healthy);
+    let unhealthy: Vec<String> = backends
+        .iter()
+        .filter(|b| !b.healthy)
+        .map(|b| b.namespace.clone())
+        .collect();
+    Json(HealthResponse {
+        status: if all_healthy { "healthy" } else { "degraded" }.to_string(),
+        unhealthy_backends: unhealthy,
+    })
+}
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: String,
+    unhealthy_backends: Vec<String>,
+}
+
 async fn handle_metrics(
     Extension(handle): Extension<Option<metrics_exporter_prometheus::PrometheusHandle>>,
 ) -> impl IntoResponse {
@@ -144,6 +199,7 @@ pub fn admin_router(
 ) -> Router {
     Router::new()
         .route("/backends", get(handle_backends))
+        .route("/health", get(handle_health))
         .route("/metrics", get(handle_metrics))
         .layer(Extension(state))
         .layer(Extension(metrics_handle))
