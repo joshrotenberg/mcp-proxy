@@ -261,7 +261,7 @@ async fn test_proxy_with_cache_returns_cached_result() {
         tool_ttl_seconds: 60,
         max_entries: 100,
     };
-    let mut svc = CacheService::new(proxy, vec![("math/".to_string(), &cfg)]);
+    let (mut svc, _handle) = CacheService::new(proxy, vec![("math/".to_string(), &cfg)]);
 
     let req = tool_call("math/add", serde_json::json!({"a": 5, "b": 5}));
 

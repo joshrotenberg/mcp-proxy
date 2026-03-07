@@ -7,10 +7,12 @@ use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use moka::future::Cache;
+use serde::Serialize;
 use tower::Service;
 use tower_mcp::router::{RouterRequest, RouterResponse};
 use tower_mcp_types::protocol::McpRequest;
@@ -23,6 +25,79 @@ struct BackendCache {
     namespace: String,
     resource_cache: Option<Cache<String, RouterResponse>>,
     tool_cache: Option<Cache<String, RouterResponse>>,
+    stats: Arc<CacheStats>,
+}
+
+/// Atomic hit/miss counters for a backend cache.
+struct CacheStats {
+    hits: AtomicU64,
+    misses: AtomicU64,
+}
+
+impl CacheStats {
+    fn new() -> Self {
+        Self {
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+        }
+    }
+}
+
+/// Snapshot of cache statistics for a single backend.
+#[derive(Serialize, Clone)]
+pub struct CacheStatsSnapshot {
+    pub namespace: String,
+    pub hits: u64,
+    pub misses: u64,
+    pub hit_rate: f64,
+    pub entry_count: u64,
+}
+
+/// Shared handle for querying cache stats and clearing caches.
+#[derive(Clone)]
+pub struct CacheHandle {
+    caches: Arc<Vec<BackendCache>>,
+}
+
+impl CacheHandle {
+    /// Get a snapshot of cache statistics for all backends.
+    pub fn stats(&self) -> Vec<CacheStatsSnapshot> {
+        self.caches
+            .iter()
+            .map(|bc| {
+                let hits = bc.stats.hits.load(Ordering::Relaxed);
+                let misses = bc.stats.misses.load(Ordering::Relaxed);
+                let total = hits + misses;
+                let entry_count = bc.resource_cache.as_ref().map_or(0, |c| c.entry_count())
+                    + bc.tool_cache.as_ref().map_or(0, |c| c.entry_count());
+                CacheStatsSnapshot {
+                    namespace: bc.namespace.clone(),
+                    hits,
+                    misses,
+                    hit_rate: if total > 0 {
+                        hits as f64 / total as f64
+                    } else {
+                        0.0
+                    },
+                    entry_count,
+                }
+            })
+            .collect()
+    }
+
+    /// Clear all cache entries and reset stats.
+    pub fn clear(&self) {
+        for bc in self.caches.iter() {
+            if let Some(c) = &bc.resource_cache {
+                c.invalidate_all();
+            }
+            if let Some(c) = &bc.tool_cache {
+                c.invalidate_all();
+            }
+            bc.stats.hits.store(0, Ordering::Relaxed);
+            bc.stats.misses.store(0, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Tower service that caches resource reads and tool call results.
@@ -33,8 +108,9 @@ pub struct CacheService<S> {
 }
 
 impl<S> CacheService<S> {
-    pub fn new(inner: S, configs: Vec<(String, &BackendCacheConfig)>) -> Self {
-        let caches = configs
+    /// Create a new cache service and return it with a shareable handle.
+    pub fn new(inner: S, configs: Vec<(String, &BackendCacheConfig)>) -> (Self, CacheHandle) {
+        let caches: Vec<BackendCache> = configs
             .into_iter()
             .map(|(namespace, cfg)| {
                 let resource_cache = if cfg.resource_ttl_seconds > 0 {
@@ -61,27 +137,33 @@ impl<S> CacheService<S> {
                     namespace,
                     resource_cache,
                     tool_cache,
+                    stats: Arc::new(CacheStats::new()),
                 }
             })
             .collect();
-        Self {
-            inner,
-            caches: Arc::new(caches),
-        }
+        let caches = Arc::new(caches);
+        let handle = CacheHandle {
+            caches: Arc::clone(&caches),
+        };
+        (Self { inner, caches }, handle)
     }
 }
 
-/// Extract cache key and find the matching backend cache.
+/// Extract cache key and find the matching backend cache + stats.
 fn resolve_cache<'a>(
     caches: &'a [BackendCache],
     req: &McpRequest,
-) -> Option<(&'a Cache<String, RouterResponse>, String)> {
+) -> Option<(
+    &'a Cache<String, RouterResponse>,
+    String,
+    &'a Arc<CacheStats>,
+)> {
     match req {
         McpRequest::ReadResource(params) => {
             let key = format!("res:{}", params.uri);
             for bc in caches {
                 if params.uri.starts_with(&bc.namespace) {
-                    return bc.resource_cache.as_ref().map(|c| (c, key));
+                    return bc.resource_cache.as_ref().map(|c| (c, key, &bc.stats));
                 }
             }
             None
@@ -91,7 +173,7 @@ fn resolve_cache<'a>(
             let key = format!("tool:{}:{}", params.name, args);
             for bc in caches {
                 if params.name.starts_with(&bc.namespace) {
-                    return bc.tool_cache.as_ref().map(|c| (c, key));
+                    return bc.tool_cache.as_ref().map(|c| (c, key, &bc.stats));
                 }
             }
             None
@@ -119,19 +201,22 @@ where
     fn call(&mut self, req: RouterRequest) -> Self::Future {
         let caches = Arc::clone(&self.caches);
 
-        if let Some((cache, key)) = resolve_cache(&caches, &req.inner) {
+        if let Some((cache, key, stats)) = resolve_cache(&caches, &req.inner) {
             let cache = cache.clone();
+            let stats = Arc::clone(stats);
             let mut inner = self.inner.clone();
 
             return Box::pin(async move {
                 // Cache hit -- return with current request ID
                 if let Some(cached) = cache.get(&key).await {
+                    stats.hits.fetch_add(1, Ordering::Relaxed);
                     return Ok(RouterResponse {
                         id: req.id,
                         inner: cached.inner,
                     });
                 }
 
+                stats.misses.fetch_add(1, Ordering::Relaxed);
                 let result = inner.call(req).await;
 
                 // Only cache successful MCP responses
@@ -175,7 +260,7 @@ mod tests {
             tool_ttl_seconds: 60,
             max_entries: 100,
         };
-        let mut svc = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+        let (mut svc, _handle) = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
 
         let resp1 = call_service(&mut svc, tool_call("fs/read")).await;
         let resp2 = call_service(&mut svc, tool_call("fs/read")).await;
@@ -197,7 +282,7 @@ mod tests {
             tool_ttl_seconds: 0,
             max_entries: 100,
         };
-        let mut svc = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+        let (mut svc, _handle) = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
 
         let resp = call_service(&mut svc, tool_call("fs/read")).await;
         assert!(resp.inner.is_ok());
@@ -211,7 +296,7 @@ mod tests {
             tool_ttl_seconds: 60,
             max_entries: 100,
         };
-        let mut svc = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+        let (mut svc, _handle) = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
 
         let resp = call_service(&mut svc, tool_call("db/query")).await;
         assert!(resp.inner.is_ok());
@@ -225,9 +310,54 @@ mod tests {
             tool_ttl_seconds: 60,
             max_entries: 100,
         };
-        let mut svc = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+        let (mut svc, _handle) = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
 
         let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
         assert!(resp.inner.is_ok(), "list_tools should pass through");
+    }
+
+    #[tokio::test]
+    async fn test_cache_stats_tracks_hits_and_misses() {
+        let mock = MockService::with_tools(&["fs/read"]);
+        let cfg = BackendCacheConfig {
+            resource_ttl_seconds: 60,
+            tool_ttl_seconds: 60,
+            max_entries: 100,
+        };
+        let (mut svc, handle) = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+
+        // First call = miss
+        let _ = call_service(&mut svc, tool_call("fs/read")).await;
+        let stats = handle.stats();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].hits, 0);
+        assert_eq!(stats[0].misses, 1);
+
+        // Second call = hit
+        let _ = call_service(&mut svc, tool_call("fs/read")).await;
+        let stats = handle.stats();
+        assert_eq!(stats[0].hits, 1);
+        assert_eq!(stats[0].misses, 1);
+        assert!((stats[0].hit_rate - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_cache_clear_resets_stats() {
+        let mock = MockService::with_tools(&["fs/read"]);
+        let cfg = BackendCacheConfig {
+            resource_ttl_seconds: 60,
+            tool_ttl_seconds: 60,
+            max_entries: 100,
+        };
+        let (mut svc, handle) = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+
+        let _ = call_service(&mut svc, tool_call("fs/read")).await;
+        let _ = call_service(&mut svc, tool_call("fs/read")).await;
+
+        handle.clear();
+        let stats = handle.stats();
+        assert_eq!(stats[0].hits, 0);
+        assert_eq!(stats[0].misses, 0);
+        assert_eq!(stats[0].entry_count, 0);
     }
 }

@@ -191,17 +191,41 @@ async fn handle_metrics(
     }
 }
 
+async fn handle_cache_stats(
+    Extension(cache_handle): Extension<Option<crate::cache::CacheHandle>>,
+) -> Json<Vec<crate::cache::CacheStatsSnapshot>> {
+    match cache_handle {
+        Some(h) => Json(h.stats()),
+        None => Json(vec![]),
+    }
+}
+
+async fn handle_cache_clear(
+    Extension(cache_handle): Extension<Option<crate::cache::CacheHandle>>,
+) -> &'static str {
+    if let Some(h) = cache_handle {
+        h.clear();
+        "caches cleared"
+    } else {
+        "no caches configured"
+    }
+}
+
 /// Build the admin API router.
 pub fn admin_router(
     state: AdminState,
     metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
     session_handle: SessionHandle,
+    cache_handle: Option<crate::cache::CacheHandle>,
 ) -> Router {
     Router::new()
         .route("/backends", get(handle_backends))
         .route("/health", get(handle_health))
+        .route("/cache/stats", get(handle_cache_stats))
+        .route("/cache/clear", axum::routing::post(handle_cache_clear))
         .route("/metrics", get(handle_metrics))
         .layer(Extension(state))
         .layer(Extension(metrics_handle))
         .layer(Extension(session_handle))
+        .layer(Extension(cache_handle))
 }

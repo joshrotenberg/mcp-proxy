@@ -55,7 +55,7 @@ impl Gateway {
             None
         };
 
-        let service = build_middleware_stack(&config, proxy)?;
+        let (service, cache_handle) = build_middleware_stack(&config, proxy)?;
 
         let (router, session_handle) =
             tower_mcp::transport::http::HttpTransport::from_service(service)
@@ -88,7 +88,12 @@ impl Gateway {
         );
         let router = router.nest(
             "/admin",
-            crate::admin::admin_router(admin_state.clone(), metrics_handle, session_handle.clone()),
+            crate::admin::admin_router(
+                admin_state.clone(),
+                metrics_handle,
+                session_handle.clone(),
+                cache_handle,
+            ),
         );
         tracing::info!("Admin API enabled at /admin/backends");
 
@@ -289,9 +294,13 @@ async fn build_proxy(config: &GatewayConfig) -> Result<McpProxy> {
 fn build_middleware_stack(
     config: &GatewayConfig,
     proxy: McpProxy,
-) -> Result<BoxCloneService<RouterRequest, RouterResponse, Infallible>> {
+) -> Result<(
+    BoxCloneService<RouterRequest, RouterResponse, Infallible>,
+    Option<cache::CacheHandle>,
+)> {
     let mut service: BoxCloneService<RouterRequest, RouterResponse, Infallible> =
         BoxCloneService::new(proxy);
+    let mut cache_handle: Option<cache::CacheHandle> = None;
 
     // Response caching (innermost)
     let cache_configs: Vec<_> = config
@@ -314,7 +323,9 @@ fn build_middleware_stack(
                 "Applying response cache"
             );
         }
-        service = BoxCloneService::new(cache::CacheService::new(service, cache_configs));
+        let (cache_svc, handle) = cache::CacheService::new(service, cache_configs);
+        service = BoxCloneService::new(cache_svc);
+        cache_handle = Some(handle);
     }
 
     // Request coalescing
@@ -405,7 +416,7 @@ fn build_middleware_stack(
         service = BoxCloneService::new(tower_mcp::CatchError::new(audited));
     }
 
-    Ok(service)
+    Ok((service, cache_handle))
 }
 
 /// Apply inbound authentication middleware to the router.
