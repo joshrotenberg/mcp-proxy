@@ -1202,6 +1202,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",

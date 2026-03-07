@@ -36,3 +36,6 @@ tracing-opentelemetry = "0.30"
 moka = { version = "0.12.14", features = ["future"] }
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.5"
+
+[dev-dependencies]
+schemars = "1"
