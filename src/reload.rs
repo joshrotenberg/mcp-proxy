@@ -143,6 +143,7 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
         || backend.rate_limit.is_some()
         || backend.concurrency.is_some()
         || backend.retry.is_some()
+        || backend.hedging.is_some()
         || backend.outlier_detection.is_some();
 
     match backend.transport {
@@ -252,6 +253,7 @@ fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
             cb.permitted_calls_in_half_open,
         )
     });
+    let hedging = backend.hedging.clone();
     let outlier = backend.outlier_detection.clone();
     let name = backend.name.clone();
 
@@ -265,6 +267,27 @@ fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
                 let policy = crate::retry::McpRetryPolicy::from_config(retry_cfg);
                 let retried = tower::Layer::layer(&tower::retry::RetryLayer::new(policy), svc);
                 svc = BoxCloneService::new(tower_mcp::CatchError::new(retried));
+            }
+
+            // Hedging
+            if let Some(ref hedge_cfg) = hedging {
+                let delay = Duration::from_millis(hedge_cfg.delay_ms);
+                let max_attempts = hedge_cfg.max_hedges + 1;
+                let layer = if delay.is_zero() {
+                    tower_resilience::hedge::HedgeLayer::builder()
+                        .no_delay()
+                        .max_hedged_attempts(max_attempts)
+                        .name(format!("{}-hedge", name))
+                        .build()
+                } else {
+                    tower_resilience::hedge::HedgeLayer::builder()
+                        .delay(delay)
+                        .max_hedged_attempts(max_attempts)
+                        .name(format!("{}-hedge", name))
+                        .build()
+                };
+                let hedged = tower::Layer::layer(&layer, svc);
+                svc = BoxCloneService::new(tower_mcp::CatchError::new(hedged));
             }
 
             // Concurrency limit
