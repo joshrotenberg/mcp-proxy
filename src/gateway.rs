@@ -250,6 +250,32 @@ async fn build_proxy(config: &GatewayConfig) -> Result<McpProxy> {
             builder = builder.backend_layer(tower::retry::RetryLayer::new(policy));
         }
 
+        // Hedging (after retry, before concurrency -- hedges are separate requests)
+        if let Some(hedge_cfg) = &backend.hedging {
+            let delay = Duration::from_millis(hedge_cfg.delay_ms);
+            let max_attempts = hedge_cfg.max_hedges + 1; // +1 for the primary request
+            tracing::info!(
+                backend = %backend.name,
+                delay_ms = hedge_cfg.delay_ms,
+                max_hedges = hedge_cfg.max_hedges,
+                "Applying request hedging"
+            );
+            let layer = if delay.is_zero() {
+                tower_resilience::hedge::HedgeLayer::builder()
+                    .no_delay()
+                    .max_hedged_attempts(max_attempts)
+                    .name(format!("{}-hedge", backend.name))
+                    .build()
+            } else {
+                tower_resilience::hedge::HedgeLayer::builder()
+                    .delay(delay)
+                    .max_hedged_attempts(max_attempts)
+                    .name(format!("{}-hedge", backend.name))
+                    .build()
+            };
+            builder = builder.backend_layer(layer);
+        }
+
         // Concurrency limit
         if let Some(cc) = &backend.concurrency {
             tracing::info!(

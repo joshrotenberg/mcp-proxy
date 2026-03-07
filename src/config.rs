@@ -70,6 +70,8 @@ pub struct BackendConfig {
     pub retry: Option<RetryConfig>,
     /// Per-backend outlier detection (passive health checks)
     pub outlier_detection: Option<OutlierDetectionConfig>,
+    /// Per-backend request hedging (parallel redundant requests)
+    pub hedging: Option<HedgingConfig>,
     /// Mirror traffic from another backend (fire-and-forget).
     /// Set to the name of the source backend to mirror.
     pub mirror_of: Option<String>,
@@ -190,6 +192,22 @@ pub struct OutlierDetectionConfig {
     /// Maximum percentage of backends that can be ejected (default: 50)
     #[serde(default = "default_max_ejection_percent")]
     pub max_ejection_percent: u32,
+}
+
+/// Request hedging configuration.
+///
+/// Sends parallel redundant requests to reduce tail latency. If the primary
+/// request hasn't completed after `delay_ms`, a hedge request is fired.
+/// The first successful response wins.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HedgingConfig {
+    /// Delay in milliseconds before sending a hedge request (default: 200).
+    /// Set to 0 for parallel mode (all requests fire immediately).
+    #[serde(default = "default_hedge_delay_ms")]
+    pub delay_ms: u64,
+    /// Maximum number of additional hedge requests (default: 1)
+    #[serde(default = "default_max_hedges")]
+    pub max_hedges: usize,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -367,6 +385,14 @@ fn default_base_ejection_seconds() -> u64 {
 
 fn default_max_ejection_percent() -> u32 {
     50
+}
+
+fn default_hedge_delay_ms() -> u64 {
+    200
+}
+
+fn default_max_hedges() -> usize {
+    1
 }
 
 fn default_mirror_percent() -> u32 {
@@ -1301,6 +1327,56 @@ mod tests {
             format!("{err}").contains("mirror_of cannot reference itself"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn test_parse_hedging_config() {
+        let toml = r#"
+        [gateway]
+        name = "hedge-gw"
+        [gateway.listen]
+
+        [[backends]]
+        name = "api"
+        transport = "http"
+        url = "http://localhost:8080"
+
+        [backends.hedging]
+        delay_ms = 150
+        max_hedges = 2
+        "#;
+
+        let config = GatewayConfig::parse(toml).unwrap();
+        let hedge = config.backends[0]
+            .hedging
+            .as_ref()
+            .expect("should have hedging");
+        assert_eq!(hedge.delay_ms, 150);
+        assert_eq!(hedge.max_hedges, 2);
+    }
+
+    #[test]
+    fn test_parse_hedging_defaults() {
+        let toml = r#"
+        [gateway]
+        name = "hedge-gw"
+        [gateway.listen]
+
+        [[backends]]
+        name = "api"
+        transport = "http"
+        url = "http://localhost:8080"
+
+        [backends.hedging]
+        "#;
+
+        let config = GatewayConfig::parse(toml).unwrap();
+        let hedge = config.backends[0]
+            .hedging
+            .as_ref()
+            .expect("should have hedging");
+        assert_eq!(hedge.delay_ms, 200);
+        assert_eq!(hedge.max_hedges, 1);
     }
 
     // ========================================================================
