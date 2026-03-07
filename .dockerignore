@@ -1,0 +1,8 @@
+target/
+.git/
+.github/
+docs/
+*.md
+LICENSE-*
+CLAUDE.md
+gateway*.toml
