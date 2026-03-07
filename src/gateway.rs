@@ -375,7 +375,35 @@ fn build_middleware_stack(
         BoxCloneService::new(proxy);
     let mut cache_handle: Option<cache::CacheHandle> = None;
 
-    // Traffic mirroring (innermost -- sends cloned requests through the proxy)
+    // Argument injection (innermost -- merges default/per-tool args into CallTool requests)
+    let injection_rules: Vec<_> = config
+        .backends
+        .iter()
+        .filter(|b| !b.default_args.is_empty() || !b.inject_args.is_empty())
+        .map(|b| {
+            let namespace = format!("{}{}", b.name, config.gateway.separator);
+            tracing::info!(
+                backend = %b.name,
+                default_args = b.default_args.len(),
+                tool_rules = b.inject_args.len(),
+                "Applying argument injection"
+            );
+            crate::inject::InjectionRules::new(
+                namespace,
+                b.default_args.clone(),
+                b.inject_args.clone(),
+            )
+        })
+        .collect();
+
+    if !injection_rules.is_empty() {
+        service = BoxCloneService::new(crate::inject::InjectArgsService::new(
+            service,
+            injection_rules,
+        ));
+    }
+
+    // Traffic mirroring (sends cloned requests through the proxy)
     let mirror_mappings: std::collections::HashMap<String, (String, u32)> = config
         .backends
         .iter()
