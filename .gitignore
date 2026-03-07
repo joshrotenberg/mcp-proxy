@@ -1,1 +1,4 @@
 /target
+CLAUDE.md
+gateway*.toml
+!config.example.toml
