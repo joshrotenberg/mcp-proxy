@@ -39,6 +39,7 @@ pub mod metrics;
 pub mod rbac;
 pub mod reload;
 pub mod retry;
+pub mod token;
 pub mod validation;
 
 #[cfg(test)]
