@@ -68,6 +68,8 @@ pub struct BackendConfig {
     pub concurrency: Option<ConcurrencyConfig>,
     /// Per-backend retry policy
     pub retry: Option<RetryConfig>,
+    /// Per-backend outlier detection (passive health checks)
+    pub outlier_detection: Option<OutlierDetectionConfig>,
     /// Per-backend cache policy
     pub cache: Option<BackendCacheConfig>,
     /// Static bearer token for authenticating to this backend (HTTP only).
@@ -163,6 +165,25 @@ pub struct RetryConfig {
     /// Ensures low-traffic backends can still retry.
     #[serde(default = "default_min_retries_per_sec")]
     pub min_retries_per_sec: u32,
+}
+
+/// Passive health check / outlier detection configuration.
+///
+/// Tracks consecutive errors on live traffic and ejects unhealthy backends.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OutlierDetectionConfig {
+    /// Number of consecutive errors before ejecting (default: 5)
+    #[serde(default = "default_consecutive_errors")]
+    pub consecutive_errors: u32,
+    /// Evaluation interval in seconds (default: 10)
+    #[serde(default = "default_interval_seconds")]
+    pub interval_seconds: u64,
+    /// How long to eject in seconds (default: 30)
+    #[serde(default = "default_base_ejection_seconds")]
+    pub base_ejection_seconds: u64,
+    /// Maximum percentage of backends that can be ejected (default: 50)
+    #[serde(default = "default_max_ejection_percent")]
+    pub max_ejection_percent: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -324,6 +345,22 @@ fn default_max_backoff_ms() -> u64 {
 
 fn default_min_retries_per_sec() -> u32 {
     10
+}
+
+fn default_consecutive_errors() -> u32 {
+    5
+}
+
+fn default_interval_seconds() -> u64 {
+    10
+}
+
+fn default_base_ejection_seconds() -> u64 {
+    30
+}
+
+fn default_max_ejection_percent() -> u32 {
+    50
 }
 
 fn default_max_cache_entries() -> u64 {
@@ -1086,6 +1123,62 @@ mod tests {
         );
 
         unsafe { std::env::remove_var("MCP_GW_TEST_BEARER") };
+    }
+
+    #[test]
+    fn test_parse_outlier_detection() {
+        let toml = r#"
+        [gateway]
+        name = "od-gw"
+        [gateway.listen]
+
+        [[backends]]
+        name = "flaky"
+        transport = "http"
+        url = "http://localhost:8080"
+
+        [backends.outlier_detection]
+        consecutive_errors = 3
+        interval_seconds = 5
+        base_ejection_seconds = 60
+        max_ejection_percent = 25
+        "#;
+
+        let config = GatewayConfig::parse(toml).unwrap();
+        let od = config.backends[0]
+            .outlier_detection
+            .as_ref()
+            .expect("should have outlier_detection");
+        assert_eq!(od.consecutive_errors, 3);
+        assert_eq!(od.interval_seconds, 5);
+        assert_eq!(od.base_ejection_seconds, 60);
+        assert_eq!(od.max_ejection_percent, 25);
+    }
+
+    #[test]
+    fn test_parse_outlier_detection_defaults() {
+        let toml = r#"
+        [gateway]
+        name = "od-gw"
+        [gateway.listen]
+
+        [[backends]]
+        name = "flaky"
+        transport = "http"
+        url = "http://localhost:8080"
+
+        [backends.outlier_detection]
+        "#;
+
+        let config = GatewayConfig::parse(toml).unwrap();
+        let od = config.backends[0]
+            .outlier_detection
+            .as_ref()
+            .expect("should have outlier_detection");
+        assert_eq!(od.consecutive_errors, 5);
+        assert_eq!(od.interval_seconds, 10);
+        assert_eq!(od.base_ejection_seconds, 30);
+        assert_eq!(od.max_ejection_percent, 50);
     }
 
     // ========================================================================
