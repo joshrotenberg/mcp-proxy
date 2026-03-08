@@ -20,6 +20,7 @@ pub struct MetricsService<S> {
 }
 
 impl<S> MetricsService<S> {
+    /// Create a new metrics service wrapping `inner`.
     pub fn new(inner: S) -> Self {
         Self { inner }
     }

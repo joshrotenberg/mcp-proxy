@@ -24,6 +24,7 @@ pub struct CoalesceService<S> {
 }
 
 impl<S> CoalesceService<S> {
+    /// Create a new request coalescing service wrapping `inner`.
     pub fn new(inner: S) -> Self {
         Self {
             inner,

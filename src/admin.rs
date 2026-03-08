@@ -47,13 +47,20 @@ impl AdminState {
     }
 }
 
+/// Health status of a single backend, updated by the background health checker.
 #[derive(Serialize, Clone)]
 pub struct BackendStatus {
+    /// Backend namespace (e.g. "db/").
     pub namespace: String,
+    /// Whether the backend responded to the last health check.
     pub healthy: bool,
+    /// Timestamp of the last health check.
     pub last_checked_at: Option<DateTime<Utc>>,
+    /// Number of consecutive failed health checks.
     pub consecutive_failures: u32,
+    /// Last error message from a failed health check.
     pub error: Option<String>,
+    /// Transport type (e.g. "stdio", "http").
     pub transport: Option<String>,
 }
 
@@ -74,6 +81,7 @@ struct GatewayInfo {
 /// Per-backend metadata passed in from config at startup.
 #[derive(Clone)]
 pub struct BackendMeta {
+    /// Transport type string (e.g. "stdio", "http").
     pub transport: String,
 }
 
