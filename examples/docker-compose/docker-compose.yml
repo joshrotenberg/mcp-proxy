@@ -6,7 +6,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./gateway.toml:/etc/mcp-gateway/gateway.toml:ro
+      - ./gateway.toml:/etc/mcp-proxy/gateway.toml:ro
     restart: on-failure
     depends_on:
       everything:
