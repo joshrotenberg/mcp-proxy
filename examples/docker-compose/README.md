@@ -4,7 +4,7 @@ A minimal docker-compose setup with the gateway proxying to an HTTP MCP backend.
 
 ## Services
 
-- **gateway** -- mcp-gateway on port 8080, configured to proxy to the everything backend
+- **gateway** -- mcp-proxy on port 8080, configured to proxy to the everything backend
 - **everything** -- the MCP "everything" demo server (tools, resources, prompts) on port 3001
 
 ## Usage

@@ -32,6 +32,7 @@ pub mod admin;
 pub mod admin_tools;
 pub mod alias;
 pub mod cache;
+pub mod canary;
 pub mod coalesce;
 pub mod config;
 pub mod filter;

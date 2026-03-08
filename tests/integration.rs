@@ -17,6 +17,7 @@ use tower_mcp::{CallToolResult, McpRouter, ToolBuilder};
 
 use mcp_proxy::alias::{AliasMap, AliasService};
 use mcp_proxy::cache::CacheService;
+use mcp_proxy::canary::CanaryService;
 use mcp_proxy::coalesce::CoalesceService;
 use mcp_proxy::config::BackendCacheConfig;
 use mcp_proxy::config::{BackendFilter, InjectArgsConfig, NameFilter};
@@ -693,6 +694,178 @@ async fn test_proxy_with_coalesce() {
             assert_eq!(r2.all_text(), "15");
         }
         _ => panic!("expected CallTool responses"),
+    }
+}
+
+// --- Proxy + canary ---
+
+#[tokio::test]
+async fn test_canary_routes_all_traffic_when_primary_weight_zero() {
+    // Two backends with the same tools: primary "api" and canary "api-canary"
+    let api_router = {
+        let tool = ToolBuilder::new("search")
+            .description("Search")
+            .handler(|_: tower_mcp::NoParams| async move { Ok(CallToolResult::text("primary")) })
+            .build();
+        McpRouter::new().server_info("api", "1.0.0").tool(tool)
+    };
+
+    let canary_router = {
+        let tool = ToolBuilder::new("search")
+            .description("Search")
+            .handler(|_: tower_mcp::NoParams| async move { Ok(CallToolResult::text("canary")) })
+            .build();
+        McpRouter::new()
+            .server_info("api-canary", "1.0.0")
+            .tool(tool)
+    };
+
+    let proxy = McpProxy::builder("canary-proxy", "1.0.0")
+        .separator("/")
+        .backend("api", ChannelTransport::new(api_router))
+        .await
+        .backend("api-canary", ChannelTransport::new(canary_router))
+        .await
+        .build_strict()
+        .await
+        .expect("proxy should build");
+
+    // 0 primary weight = 100% canary
+    let canaries = [("api".to_string(), ("api-canary".to_string(), 0u32, 100u32))]
+        .into_iter()
+        .collect();
+    let mut svc = CanaryService::new(proxy, canaries, "/");
+
+    // All requests to api/search should be rewritten to api-canary/search
+    let resp = call(&mut svc, tool_call("api/search", serde_json::json!({}))).await;
+
+    match resp.inner.unwrap() {
+        McpResponse::CallTool(result) => {
+            assert_eq!(result.all_text(), "canary", "should route to canary");
+        }
+        other => panic!("expected CallTool, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_canary_passes_through_when_primary_weight_full() {
+    let api_router = {
+        let tool = ToolBuilder::new("search")
+            .description("Search")
+            .handler(|_: tower_mcp::NoParams| async move { Ok(CallToolResult::text("primary")) })
+            .build();
+        McpRouter::new().server_info("api", "1.0.0").tool(tool)
+    };
+
+    let canary_router = {
+        let tool = ToolBuilder::new("search")
+            .description("Search")
+            .handler(|_: tower_mcp::NoParams| async move { Ok(CallToolResult::text("canary")) })
+            .build();
+        McpRouter::new()
+            .server_info("api-canary", "1.0.0")
+            .tool(tool)
+    };
+
+    let proxy = McpProxy::builder("canary-proxy", "1.0.0")
+        .separator("/")
+        .backend("api", ChannelTransport::new(api_router))
+        .await
+        .backend("api-canary", ChannelTransport::new(canary_router))
+        .await
+        .build_strict()
+        .await
+        .expect("proxy should build");
+
+    // 100 primary / 0 canary -- but total_weight would be 100, so all go to primary
+    let canaries = [("api".to_string(), ("api-canary".to_string(), 100u32, 0u32))]
+        .into_iter()
+        .collect();
+    let mut svc = CanaryService::new(proxy, canaries, "/");
+
+    let resp = call(&mut svc, tool_call("api/search", serde_json::json!({}))).await;
+
+    match resp.inner.unwrap() {
+        McpResponse::CallTool(result) => {
+            assert_eq!(result.all_text(), "primary", "should route to primary");
+        }
+        other => panic!("expected CallTool, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_canary_with_filter_hides_canary_tools() {
+    let api_router = {
+        let tool = ToolBuilder::new("search")
+            .description("Search")
+            .handler(|_: tower_mcp::NoParams| async move { Ok(CallToolResult::text("primary")) })
+            .build();
+        McpRouter::new().server_info("api", "1.0.0").tool(tool)
+    };
+
+    let canary_router = {
+        let tool = ToolBuilder::new("search")
+            .description("Search")
+            .handler(|_: tower_mcp::NoParams| async move { Ok(CallToolResult::text("canary")) })
+            .build();
+        McpRouter::new()
+            .server_info("api-canary", "1.0.0")
+            .tool(tool)
+    };
+
+    let proxy = McpProxy::builder("canary-proxy", "1.0.0")
+        .separator("/")
+        .backend("api", ChannelTransport::new(api_router))
+        .await
+        .backend("api-canary", ChannelTransport::new(canary_router))
+        .await
+        .build_strict()
+        .await
+        .expect("proxy should build");
+
+    // Canary middleware (0 primary = all canary)
+    let canaries = [("api".to_string(), ("api-canary".to_string(), 0u32, 100u32))]
+        .into_iter()
+        .collect();
+    let canary_svc = CanaryService::new(proxy, canaries, "/");
+
+    // Filter to hide canary tools (empty AllowList = hide everything)
+    let filters = vec![BackendFilter {
+        namespace: "api-canary/".to_string(),
+        tool_filter: NameFilter::AllowList(std::collections::HashSet::new()),
+        resource_filter: NameFilter::AllowList(std::collections::HashSet::new()),
+        prompt_filter: NameFilter::AllowList(std::collections::HashSet::new()),
+    }];
+    let mut svc = CapabilityFilterService::new(canary_svc, filters);
+
+    // ListTools should only show api/search, not api-canary/search
+    let resp = call(&mut svc, McpRequest::ListTools(Default::default())).await;
+    match resp.inner.unwrap() {
+        McpResponse::ListTools(result) => {
+            let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+            assert!(
+                names.contains(&"api/search"),
+                "primary visible: {:?}",
+                names
+            );
+            assert!(
+                !names.contains(&"api-canary/search"),
+                "canary hidden: {:?}",
+                names
+            );
+            assert_eq!(names.len(), 1, "only primary tool: {:?}", names);
+        }
+        other => panic!("expected ListTools, got: {:?}", other),
+    }
+
+    // But CallTool to api/search should still route to canary and succeed
+    let resp = call(&mut svc, tool_call("api/search", serde_json::json!({}))).await;
+
+    match resp.inner.unwrap() {
+        McpResponse::CallTool(result) => {
+            assert_eq!(result.all_text(), "canary", "should route to canary");
+        }
+        other => panic!("expected CallTool, got: {:?}", other),
     }
 }
 

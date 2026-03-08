@@ -136,6 +136,14 @@ pub struct BackendConfig {
     /// Capability filtering: hide these prompts (denylist)
     #[serde(default)]
     pub hide_prompts: Vec<String>,
+    /// Canary routing: name of the primary backend this is a canary for.
+    /// When set, this backend's tools are hidden and requests targeting
+    /// the primary are probabilistically routed here based on weight.
+    pub canary_of: Option<String>,
+    /// Routing weight for canary deployments (default: 100).
+    /// Higher values receive proportionally more traffic.
+    #[serde(default = "default_weight")]
+    pub weight: u32,
 }
 
 /// Backend transport protocol.
@@ -473,6 +481,10 @@ fn default_mirror_percent() -> u32 {
     100
 }
 
+fn default_weight() -> u32 {
+    100
+}
+
 fn default_max_cache_entries() -> u64 {
     1000
 }
@@ -544,7 +556,22 @@ impl NameFilter {
 impl BackendConfig {
     /// Build a [`BackendFilter`] from this backend's expose/hide lists.
     /// Returns `None` if no filtering is configured.
+    ///
+    /// Canary backends automatically hide all capabilities so their tools
+    /// don't appear in `ListTools` responses (traffic reaches them via the
+    /// canary routing middleware, not direct tool calls).
     pub fn build_filter(&self, separator: &str) -> Option<BackendFilter> {
+        // Canary backends hide all capabilities -- tools are accessed via
+        // the canary routing middleware rewriting the primary namespace.
+        if self.canary_of.is_some() {
+            return Some(BackendFilter {
+                namespace: format!("{}{}", self.name, separator),
+                tool_filter: NameFilter::AllowList(HashSet::new()),
+                resource_filter: NameFilter::AllowList(HashSet::new()),
+                prompt_filter: NameFilter::AllowList(HashSet::new()),
+            });
+        }
+
         let tool_filter = if !self.expose_tools.is_empty() {
             NameFilter::AllowList(self.expose_tools.iter().cloned().collect())
         } else if !self.hide_tools.is_empty() {
@@ -708,6 +735,28 @@ impl GatewayConfig {
                         "backend '{}': mirror_of cannot reference itself",
                         backend.name
                     );
+                }
+            }
+        }
+
+        // Validate canary_of references
+        for backend in &self.backends {
+            if let Some(ref primary) = backend.canary_of {
+                if !backend_names.contains(primary.as_str()) {
+                    anyhow::bail!(
+                        "backend '{}': canary_of references unknown backend '{}'",
+                        backend.name,
+                        primary
+                    );
+                }
+                if primary == &backend.name {
+                    anyhow::bail!(
+                        "backend '{}': canary_of cannot reference itself",
+                        backend.name
+                    );
+                }
+                if backend.weight == 0 {
+                    anyhow::bail!("backend '{}': weight must be > 0", backend.name);
                 }
             }
         }

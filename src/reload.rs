@@ -264,9 +264,9 @@ fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
 
             // Retry (innermost)
             if let Some(ref retry_cfg) = retry_config {
-                let policy = crate::retry::McpRetryPolicy::from_config(retry_cfg);
-                let retried = tower::Layer::layer(&tower::retry::RetryLayer::new(policy), svc);
-                svc = BoxCloneService::new(tower_mcp::CatchError::new(retried));
+                let layer = crate::retry::build_retry_layer(retry_cfg, &name);
+                let retried = tower::Layer::layer(&layer, svc);
+                svc = BoxCloneService::new(retried);
             }
 
             // Hedging

@@ -246,8 +246,8 @@ async fn build_proxy(config: &GatewayConfig) -> Result<McpProxy> {
                 max_backoff_ms = retry_cfg.max_backoff_ms,
                 "Applying retry policy"
             );
-            let policy = crate::retry::McpRetryPolicy::from_config(retry_cfg);
-            builder = builder.backend_layer(tower::retry::RetryLayer::new(policy));
+            let layer = crate::retry::build_retry_layer(retry_cfg, &backend.name);
+            builder = builder.backend_layer(layer);
         }
 
         // Hedging (after retry, before concurrency -- hedges are separate requests)
@@ -400,6 +400,44 @@ fn build_middleware_stack(
         service = BoxCloneService::new(crate::inject::InjectArgsService::new(
             service,
             injection_rules,
+        ));
+    }
+
+    // Canary routing (rewrites requests from primary to canary namespace based on weight)
+    let canary_mappings: std::collections::HashMap<String, (String, u32, u32)> = config
+        .backends
+        .iter()
+        .filter_map(|b| {
+            b.canary_of.as_ref().map(|primary_name| {
+                // Find the primary backend's weight
+                let primary_weight = config
+                    .backends
+                    .iter()
+                    .find(|p| p.name == *primary_name)
+                    .map(|p| p.weight)
+                    .unwrap_or(100);
+                (
+                    primary_name.clone(),
+                    (b.name.clone(), primary_weight, b.weight),
+                )
+            })
+        })
+        .collect();
+
+    if !canary_mappings.is_empty() {
+        for (primary, (canary, pw, cw)) in &canary_mappings {
+            tracing::info!(
+                primary = %primary,
+                canary = %canary,
+                primary_weight = pw,
+                canary_weight = cw,
+                "Enabling canary routing"
+            );
+        }
+        service = BoxCloneService::new(crate::canary::CanaryService::new(
+            service,
+            canary_mappings,
+            &config.gateway.separator,
         ));
     }
 
