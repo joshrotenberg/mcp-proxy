@@ -1,0 +1,27 @@
+services:
+  gateway:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./gateway.toml:/etc/mcp-gateway/gateway.toml:ro
+    restart: on-failure
+    depends_on:
+      everything:
+        condition: service_healthy
+
+  # MCP "everything" server -- a demo backend exposing tools, resources, and prompts
+  everything:
+    build:
+      context: .
+      dockerfile: Dockerfile.everything
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD", "curl", "-so", "/dev/null", "http://localhost:3001/mcp"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 3

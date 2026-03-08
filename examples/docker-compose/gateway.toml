@@ -1,0 +1,29 @@
+# Docker Compose example configuration
+# Connects to the "everything" MCP server running in a sibling container.
+
+[gateway]
+name = "docker-gateway"
+separator = "/"
+
+[gateway.listen]
+host = "0.0.0.0"
+port = 8080
+
+[[backends]]
+name = "everything"
+transport = "http"
+url = "http://everything:3001/mcp"
+
+[backends.timeout]
+seconds = 30
+
+[backends.rate_limit]
+requests = 10
+period_seconds = 1
+
+[observability]
+audit = true
+log_level = "info"
+
+[observability.metrics]
+enabled = true
