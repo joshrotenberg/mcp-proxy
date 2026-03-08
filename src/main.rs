@@ -3,11 +3,11 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
-use mcp_gateway::Gateway;
-use mcp_gateway::config::GatewayConfig;
+use mcp_proxy::Gateway;
+use mcp_proxy::config::GatewayConfig;
 
 #[derive(Parser)]
-#[command(name = "mcp-gateway", about = "Standalone MCP gateway")]
+#[command(name = "mcp-proxy", about = "Standalone MCP proxy")]
 struct Cli {
     /// Path to config file
     #[arg(short, long, default_value = "gateway.toml")]
@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
         name = %config.gateway.name,
         version = %config.gateway.version,
         backends = config.backends.len(),
-        "Starting MCP gateway"
+        "Starting MCP proxy"
     );
 
     let hot_reload = config.gateway.hot_reload;
@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
 
 fn init_logging(config: &GatewayConfig) {
     let env_filter = format!(
-        "tower_mcp={level},mcp_gateway={level}",
+        "tower_mcp={level},mcp_proxy={level}",
         level = config.observability.log_level
     );
 
@@ -69,7 +69,7 @@ fn init_logging(config: &GatewayConfig) {
             )
             .build();
 
-        let tracer = provider.tracer("mcp-gateway");
+        let tracer = provider.tracer("mcp-proxy");
         let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
         let fmt_layer = if config.observability.json_logs {

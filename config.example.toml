@@ -1,4 +1,4 @@
-# mcp-gateway configuration
+# mcp-proxy configuration
 
 [gateway]
 name = "my-gateway"
@@ -16,10 +16,10 @@ host = "127.0.0.1"
 port = 8080
 
 # Optional: custom instructions sent to clients on initialize
-# instructions = "This gateway aggregates multiple MCP backends."
+# instructions = "This proxy aggregates multiple MCP backends."
 
 # --- Backends ---
-# Each backend is an MCP server the gateway proxies to.
+# Each backend is an MCP server the proxy routes to.
 # The name becomes the namespace prefix for all tools/resources/prompts.
 
 [[backends]]
@@ -155,7 +155,7 @@ period_seconds = 1
 # [auth]
 # type = "jwt"
 # issuer = "https://auth.example.com"
-# audience = "mcp-gateway"
+# audience = "mcp-proxy"
 # jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 #
 # # Define roles with tool access control
@@ -198,4 +198,4 @@ enabled = true
 # [observability.tracing]
 # enabled = true
 # endpoint = "http://localhost:4317"
-# service_name = "mcp-gateway"
+# service_name = "mcp-proxy"

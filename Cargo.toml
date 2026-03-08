@@ -1,16 +1,18 @@
 [package]
-name = "mcp-gateway"
+name = "mcp-proxy"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.90"
-description = "Standalone MCP gateway -- config-driven proxy with auth, rate limiting, and observability"
+description = "Standalone MCP proxy -- config-driven reverse proxy with auth, rate limiting, and observability"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/joshrotenberg/mcp-proxy"
+homepage = "https://github.com/joshrotenberg/mcp-proxy"
 
 [lib]
-name = "mcp_gateway"
+name = "mcp_proxy"
 
 [[bin]]
-name = "mcp-gateway"
+name = "mcp-proxy"
 path = "src/main.rs"
 
 [dependencies]

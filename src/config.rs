@@ -382,7 +382,7 @@ pub struct TracingConfig {
     /// OTLP endpoint (default: http://localhost:4317)
     #[serde(default = "default_otlp_endpoint")]
     pub endpoint: String,
-    /// Service name for traces (default: "mcp-gateway")
+    /// Service name for traces (default: "mcp-proxy")
     #[serde(default = "default_service_name")]
     pub service_name: String,
 }
@@ -486,7 +486,7 @@ fn default_otlp_endpoint() -> String {
 }
 
 fn default_service_name() -> String {
-    "mcp-gateway".to_string()
+    "mcp-proxy".to_string()
 }
 
 /// Resolved filter rules for a backend's capabilities.
@@ -520,7 +520,7 @@ impl NameFilter {
     ///
     /// ```
     /// use std::collections::HashSet;
-    /// use mcp_gateway::config::NameFilter;
+    /// use mcp_proxy::config::NameFilter;
     ///
     /// let filter = NameFilter::DenyList(["delete".to_string()].into());
     /// assert!(filter.allows("read"));
@@ -602,7 +602,7 @@ impl GatewayConfig {
     /// # Examples
     ///
     /// ```
-    /// use mcp_gateway::GatewayConfig;
+    /// use mcp_proxy::GatewayConfig;
     ///
     /// let config = GatewayConfig::parse(r#"
     ///     [gateway]
@@ -935,7 +935,7 @@ mod tests {
         [auth]
         type = "jwt"
         issuer = "https://auth.example.com"
-        audience = "mcp-gateway"
+        audience = "mcp-proxy"
         jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 
         [[auth.roles]]
@@ -960,7 +960,7 @@ mod tests {
                 role_mapping,
             }) => {
                 assert_eq!(issuer, "https://auth.example.com");
-                assert_eq!(audience, "mcp-gateway");
+                assert_eq!(audience, "mcp-proxy");
                 assert_eq!(jwks_uri, "https://auth.example.com/.well-known/jwks.json");
                 assert_eq!(roles.len(), 2);
                 assert_eq!(roles[0].name, "reader");

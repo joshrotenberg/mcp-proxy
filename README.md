@@ -1,6 +1,6 @@
-# mcp-gateway
+# mcp-proxy
 
-A config-driven [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) gateway built in Rust. Aggregates multiple MCP backends behind a single endpoint with per-backend middleware, authentication, and observability.
+A config-driven [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) reverse proxy built in Rust. Aggregates multiple MCP backends behind a single endpoint with per-backend middleware, authentication, and observability.
 
 Built on [tower-mcp](https://github.com/joshrotenberg/tower-mcp) and the [tower](https://github.com/tower-rs/tower) middleware ecosystem.
 
@@ -12,7 +12,7 @@ Built on [tower-mcp](https://github.com/joshrotenberg/tower-mcp) and the [tower]
 - **Tool aliasing** -- rename tools exposed by backends
 - **Argument injection** -- merge default or per-tool arguments into tool calls
 - **Hot reload** -- watch config file and add new backends without restart
-- **Library mode** -- embed the gateway in your own Rust application
+- **Library mode** -- embed the proxy in your own Rust application
 
 ### Resilience
 - **Timeout** -- per-backend request timeouts
@@ -39,19 +39,19 @@ Built on [tower-mcp](https://github.com/joshrotenberg/tower-mcp) and the [tower]
 - **OpenTelemetry tracing** -- distributed trace export via OTLP
 - **Audit logging** -- structured logging of all MCP requests
 - **Admin API** -- health checks, backend status, cache stats
-- **Admin MCP tools** -- gateway introspection tools under `gateway/` namespace
+- **Admin MCP tools** -- introspection tools under `gateway/` namespace
 
 ## Quick Start
 
 ```bash
-cargo install mcp-gateway
+cargo install mcp-proxy
 ```
 
 Create a `gateway.toml`:
 
 ```toml
 [gateway]
-name = "my-gateway"
+name = "my-proxy"
 separator = "/"
 
 [gateway.listen]
@@ -68,7 +68,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 Run:
 
 ```bash
-mcp-gateway --config gateway.toml
+mcp-proxy --config gateway.toml
 ```
 
 All tools from the filesystem server are now available under the `files/` namespace at `http://127.0.0.1:8080/mcp`.
@@ -173,7 +173,7 @@ tokens = ["my-secret-token"]
 [auth]
 type = "jwt"
 issuer = "https://auth.example.com"
-audience = "mcp-gateway"
+audience = "mcp-proxy"
 jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 
 [[auth.roles]]
@@ -208,11 +208,11 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mcp-gateway = "0.1"
+mcp-proxy = "0.1"
 ```
 
 ```rust
-use mcp_gateway::{Gateway, GatewayConfig};
+use mcp_proxy::{Gateway, GatewayConfig};
 
 let config = GatewayConfig::load("gateway.toml".as_ref())?;
 let gateway = Gateway::from_config(config).await?;
@@ -228,7 +228,7 @@ gateway.serve().await?;
 
 HTTP endpoints:
 
-- `GET /admin/backends` -- list backends with health status and gateway info
+- `GET /admin/backends` -- list backends with health status and proxy info
 - `GET /admin/health` -- health check summary (healthy/degraded)
 - `GET /admin/metrics` -- Prometheus metrics
 - `GET /admin/cache/stats` -- per-backend cache hit/miss rates
