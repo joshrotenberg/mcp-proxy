@@ -25,6 +25,7 @@ pub struct CapabilityFilterService<S> {
 }
 
 impl<S> CapabilityFilterService<S> {
+    /// Create a new capability filter service with the given filter rules.
     pub fn new(inner: S, filters: Vec<BackendFilter>) -> Self {
         Self {
             inner,

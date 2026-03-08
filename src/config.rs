@@ -1,3 +1,5 @@
+//! Gateway configuration types and TOML parsing.
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
@@ -5,28 +7,41 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// Top-level gateway configuration, typically loaded from a TOML file.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GatewayConfig {
+    /// Core gateway settings (name, version, listen address).
     pub gateway: Gateway,
+    /// Backend MCP servers to proxy.
     #[serde(default)]
     pub backends: Vec<BackendConfig>,
+    /// Inbound authentication configuration.
     pub auth: Option<AuthConfig>,
+    /// Performance tuning options.
     #[serde(default)]
     pub performance: PerformanceConfig,
+    /// Security policies.
     #[serde(default)]
     pub security: SecurityConfig,
+    /// Logging, metrics, and tracing configuration.
     #[serde(default)]
     pub observability: ObservabilityConfig,
 }
 
+/// Core gateway identity and server settings.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Gateway {
+    /// Gateway name, used in MCP server info.
     pub name: String,
+    /// Gateway version, used in MCP server info (default: "0.1.0").
     #[serde(default = "default_version")]
     pub version: String,
+    /// Namespace separator between backend name and tool/resource name (default: "/").
     #[serde(default = "default_separator")]
     pub separator: String,
+    /// HTTP listen address.
     pub listen: ListenConfig,
+    /// Optional instructions text sent to MCP clients.
     pub instructions: Option<String>,
     /// Graceful shutdown timeout in seconds (default: 30)
     #[serde(default = "default_shutdown_timeout")]
@@ -36,17 +51,23 @@ pub struct Gateway {
     pub hot_reload: bool,
 }
 
+/// HTTP server listen address.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ListenConfig {
+    /// Bind host (default: "127.0.0.1").
     #[serde(default = "default_host")]
     pub host: String,
+    /// Bind port (default: 8080).
     #[serde(default = "default_port")]
     pub port: u16,
 }
 
+/// Configuration for a single backend MCP server.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BackendConfig {
+    /// Unique backend name, used as the namespace prefix for its tools/resources.
     pub name: String,
+    /// Transport protocol to use when connecting to this backend.
     pub transport: TransportType,
     /// Command for stdio backends
     pub command: Option<String>,
@@ -117,18 +138,24 @@ pub struct BackendConfig {
     pub hide_prompts: Vec<String>,
 }
 
+/// Backend transport protocol.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransportType {
+    /// Subprocess communicating via stdin/stdout.
     Stdio,
+    /// HTTP+SSE remote server.
     Http,
 }
 
+/// Per-backend request timeout.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TimeoutConfig {
+    /// Timeout duration in seconds.
     pub seconds: u64,
 }
 
+/// Per-backend circuit breaker configuration.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CircuitBreakerConfig {
     /// Failure rate threshold (0.0-1.0) to trip open (default: 0.5)
@@ -145,6 +172,7 @@ pub struct CircuitBreakerConfig {
     pub permitted_calls_in_half_open: usize,
 }
 
+/// Per-backend rate limiting configuration.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RateLimitConfig {
     /// Maximum requests per period
@@ -154,12 +182,14 @@ pub struct RateLimitConfig {
     pub period_seconds: u64,
 }
 
+/// Per-backend concurrency limit configuration.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ConcurrencyConfig {
-    /// Maximum concurrent requests
+    /// Maximum concurrent requests.
     pub max_concurrent: usize,
 }
 
+/// Per-backend retry policy with exponential backoff.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts (default: 3)
@@ -230,15 +260,22 @@ pub struct HedgingConfig {
     pub max_hedges: usize,
 }
 
+/// Inbound authentication configuration.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AuthConfig {
+    /// Static bearer token authentication.
     Bearer {
+        /// Accepted bearer tokens.
         tokens: Vec<String>,
     },
+    /// JWT authentication via JWKS endpoint.
     Jwt {
+        /// Expected token issuer (`iss` claim).
         issuer: String,
+        /// Expected token audience (`aud` claim).
         audience: String,
+        /// URL to fetch the JSON Web Key Set for token verification.
         jwks_uri: String,
         /// RBAC role definitions
         #[serde(default)]
@@ -248,8 +285,10 @@ pub enum AuthConfig {
     },
 }
 
+/// RBAC role definition.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RoleConfig {
+    /// Role name, referenced by `RoleMappingConfig`.
     pub name: String,
     /// Tools this role can access (namespaced, e.g. "files/read_file")
     #[serde(default)]
@@ -259,6 +298,7 @@ pub struct RoleConfig {
     pub deny_tools: Vec<String>,
 }
 
+/// Maps JWT claim values to RBAC role names.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RoleMappingConfig {
     /// JWT claim to read for role resolution (e.g. "scope", "role", "groups")
@@ -267,6 +307,7 @@ pub struct RoleMappingConfig {
     pub mapping: HashMap<String, String>,
 }
 
+/// Tool alias: exposes a backend tool under a different name.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AliasConfig {
     /// Original tool name (backend-local, without namespace prefix)
@@ -275,6 +316,7 @@ pub struct AliasConfig {
     pub to: String,
 }
 
+/// Per-backend response cache configuration.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BackendCacheConfig {
     /// TTL for cached resource reads in seconds (0 = disabled)
@@ -288,6 +330,7 @@ pub struct BackendCacheConfig {
     pub max_entries: u64,
 }
 
+/// Performance tuning options.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct PerformanceConfig {
     /// Deduplicate identical concurrent tool calls and resource reads
@@ -295,34 +338,45 @@ pub struct PerformanceConfig {
     pub coalesce_requests: bool,
 }
 
+/// Security policies.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct SecurityConfig {
     /// Maximum size of tool call arguments in bytes (default: unlimited)
     pub max_argument_size: Option<usize>,
 }
 
+/// Logging, metrics, and distributed tracing configuration.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct ObservabilityConfig {
+    /// Enable audit logging of all MCP requests (default: false).
     #[serde(default)]
     pub audit: bool,
+    /// Log level filter (default: "info").
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// Emit structured JSON logs (default: false).
     #[serde(default)]
     pub json_logs: bool,
+    /// Prometheus metrics configuration.
     #[serde(default)]
     pub metrics: MetricsConfig,
+    /// OpenTelemetry distributed tracing configuration.
     #[serde(default)]
     pub tracing: TracingConfig,
 }
 
+/// Prometheus metrics configuration.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct MetricsConfig {
+    /// Enable Prometheus metrics at `/admin/metrics` (default: false).
     #[serde(default)]
     pub enabled: bool,
 }
 
+/// OpenTelemetry distributed tracing configuration.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct TracingConfig {
+    /// Enable OTLP trace export (default: false).
     #[serde(default)]
     pub enabled: bool,
     /// OTLP endpoint (default: http://localhost:4317)
@@ -438,9 +492,13 @@ fn default_service_name() -> String {
 /// Resolved filter rules for a backend's capabilities.
 #[derive(Debug, Clone)]
 pub struct BackendFilter {
+    /// Namespace prefix (e.g. "db/") this filter applies to.
     pub namespace: String,
+    /// Filter for tool names.
     pub tool_filter: NameFilter,
+    /// Filter for resource URIs.
     pub resource_filter: NameFilter,
+    /// Filter for prompt names.
     pub prompt_filter: NameFilter,
 }
 
@@ -484,6 +542,8 @@ impl NameFilter {
 }
 
 impl BackendConfig {
+    /// Build a [`BackendFilter`] from this backend's expose/hide lists.
+    /// Returns `None` if no filtering is configured.
     pub fn build_filter(&self, separator: &str) -> Option<BackendFilter> {
         let tool_filter = if !self.expose_tools.is_empty() {
             NameFilter::AllowList(self.expose_tools.iter().cloned().collect())

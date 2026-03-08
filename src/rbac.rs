@@ -33,6 +33,7 @@ pub struct RbacConfig {
 }
 
 impl RbacConfig {
+    /// Build RBAC config from role definitions and claim-to-role mapping.
     pub fn new(roles: &[RoleConfig], mapping: &RoleMappingConfig) -> Self {
         let mut role_allow = HashMap::new();
         let mut role_deny = HashMap::new();
@@ -119,6 +120,7 @@ pub struct RbacService<S> {
 }
 
 impl<S> RbacService<S> {
+    /// Create a new RBAC enforcement service wrapping `inner`.
     pub fn new(inner: S, config: RbacConfig) -> Self {
         Self {
             inner,

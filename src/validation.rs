@@ -29,6 +29,7 @@ pub struct ValidationService<S> {
 }
 
 impl<S> ValidationService<S> {
+    /// Create a new validation service wrapping `inner`.
     pub fn new(inner: S, config: ValidationConfig) -> Self {
         Self {
             inner,

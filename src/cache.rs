@@ -63,10 +63,15 @@ impl CacheStats {
 /// and entry counts per cached namespace.
 #[derive(Serialize, Clone)]
 pub struct CacheStatsSnapshot {
+    /// Backend namespace this cache covers.
     pub namespace: String,
+    /// Total cache hits.
     pub hits: u64,
+    /// Total cache misses.
     pub misses: u64,
+    /// Hit rate as a fraction (0.0-1.0).
     pub hit_rate: f64,
+    /// Current number of cached entries.
     pub entry_count: u64,
 }
 

@@ -24,6 +24,7 @@ pub struct AliasMap {
 }
 
 impl AliasMap {
+    /// Build an alias map from `(namespace, from, to)` triples. Returns `None` if empty.
     pub fn new(mappings: Vec<(String, String, String)>) -> Option<Self> {
         if mappings.is_empty() {
             return None;
@@ -48,6 +49,7 @@ pub struct AliasService<S> {
 }
 
 impl<S> AliasService<S> {
+    /// Create a new alias service wrapping `inner` with the given alias map.
     pub fn new(inner: S, aliases: AliasMap) -> Self {
         Self {
             inner,
