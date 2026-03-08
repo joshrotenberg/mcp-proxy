@@ -246,8 +246,8 @@ async fn build_proxy(config: &GatewayConfig) -> Result<McpProxy> {
                 max_backoff_ms = retry_cfg.max_backoff_ms,
                 "Applying retry policy"
             );
-            let policy = crate::retry::McpRetryPolicy::from_config(retry_cfg);
-            builder = builder.backend_layer(tower::retry::RetryLayer::new(policy));
+            let layer = crate::retry::build_retry_layer(retry_cfg, &backend.name);
+            builder = builder.backend_layer(layer);
         }
 
         // Hedging (after retry, before concurrency -- hedges are separate requests)

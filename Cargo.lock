@@ -2743,20 +2743,17 @@ dependencies = [
 [[package]]
 name = "tower-resilience"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "315d54ec46180f44a269c1870a7f6f00fd9f5fc3218666265425f071991a2fa4"
 dependencies = [
  "tower-resilience-circuitbreaker",
  "tower-resilience-core",
  "tower-resilience-hedge",
  "tower-resilience-ratelimiter",
+ "tower-resilience-retry",
 ]
 
 [[package]]
 name = "tower-resilience-circuitbreaker"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04650b3f4dae5076b24ab6ae0ddbfde0a94da91cebf5ae8bb44fbcbd1911612f"
 dependencies = [
  "futures",
  "thiserror 2.0.18",
@@ -2768,8 +2765,6 @@ dependencies = [
 [[package]]
 name = "tower-resilience-core"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6f8718d3121ee3463d8ddb7a8bffcc76e42f2259c8e4e6cc09926c52ad8cabf"
 dependencies = [
  "thiserror 2.0.18",
  "tokio",
@@ -2778,8 +2773,6 @@ dependencies = [
 [[package]]
 name = "tower-resilience-hedge"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98bf07e224f5b6fedc46d961b73aac237fb8d172e80c6b9cc4758985fa3ae162"
 dependencies = [
  "futures",
  "pin-project-lite",
@@ -2793,10 +2786,19 @@ dependencies = [
 [[package]]
 name = "tower-resilience-ratelimiter"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9075963a14739d04261f206fb52e20875df5f94084cde63f568d3df4bd0c2322"
 dependencies = [
  "futures",
+ "tokio",
+ "tower",
+ "tower-resilience-core",
+]
+
+[[package]]
+name = "tower-resilience-retry"
+version = "0.8.0"
+dependencies = [
+ "futures",
+ "rand",
  "tokio",
  "tower",
  "tower-resilience-core",
