@@ -1,7 +1,7 @@
-# MCP Gateway Architecture Patterns and Use Cases
+# MCP Proxy Architecture Patterns and Use Cases
 
 Research compiled March 2026. This document catalogs theoretical and real-world
-architecture patterns for an MCP gateway, informed by emerging industry practice,
+architecture patterns for an MCP proxy, informed by emerging industry practice,
 traditional API gateway patterns (Kong, Envoy, Traefik), and the specific
 capabilities of `mcp-proxy`.
 
@@ -34,7 +34,7 @@ Developer (Claude Code / Cursor / Windsurf)
   from non-admin roles
 - Audit logging to corporate SIEM
 
-**Gateway features leveraged:** Namespace routing, JWT/RBAC, rate limiting,
+**Proxy features leveraged:** Namespace routing, JWT/RBAC, rate limiting,
 circuit breaker, capability filtering, audit logging, Prometheus metrics.
 
 **Industry precedent:** Kong, Traefik Hub, and Envoy AI Gateway all offer
@@ -72,7 +72,7 @@ AI Assistants (restricted network)
 - No caching on trade-execution (must always hit live system)
 - Response caching on market-data (60s TTL, reduces API costs)
 
-**Gateway features leveraged:** JWT/RBAC, capability filtering per role,
+**Proxy features leveraged:** JWT/RBAC, capability filtering per role,
 audit logging (JSON), rate limiting, cache (selective), max argument size,
 namespace routing.
 
@@ -104,9 +104,9 @@ Agent
 - Per-backend concurrency limits (prevent one backend from starving others)
 - Circuit breakers on each backend (independent failure domains)
 - Capability filtering: `fs` backend only exposes read operations
-- Hot reload: new microservices added without gateway restart
+- Hot reload: new microservices added without proxy restart
 
-**Gateway features leveraged:** Namespace routing, concurrency limits,
+**Proxy features leveraged:** Namespace routing, concurrency limits,
 circuit breaker, capability filtering, hot reload.
 
 **Industry precedent:** The MicroMCP project on GitHub explicitly implements
@@ -141,7 +141,7 @@ Cursor       --/      --> filesystem backend (stdio)
 - Response caching on filesystem reads (reduce subprocess spawns)
 - Debug-level audit logging for troubleshooting
 
-**Gateway features leveraged:** Namespace routing, tool aliasing, response
+**Proxy features leveraged:** Namespace routing, tool aliasing, response
 caching, timeout, observability (debug logging).
 
 **Industry precedent:** Envoy AI Gateway's standalone mode explicitly supports
@@ -182,7 +182,7 @@ Data Agent (role: analyst)           --/      --> web-search backend
   simultaneously, deduplicate)
 - Prometheus metrics per role for cost attribution
 
-**Gateway features leveraged:** JWT/RBAC, capability filtering per role,
+**Proxy features leveraged:** JWT/RBAC, capability filtering per role,
 rate limiting, request coalescing, Prometheus metrics, namespace routing.
 
 **Industry precedent:** The "Agent Mesh" pattern identified by FlowZap as one
@@ -195,7 +195,7 @@ implements multi-agent coordination through shared MCP context.
 
 **Scenario:** A SaaS company wants to offer MCP access to its platform as a
 product feature. Each customer tenant gets their own tool surface, credentials,
-and rate limits. The gateway is the product boundary.
+and rate limits. The proxy is the product boundary.
 
 **Architecture:**
 ```
@@ -219,7 +219,7 @@ Customer C Agent -->      --> customer-a/analytics backend
 - Prometheus metrics with tenant labels for billing
 - Hot reload for onboarding new tenants without downtime
 
-**Gateway features leveraged:** JWT/RBAC, namespace routing, rate limiting,
+**Proxy features leveraged:** JWT/RBAC, namespace routing, rate limiting,
 circuit breaker, capability filtering, hot reload, Prometheus metrics.
 
 **Industry precedent:** Composio offers a managed PaaS with 1000+ pre-built
@@ -256,7 +256,7 @@ Central AI System
 - Concurrency limits (devices have limited connection capacity)
 - Prometheus metrics for fleet health monitoring
 
-**Gateway features leveraged:** Namespace routing, timeout, circuit breaker,
+**Proxy features leveraged:** Namespace routing, timeout, circuit breaker,
 capability filtering, response caching, concurrency limits, bearer auth,
 Prometheus metrics.
 
@@ -295,7 +295,7 @@ CI Agent (role: ci-bot)
 - Tool aliasing: `circleci/get_build_logs` -> `ci/logs`
 - Audit logging for compliance (who deployed what, when)
 
-**Gateway features leveraged:** JWT/RBAC, capability filtering, rate limiting,
+**Proxy features leveraged:** JWT/RBAC, capability filtering, rate limiting,
 tool aliasing, audit logging, namespace routing.
 
 **Industry precedent:** CircleCI's MCP server enables natural language CI
@@ -331,7 +331,7 @@ Test harness / MCP Inspector
 - Debug-level logging and tracing for test diagnostics
 - Hot reload: swap backend configs during test runs
 
-**Gateway features leveraged:** Namespace routing, tool aliasing, circuit
+**Proxy features leveraged:** Namespace routing, tool aliasing, circuit
 breaker, response caching, hot reload, observability (debug + tracing).
 
 **Industry precedent:** The MCP Inspector provides programmatic CLI mode
@@ -369,7 +369,7 @@ Any AI client (must present JWT)
 - Prometheus metrics with security-relevant counters
   (auth failures, blocked requests, circuit breaker trips)
 
-**Gateway features leveraged:** JWT/RBAC, capability filtering, max argument
+**Proxy features leveraged:** JWT/RBAC, capability filtering, max argument
 size, audit logging (JSON), rate limiting, Prometheus metrics.
 
 **Industry precedent:** Peta MCP Suite implements a zero-trust gateway that
@@ -410,7 +410,7 @@ Multiple AI agents
 - Tool aliasing: expose simplified interfaces that return less data
 - Prometheus metrics for cache hit rates and cost tracking
 
-**Gateway features leveraged:** Response caching, request coalescing,
+**Proxy features leveraged:** Response caching, request coalescing,
 capability filtering, tool aliasing, Prometheus metrics.
 
 **Industry precedent:** FlowZap's "Context Proxy" pattern reports 95%+ token
@@ -446,7 +446,7 @@ AI Agents
 - Rate limiting to protect legacy systems from AI-generated load
 - Hot reload: add new API adapters as they're built
 
-**Gateway features leveraged:** Tool aliasing, namespace routing, capability
+**Proxy features leveraged:** Tool aliasing, namespace routing, capability
 filtering, timeout, circuit breaker, rate limiting, hot reload.
 
 **Industry precedent:** IBM ContextForge explicitly federates REST/gRPC APIs
@@ -482,7 +482,7 @@ Organization-wide AI agents
 - Rate limiting at org level (global quotas) and child level (team quotas)
 - Prometheus metrics aggregated from all child gateways
 
-**Gateway features leveraged:** Namespace routing (nested), circuit breaker,
+**Proxy features leveraged:** Namespace routing (nested), circuit breaker,
 rate limiting, JWT auth, Prometheus metrics, HTTP backend transport.
 
 **Industry precedent:** IBM ContextForge supports federation of gateways where
@@ -496,7 +496,7 @@ and Envoy's service mesh federation.
 
 **Scenario:** An organization running autonomous AI agents needs the ability
 to instantly disable specific tools or entire backends if an agent exhibits
-unexpected behavior. The gateway serves as the control point for
+unexpected behavior. The proxy serves as the control point for
 human-in-the-loop oversight.
 
 **Architecture:**
@@ -519,7 +519,7 @@ Autonomous AI Agents
 - Prometheus alerts on anomalous tool call patterns
 - Audit logging for post-incident review
 
-**Gateway features leveraged:** Admin API, hot reload, capability filtering,
+**Proxy features leveraged:** Admin API, hot reload, capability filtering,
 rate limiting, circuit breaker, RBAC, audit logging, Prometheus metrics.
 
 **Industry precedent:** Sentinel MCP Gateway (Rust) implements kill switch
@@ -529,11 +529,11 @@ agentic AI" is an emerging pattern with dedicated research.
 
 ---
 
-## 15. Embedded Gateway (Library Mode)
+## 15. Embedded Proxy (Library Mode)
 
 **Scenario:** A Rust application (CLI tool, web service, or desktop app) wants
-to embed MCP gateway functionality directly, exposing aggregated tools through
-its own interface without running a separate gateway process.
+to embed MCP proxy functionality directly, exposing aggregated tools through
+its own interface without running a separate proxy process.
 
 **Architecture:**
 ```
@@ -545,14 +545,14 @@ Custom Rust Application
 ```
 
 **Middleware config:**
-- Gateway router embedded in application's axum server
+- Proxy router embedded in application's axum server
 - Application controls auth (integrates with its own auth system)
 - Programmatic backend registration (add/remove backends at runtime)
 - Custom middleware layers (application-specific validation, transformation)
 - Metrics integrated with application's existing observability
 
-**Gateway features leveraged:** Library mode (`Gateway::from_config`,
-`gateway.into_router()`), programmatic configuration, all middleware layers.
+**Proxy features leveraged:** Library mode (`Proxy::from_config`,
+`proxy.into_router()`), programmatic configuration, all middleware layers.
 
 **Industry precedent:** This follows the pattern of embedding Envoy as a
 library (via envoy-mobile) or embedding Kong's core as a library. The

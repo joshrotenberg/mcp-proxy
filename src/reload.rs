@@ -15,7 +15,7 @@ use tower::util::BoxCloneService;
 use tower_mcp::proxy::{BackendService, McpProxy};
 use tower_mcp::{RouterRequest, RouterResponse};
 
-use crate::config::{BackendConfig, GatewayConfig, TransportType};
+use crate::config::{BackendConfig, ProxyConfig, TransportType};
 
 /// Spawn a background task that watches the config file and adds new backends.
 pub fn spawn_config_watcher(config_path: PathBuf, proxy: McpProxy) {
@@ -55,7 +55,7 @@ async fn watch_loop(config_path: PathBuf, proxy: McpProxy) {
 
     // Track known backend names
     let mut known_backends: HashSet<String> = {
-        if let Ok(config) = GatewayConfig::load(&config_path) {
+        if let Ok(config) = ProxyConfig::load(&config_path) {
             config.backends.iter().map(|b| b.name.clone()).collect()
         } else {
             HashSet::new()
@@ -86,7 +86,7 @@ async fn watch_loop(config_path: PathBuf, proxy: McpProxy) {
 
         tracing::info!("Config file changed, checking for new backends");
 
-        let mut new_config = match GatewayConfig::load(&config_path) {
+        let mut new_config = match ProxyConfig::load(&config_path) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to parse updated config, skipping reload");
@@ -333,7 +333,7 @@ fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
             // Outlier detection (outermost)
             if let Some(ref od_config) = outlier {
                 // Hot-reloaded backends get their own detector (single-backend scope).
-                // The main gateway build path uses a shared detector across all backends.
+                // The main proxy build path uses a shared detector across all backends.
                 let detector = crate::outlier::OutlierDetector::new(od_config.max_ejection_percent);
                 let layer = crate::outlier::OutlierDetectionLayer::new(
                     name.clone(),

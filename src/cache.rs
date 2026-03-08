@@ -1,4 +1,4 @@
-//! Response caching middleware for the gateway.
+//! Response caching middleware for the proxy.
 //!
 //! Caches `ReadResource` and `CallTool` responses with per-backend TTL.
 //! Cache keys are derived from the request type, name/URI, and arguments.

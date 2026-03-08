@@ -1,4 +1,4 @@
-# Cost Optimization Gateway
+# Cost Optimization Proxy
 #
 # Controls AI tool usage costs by rate limiting expensive backends,
 # caching aggressively, and limiting concurrency. Useful when backends
@@ -6,13 +6,13 @@
 #
 # See: docs/architectures.md #11
 
-[gateway]
+[proxy]
 name = "cost-optimizer"
 version = "1.0.0"
 separator = "/"
-instructions = "Cost-optimized gateway. Expensive tool calls are rate-limited and cached."
+instructions = "Cost-optimized proxy. Expensive tool calls are rate-limited and cached."
 
-[gateway.listen]
+[proxy.listen]
 host = "0.0.0.0"
 port = 8080
 

@@ -1,7 +1,7 @@
-//! MCP admin tools for gateway introspection.
+//! MCP admin tools for proxy introspection.
 //!
-//! Registers tools under the `gateway/` namespace that allow any MCP client
-//! to query gateway status. Uses `ChannelTransport` to add an in-process
+//! Registers tools under the `proxy/` namespace that allow any MCP client
+//! to query proxy status. Uses `ChannelTransport` to add an in-process
 //! backend to the proxy.
 
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use tower_mcp::proxy::{AddBackendError, McpProxy};
 use tower_mcp::{CallToolResult, McpRouter, NoParams, SessionHandle, ToolBuilder};
 
 use crate::admin::AdminState;
-use crate::config::GatewayConfig;
+use crate::config::ProxyConfig;
 
 /// Shared state accessible to admin tool handlers.
 #[derive(Clone)]
@@ -39,8 +39,8 @@ struct BackendInfo {
 
 #[derive(Serialize)]
 struct BackendsResult {
-    gateway_name: String,
-    gateway_version: String,
+    proxy_name: String,
+    proxy_version: String,
     backend_count: usize,
     backends: Vec<BackendInfo>,
 }
@@ -52,17 +52,17 @@ struct SessionResult {
 
 /// Register admin tools as an in-process backend on the proxy.
 ///
-/// Tools are added under the `gateway/` namespace:
-/// - `gateway/list_backends` -- list backends with health status
-/// - `gateway/health_check` -- cached health check results
-/// - `gateway/session_count` -- active session count
-/// - `gateway/add_backend` -- dynamically add an HTTP backend
-/// - `gateway/config` -- dump current config (TOML)
+/// Tools are added under the `proxy/` namespace:
+/// - `proxy/list_backends` -- list backends with health status
+/// - `proxy/health_check` -- cached health check results
+/// - `proxy/session_count` -- active session count
+/// - `proxy/add_backend` -- dynamically add an HTTP backend
+/// - `proxy/config` -- dump current config (TOML)
 pub async fn register_admin_tools(
     proxy: &McpProxy,
     admin_state: AdminState,
     session_handle: SessionHandle,
-    config: &GatewayConfig,
+    config: &ProxyConfig,
 ) -> Result<(), AddBackendError> {
     let config_toml =
         toml::to_string_pretty(config).unwrap_or_else(|e| format!("error serializing: {e}"));
@@ -77,13 +77,13 @@ pub async fn register_admin_tools(
     let router = build_admin_router(state);
     let transport = ChannelTransport::new(router);
 
-    proxy.add_backend("gateway", transport).await
+    proxy.add_backend("proxy", transport).await
 }
 
 fn build_admin_router(state: AdminToolState) -> McpRouter {
     let state_for_backends = state.clone();
     let list_backends = ToolBuilder::new("list_backends")
-        .description("List all gateway backends with health status")
+        .description("List all proxy backends with health status")
         .handler(move |_: NoParams| {
             let s = state_for_backends.clone();
             async move {
@@ -101,8 +101,8 @@ fn build_admin_router(state: AdminToolState) -> McpRouter {
                     .collect();
 
                 let result = BackendsResult {
-                    gateway_name: s.admin_state.gateway_name().to_string(),
-                    gateway_version: s.admin_state.gateway_version().to_string(),
+                    proxy_name: s.admin_state.proxy_name().to_string(),
+                    proxy_version: s.admin_state.proxy_version().to_string(),
                     backend_count: s.admin_state.backend_count(),
                     backends,
                 };
@@ -133,7 +133,7 @@ fn build_admin_router(state: AdminToolState) -> McpRouter {
 
     let config_snapshot = Arc::clone(&state.config_snapshot);
     let config_tool = ToolBuilder::new("config")
-        .description("Dump the current gateway configuration")
+        .description("Dump the current proxy configuration")
         .handler(move |_: NoParams| {
             let config = Arc::clone(&config_snapshot);
             async move { Ok(CallToolResult::text((*config).clone())) }
@@ -180,7 +180,7 @@ fn build_admin_router(state: AdminToolState) -> McpRouter {
 
     let state_for_add = state.clone();
     let add_backend = ToolBuilder::new("add_backend")
-        .description("Dynamically add an HTTP backend to the gateway")
+        .description("Dynamically add an HTTP backend to the proxy")
         .handler(move |input: AddBackendInput| {
             let s = state_for_add.clone();
             async move {

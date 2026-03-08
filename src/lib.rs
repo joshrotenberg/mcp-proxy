@@ -5,20 +5,20 @@
 //!
 //! # Library Usage
 //!
-//! Build a proxy from a [`GatewayConfig`] and embed it in an existing axum app:
+//! Build a proxy from a [`ProxyConfig`] and embed it in an existing axum app:
 //!
 //! ```rust,no_run
-//! use mcp_proxy::{Gateway, GatewayConfig};
+//! use mcp_proxy::{Proxy, ProxyConfig};
 //!
 //! # async fn example() -> anyhow::Result<()> {
-//! let config = GatewayConfig::load("gateway.toml".as_ref())?;
-//! let gateway = Gateway::from_config(config).await?;
+//! let config = ProxyConfig::load("proxy.toml".as_ref())?;
+//! let proxy = Proxy::from_config(config).await?;
 //!
 //! // Embed in an existing axum app
-//! let (router, session_handle) = gateway.into_router();
+//! let (router, session_handle) = proxy.into_router();
 //!
 //! // Or serve standalone
-//! // gateway.serve().await?;
+//! // proxy.serve().await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -26,7 +26,7 @@
 //! # Hot Reload
 //!
 //! Enable `hot_reload = true` in the config to watch the config file for new
-//! backends. The gateway will add them dynamically without restart.
+//! backends. The proxy will add them dynamically without restart.
 
 pub mod admin;
 pub mod admin_tools;
@@ -49,7 +49,7 @@ pub mod validation;
 #[cfg(test)]
 mod test_util;
 
-mod gateway;
+mod proxy;
 
-pub use config::GatewayConfig;
-pub use gateway::Gateway;
+pub use config::ProxyConfig;
+pub use proxy::Proxy;

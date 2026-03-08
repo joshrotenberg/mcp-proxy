@@ -1,6 +1,6 @@
-//! Admin API for gateway introspection.
+//! Admin API for proxy introspection.
 //!
-//! Provides endpoints for checking backend health and gateway status.
+//! Provides endpoints for checking backend health and proxy status.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,8 +20,8 @@ use tower_mcp::proxy::McpProxy;
 #[derive(Clone)]
 pub struct AdminState {
     health: Arc<RwLock<Vec<BackendStatus>>>,
-    gateway_name: String,
-    gateway_version: String,
+    proxy_name: String,
+    proxy_version: String,
     backend_count: usize,
 }
 
@@ -31,14 +31,14 @@ impl AdminState {
         self.health.read().await.clone()
     }
 
-    /// Gateway name from config.
-    pub fn gateway_name(&self) -> &str {
-        &self.gateway_name
+    /// Proxy name from config.
+    pub fn proxy_name(&self) -> &str {
+        &self.proxy_name
     }
 
-    /// Gateway version from config.
-    pub fn gateway_version(&self) -> &str {
-        &self.gateway_version
+    /// Proxy version from config.
+    pub fn proxy_version(&self) -> &str {
+        &self.proxy_version
     }
 
     /// Number of configured backends.
@@ -66,12 +66,12 @@ pub struct BackendStatus {
 
 #[derive(Serialize)]
 struct AdminBackendsResponse {
-    gateway: GatewayInfo,
+    proxy: ProxyInfo,
     backends: Vec<BackendStatus>,
 }
 
 #[derive(Serialize)]
-struct GatewayInfo {
+struct ProxyInfo {
     name: String,
     version: String,
     backend_count: usize,
@@ -89,8 +89,8 @@ pub struct BackendMeta {
 /// Returns the AdminState that admin endpoints read from.
 pub fn spawn_health_checker(
     proxy: McpProxy,
-    gateway_name: String,
-    gateway_version: String,
+    proxy_name: String,
+    proxy_version: String,
     backend_count: usize,
     backend_meta: HashMap<String, BackendMeta>,
 ) -> AdminState {
@@ -146,8 +146,8 @@ pub fn spawn_health_checker(
 
     AdminState {
         health,
-        gateway_name,
-        gateway_version,
+        proxy_name,
+        proxy_version,
         backend_count,
     }
 }
@@ -160,9 +160,9 @@ async fn handle_backends(
     let active_sessions = session_handle.session_count().await;
 
     Json(AdminBackendsResponse {
-        gateway: GatewayInfo {
-            name: state.gateway_name,
-            version: state.gateway_version,
+        proxy: ProxyInfo {
+            name: state.proxy_name,
+            version: state.proxy_version,
             backend_count: state.backend_count,
             active_sessions,
         },
@@ -222,15 +222,15 @@ async fn handle_cache_clear(
 /// Create an `AdminState` directly for testing.
 #[cfg(test)]
 fn test_admin_state(
-    gateway_name: &str,
-    gateway_version: &str,
+    proxy_name: &str,
+    proxy_version: &str,
     backend_count: usize,
     statuses: Vec<BackendStatus>,
 ) -> AdminState {
     AdminState {
         health: Arc::new(RwLock::new(statuses)),
-        gateway_name: gateway_name.to_string(),
-        gateway_version: gateway_version.to_string(),
+        proxy_name: proxy_name.to_string(),
+        proxy_version: proxy_version.to_string(),
         backend_count,
     }
 }
@@ -318,8 +318,8 @@ mod tests {
     #[tokio::test]
     async fn test_admin_state_accessors() {
         let state = make_state(vec![healthy_backend("db/")]);
-        assert_eq!(state.gateway_name(), "test-gw");
-        assert_eq!(state.gateway_version(), "1.0.0");
+        assert_eq!(state.proxy_name(), "test-gw");
+        assert_eq!(state.proxy_version(), "1.0.0");
         assert_eq!(state.backend_count(), 1);
 
         let health = state.health().await;
@@ -358,9 +358,9 @@ mod tests {
         let router = admin_router(state, None, session_handle, None);
 
         let json = get_json(&router, "/backends").await;
-        assert_eq!(json["gateway"]["name"], "test-gw");
-        assert_eq!(json["gateway"]["version"], "1.0.0");
-        assert_eq!(json["gateway"]["backend_count"], 1);
+        assert_eq!(json["proxy"]["name"], "test-gw");
+        assert_eq!(json["proxy"]["version"], "1.0.0");
+        assert_eq!(json["proxy"]["backend_count"], 1);
         assert_eq!(json["backends"].as_array().unwrap().len(), 1);
         assert_eq!(json["backends"][0]["namespace"], "db/");
         assert!(json["backends"][0]["healthy"].as_bool().unwrap());

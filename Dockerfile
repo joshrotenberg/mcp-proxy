@@ -21,4 +21,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
     CMD curl -f http://localhost:8080/admin/backends || exit 1
 
 ENTRYPOINT ["mcp-proxy"]
-CMD ["--config", "/etc/mcp-proxy/gateway.toml"]
+CMD ["--config", "/etc/mcp-proxy/proxy.toml"]

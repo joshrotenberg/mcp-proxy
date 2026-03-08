@@ -1,4 +1,4 @@
-//! Role-based access control middleware for the gateway.
+//! Role-based access control middleware for the proxy.
 //!
 //! Reads JWT claims from `RouterRequest.extensions`, maps them to roles
 //! via config, and applies per-role tool allow/deny lists.

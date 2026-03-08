@@ -1,4 +1,4 @@
-# Developer Local Gateway
+# Developer Local Proxy
 #
 # Lightweight config for individual developers. Consolidates personal
 # MCP servers behind a single endpoint. No auth needed for local use.
@@ -7,12 +7,12 @@
 #
 # See: docs/architectures.md #3
 
-[gateway]
+[proxy]
 name = "dev-local"
 version = "1.0.0"
 separator = "/"
 
-[gateway.listen]
+[proxy.listen]
 host = "127.0.0.1"
 port = 3001
 

@@ -1,4 +1,4 @@
-# Testing Sandbox Gateway
+# Testing Sandbox Proxy
 #
 # Isolated environment for testing MCP integrations. Uses in-process
 # channel backends and stdio mocks. Safe to run in CI with no external
@@ -6,13 +6,13 @@
 #
 # See: docs/architectures.md #9
 
-[gateway]
+[proxy]
 name = "test-sandbox"
 version = "1.0.0"
 separator = "/"
 instructions = "Testing sandbox. All backends are mocked or sandboxed."
 
-[gateway.listen]
+[proxy.listen]
 host = "127.0.0.1"
 port = 0  # OS-assigned port for test isolation
 

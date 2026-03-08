@@ -3,14 +3,14 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
-use mcp_proxy::Gateway;
-use mcp_proxy::config::GatewayConfig;
+use mcp_proxy::Proxy;
+use mcp_proxy::config::ProxyConfig;
 
 #[derive(Parser)]
 #[command(name = "mcp-proxy", about = "Standalone MCP proxy")]
 struct Cli {
     /// Path to config file
-    #[arg(short, long, default_value = "gateway.toml")]
+    #[arg(short, long, default_value = "proxy.toml")]
     config: PathBuf,
 }
 
@@ -18,30 +18,30 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let mut config = GatewayConfig::load(&cli.config)?;
+    let mut config = ProxyConfig::load(&cli.config)?;
     config.resolve_env_vars();
 
     init_logging(&config);
 
     tracing::info!(
-        name = %config.gateway.name,
-        version = %config.gateway.version,
+        name = %config.proxy.name,
+        version = %config.proxy.version,
         backends = config.backends.len(),
         "Starting MCP proxy"
     );
 
-    let hot_reload = config.gateway.hot_reload;
+    let hot_reload = config.proxy.hot_reload;
 
-    let gateway = Gateway::from_config(config).await?;
+    let proxy = Proxy::from_config(config).await?;
 
     if hot_reload {
-        gateway.enable_hot_reload(cli.config.clone());
+        proxy.enable_hot_reload(cli.config.clone());
     }
 
-    gateway.serve().await
+    proxy.serve().await
 }
 
-fn init_logging(config: &GatewayConfig) {
+fn init_logging(config: &ProxyConfig) {
     let env_filter = format!(
         "tower_mcp={level},mcp_proxy={level}",
         level = config.observability.log_level

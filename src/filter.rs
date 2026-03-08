@@ -1,4 +1,4 @@
-//! Capability filtering middleware for the gateway.
+//! Capability filtering middleware for the proxy.
 //!
 //! Wraps a `Service<RouterRequest>` and filters tools, resources, and prompts
 //! based on per-backend allow/deny lists from config.
