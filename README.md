@@ -287,6 +287,26 @@ Client
 
 Global middleware wraps the entire proxy. Per-backend middleware is applied individually to each backend connection. All middleware is built with tower `Service` layers.
 
+## Feature Flags
+
+Pre-built binaries and `cargo install` include all features by default. If you're building from source and don't need everything, you can disable optional features for a smaller binary:
+
+| Feature | Default | What it includes |
+|---------|---------|-----------------|
+| `otel` | yes | OpenTelemetry distributed tracing (OTLP export) |
+| `metrics` | yes | Prometheus metrics and `/admin/metrics` endpoint |
+| `oauth` | yes | JWT/JWKS auth, RBAC, and token passthrough |
+
+```bash
+# Minimal build (bearer auth only, no metrics/tracing/JWT)
+cargo install mcp-proxy --no-default-features
+
+# Just metrics, no otel or JWT
+cargo install mcp-proxy --no-default-features --features metrics
+```
+
+Config parsing always works regardless of features -- if you reference a disabled feature in your config (e.g., `type = "jwt"` without the `oauth` feature), you'll get a clear error at startup.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.

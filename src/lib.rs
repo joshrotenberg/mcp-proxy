@@ -37,12 +37,15 @@ pub mod coalesce;
 pub mod config;
 pub mod filter;
 pub mod inject;
+#[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod mirror;
 pub mod outlier;
+#[cfg(feature = "oauth")]
 pub mod rbac;
 pub mod reload;
 pub mod retry;
+#[cfg(feature = "oauth")]
 pub mod token;
 pub mod validation;
 

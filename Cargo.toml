@@ -15,8 +15,14 @@ name = "mcp_proxy"
 name = "mcp-proxy"
 path = "src/main.rs"
 
+[features]
+default = ["otel", "metrics", "oauth"]
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
+metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
+oauth = ["tower-mcp/oauth", "tower-mcp/jwks"]
+
 [dependencies]
-tower-mcp = { version = "0.8.3", features = ["http", "http-client", "proxy", "oauth", "jwks"] }
+tower-mcp = { version = "0.8.3", features = ["http", "http-client", "proxy"] }
 tower-mcp-types = "0.8.3"
 axum = "0.8"
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
@@ -29,12 +35,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-metrics = "0.24.3"
-metrics-exporter-prometheus = "0.18.1"
-opentelemetry = "0.29"
-opentelemetry_sdk = { version = "0.29", features = ["rt-tokio"] }
-opentelemetry-otlp = "0.29"
-tracing-opentelemetry = "0.30"
+metrics = { version = "0.24.3", optional = true }
+metrics-exporter-prometheus = { version = "0.18.1", optional = true }
+opentelemetry = { version = "0.29", optional = true }
+opentelemetry_sdk = { version = "0.29", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.29", optional = true }
+tracing-opentelemetry = { version = "0.30", optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 schemars = "1"
 moka = { version = "0.12.14", features = ["future"] }

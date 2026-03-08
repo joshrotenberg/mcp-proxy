@@ -47,6 +47,7 @@ fn init_logging(config: &ProxyConfig) {
         level = config.observability.log_level
     );
 
+    #[cfg(feature = "otel")]
     if config.observability.tracing.enabled {
         use opentelemetry::trace::TracerProvider;
         use opentelemetry_otlp::WithExportConfig;
@@ -94,15 +95,16 @@ fn init_logging(config: &ProxyConfig) {
             service_name = %config.observability.tracing.service_name,
             "OpenTelemetry tracing enabled"
         );
-    } else {
-        let subscriber = tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .with_writer(std::io::stderr);
+        return;
+    }
 
-        if config.observability.json_logs {
-            subscriber.json().init();
-        } else {
-            subscriber.init();
-        }
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_writer(std::io::stderr);
+
+    if config.observability.json_logs {
+        subscriber.json().init();
+    } else {
+        subscriber.init();
     }
 }
