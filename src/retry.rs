@@ -56,11 +56,7 @@ fn is_retriable_response(resp: &RouterResponse) -> bool {
 pub fn build_retry_layer(
     config: &RetryConfig,
     backend_name: &str,
-) -> RetryLayer<
-    tower_mcp::router::RouterRequest,
-    RouterResponse,
-    std::convert::Infallible,
-> {
+) -> RetryLayer<tower_mcp::router::RouterRequest, RouterResponse, std::convert::Infallible> {
     let mut builder = RetryLayer::builder()
         // max_attempts includes the initial attempt, so max_retries + 1
         .max_attempts((config.max_retries + 1) as usize)
