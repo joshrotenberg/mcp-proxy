@@ -219,6 +219,22 @@ async fn handle_cache_clear(
     }
 }
 
+/// Create an `AdminState` directly for testing.
+#[cfg(test)]
+fn test_admin_state(
+    gateway_name: &str,
+    gateway_version: &str,
+    backend_count: usize,
+    statuses: Vec<BackendStatus>,
+) -> AdminState {
+    AdminState {
+        health: Arc::new(RwLock::new(statuses)),
+        gateway_name: gateway_name.to_string(),
+        gateway_version: gateway_version.to_string(),
+        backend_count,
+    }
+}
+
 /// Build the admin API router.
 pub fn admin_router(
     state: AdminState,
@@ -236,4 +252,174 @@ pub fn admin_router(
         .layer(Extension(metrics_handle))
         .layer(Extension(session_handle))
         .layer(Extension(cache_handle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn make_state(statuses: Vec<BackendStatus>) -> AdminState {
+        test_admin_state("test-gw", "1.0.0", statuses.len(), statuses)
+    }
+
+    fn healthy_backend(name: &str) -> BackendStatus {
+        BackendStatus {
+            namespace: name.to_string(),
+            healthy: true,
+            last_checked_at: Some(Utc::now()),
+            consecutive_failures: 0,
+            error: None,
+            transport: Some("http".to_string()),
+        }
+    }
+
+    fn unhealthy_backend(name: &str) -> BackendStatus {
+        BackendStatus {
+            namespace: name.to_string(),
+            healthy: false,
+            last_checked_at: Some(Utc::now()),
+            consecutive_failures: 3,
+            error: Some("ping failed".to_string()),
+            transport: Some("stdio".to_string()),
+        }
+    }
+
+    fn make_session_handle() -> SessionHandle {
+        // Create a session handle via HttpTransport (the only public way)
+        let svc = tower::util::BoxCloneService::new(tower::service_fn(
+            |_req: tower_mcp::RouterRequest| async {
+                Ok::<_, std::convert::Infallible>(tower_mcp::RouterResponse {
+                    id: tower_mcp::protocol::RequestId::Number(1),
+                    inner: Ok(tower_mcp::protocol::McpResponse::Pong(Default::default())),
+                })
+            },
+        ));
+        let (_, handle) =
+            tower_mcp::transport::http::HttpTransport::from_service(svc).into_router_with_handle();
+        handle
+    }
+
+    async fn get_json(router: &Router, path: &str) -> serde_json::Value {
+        let resp = router
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_admin_state_accessors() {
+        let state = make_state(vec![healthy_backend("db/")]);
+        assert_eq!(state.gateway_name(), "test-gw");
+        assert_eq!(state.gateway_version(), "1.0.0");
+        assert_eq!(state.backend_count(), 1);
+
+        let health = state.health().await;
+        assert_eq!(health.len(), 1);
+        assert!(health[0].healthy);
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoint_all_healthy() {
+        let state = make_state(vec![healthy_backend("db/"), healthy_backend("api/")]);
+        let session_handle = make_session_handle();
+        let router = admin_router(state, None, session_handle, None);
+
+        let json = get_json(&router, "/health").await;
+        assert_eq!(json["status"], "healthy");
+        assert!(json["unhealthy_backends"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoint_degraded() {
+        let state = make_state(vec![healthy_backend("db/"), unhealthy_backend("flaky/")]);
+        let session_handle = make_session_handle();
+        let router = admin_router(state, None, session_handle, None);
+
+        let json = get_json(&router, "/health").await;
+        assert_eq!(json["status"], "degraded");
+        let unhealthy = json["unhealthy_backends"].as_array().unwrap();
+        assert_eq!(unhealthy.len(), 1);
+        assert_eq!(unhealthy[0], "flaky/");
+    }
+
+    #[tokio::test]
+    async fn test_backends_endpoint() {
+        let state = make_state(vec![healthy_backend("db/")]);
+        let session_handle = make_session_handle();
+        let router = admin_router(state, None, session_handle, None);
+
+        let json = get_json(&router, "/backends").await;
+        assert_eq!(json["gateway"]["name"], "test-gw");
+        assert_eq!(json["gateway"]["version"], "1.0.0");
+        assert_eq!(json["gateway"]["backend_count"], 1);
+        assert_eq!(json["backends"].as_array().unwrap().len(), 1);
+        assert_eq!(json["backends"][0]["namespace"], "db/");
+        assert!(json["backends"][0]["healthy"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_cache_stats_no_cache() {
+        let state = make_state(vec![]);
+        let session_handle = make_session_handle();
+        let router = admin_router(state, None, session_handle, None);
+
+        let json = get_json(&router, "/cache/stats").await;
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cache_clear_no_cache() {
+        let state = make_state(vec![]);
+        let session_handle = make_session_handle();
+        let router = admin_router(state, None, session_handle, None);
+
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/cache/clear")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), b"no caches configured");
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoint_no_recorder() {
+        let state = make_state(vec![]);
+        let session_handle = make_session_handle();
+        let router = admin_router(state, None, session_handle, None);
+
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(body.is_empty());
+    }
 }

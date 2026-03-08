@@ -109,4 +109,23 @@ mod tests {
 
         assert!(resp.inner.is_ok());
     }
+
+    #[tokio::test]
+    async fn test_metrics_records_error_responses() {
+        let mock = crate::test_util::ErrorMockService;
+        let mut svc = MetricsService::new(mock);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        // ErrorMockService returns a JSON-RPC error; metrics should record status="error"
+        assert!(resp.inner.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_metrics_handles_ping() {
+        let mock = MockService::with_tools(&[]);
+        let mut svc = MetricsService::new(mock);
+
+        let resp = call_service(&mut svc, McpRequest::Ping).await;
+        assert!(resp.inner.is_ok());
+    }
 }

@@ -68,6 +68,34 @@ impl Service<RouterRequest> for MockService {
     }
 }
 
+/// A mock service that always returns a JSON-RPC error response.
+#[derive(Clone)]
+pub struct ErrorMockService;
+
+impl Service<RouterRequest> for ErrorMockService {
+    type Response = RouterResponse;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<RouterResponse, Infallible>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: RouterRequest) -> Self::Future {
+        let id = req.id.clone();
+        Box::pin(async move {
+            Ok(RouterResponse {
+                id,
+                inner: Err(tower_mcp_types::JsonRpcError {
+                    code: -32603,
+                    message: "internal error".to_string(),
+                    data: None,
+                }),
+            })
+        })
+    }
+}
+
 /// Helper to send an MCP request through any service that implements
 /// `Service<RouterRequest, Response=RouterResponse, Error=Infallible>`.
 pub async fn call_service<S>(svc: &mut S, request: McpRequest) -> RouterResponse
