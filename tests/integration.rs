@@ -17,9 +17,12 @@ use tower_mcp::{CallToolResult, McpRouter, ToolBuilder};
 
 use mcp_gateway::alias::{AliasMap, AliasService};
 use mcp_gateway::cache::CacheService;
+use mcp_gateway::coalesce::CoalesceService;
 use mcp_gateway::config::BackendCacheConfig;
-use mcp_gateway::config::{BackendFilter, NameFilter};
+use mcp_gateway::config::{BackendFilter, InjectArgsConfig, NameFilter};
 use mcp_gateway::filter::CapabilityFilterService;
+use mcp_gateway::inject::{InjectArgsService, InjectionRules};
+use mcp_gateway::mirror::MirrorService;
 use mcp_gateway::validation::{ValidationConfig, ValidationService};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -33,6 +36,13 @@ struct EchoInput {
     message: String,
 }
 
+/// A tool that echoes back all arguments as JSON, for testing argument injection.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ArgsInput {
+    #[serde(flatten)]
+    args: serde_json::Map<String, serde_json::Value>,
+}
+
 fn math_router() -> McpRouter {
     let add = ToolBuilder::new("add")
         .description("Add two numbers")
@@ -41,9 +51,19 @@ fn math_router() -> McpRouter {
         })
         .build();
 
+    let echo_args = ToolBuilder::new("echo_args")
+        .description("Echo back all arguments as JSON")
+        .handler(|input: ArgsInput| async move {
+            Ok(CallToolResult::text(
+                serde_json::to_string(&input.args).unwrap(),
+            ))
+        })
+        .build();
+
     McpRouter::new()
         .server_info("math-server", "1.0.0")
         .tool(add)
+        .tool(echo_args)
 }
 
 fn text_router() -> McpRouter {
@@ -112,9 +132,10 @@ async fn test_proxy_list_tools_namespaced() {
         McpResponse::ListTools(result) => {
             let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
             assert!(names.contains(&"math/add"), "tools: {:?}", names);
+            assert!(names.contains(&"math/echo_args"), "tools: {:?}", names);
             assert!(names.contains(&"text/echo"), "tools: {:?}", names);
             assert!(names.contains(&"text/upper"), "tools: {:?}", names);
-            assert_eq!(names.len(), 3);
+            assert_eq!(names.len(), 4);
         }
         other => panic!("expected ListTools, got: {:?}", other),
     }
@@ -333,13 +354,13 @@ async fn test_admin_tools_list_backends() {
 async fn test_dynamic_add_backend() {
     let mut proxy = build_proxy().await;
 
-    // Verify we start with 3 tools (math/add, text/echo, text/upper)
+    // Verify we start with 4 tools (math/add, math/echo_args, text/echo, text/upper)
     let resp = call(&mut proxy, McpRequest::ListTools(Default::default())).await;
     let initial_count = match resp.inner.unwrap() {
         McpResponse::ListTools(result) => result.tools.len(),
         _ => panic!("expected ListTools"),
     };
-    assert_eq!(initial_count, 3);
+    assert_eq!(initial_count, 4);
 
     // Dynamically add another backend
     let extra_router = McpRouter::new().server_info("extra", "1.0.0").tool(
@@ -354,12 +375,12 @@ async fn test_dynamic_add_backend() {
         .await
         .expect("add extra backend");
 
-    // Should now have 4 tools
+    // Should now have 5 tools
     let resp = call(&mut proxy, McpRequest::ListTools(Default::default())).await;
     match resp.inner.unwrap() {
         McpResponse::ListTools(result) => {
             let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
-            assert_eq!(names.len(), 4, "should have 4 tools: {:?}", names);
+            assert_eq!(names.len(), 5, "should have 5 tools: {:?}", names);
             assert!(names.contains(&"extra/ping"));
         }
         other => panic!("expected ListTools, got: {:?}", other),
@@ -463,8 +484,295 @@ async fn test_proxy_with_stacked_middleware() {
             let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
             assert_eq!(
                 names.len(),
-                2,
-                "should have math/add + text/echo: {:?}",
+                3,
+                "should have math/add + math/echo_args + text/echo: {:?}",
+                names
+            );
+        }
+        other => panic!("expected ListTools, got: {:?}", other),
+    }
+}
+
+// --- Proxy + inject args ---
+
+#[tokio::test]
+async fn test_proxy_with_inject_default_args() {
+    let proxy = build_proxy().await;
+    let mut defaults = serde_json::Map::new();
+    defaults.insert("timeout".to_string(), serde_json::json!(30));
+
+    let rules = vec![InjectionRules::new("math/".to_string(), defaults, vec![])];
+    let mut svc = InjectArgsService::new(proxy, rules);
+
+    // Call echo_args with just "query" -- should get "timeout" injected
+    let resp = call(
+        &mut svc,
+        tool_call("math/echo_args", serde_json::json!({"query": "SELECT 1"})),
+    )
+    .await;
+
+    match resp.inner.unwrap() {
+        McpResponse::CallTool(result) => {
+            let args: serde_json::Value = serde_json::from_str(&result.all_text()).unwrap();
+            assert_eq!(args["query"], "SELECT 1");
+            assert_eq!(args["timeout"], 30, "default arg should be injected");
+        }
+        other => panic!("expected CallTool, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_proxy_with_inject_does_not_overwrite() {
+    let proxy = build_proxy().await;
+    let mut defaults = serde_json::Map::new();
+    defaults.insert("timeout".to_string(), serde_json::json!(30));
+
+    let rules = vec![InjectionRules::new("math/".to_string(), defaults, vec![])];
+    let mut svc = InjectArgsService::new(proxy, rules);
+
+    // Call with timeout already set -- should NOT be overwritten
+    let resp = call(
+        &mut svc,
+        tool_call(
+            "math/echo_args",
+            serde_json::json!({"query": "SELECT 1", "timeout": 60}),
+        ),
+    )
+    .await;
+
+    match resp.inner.unwrap() {
+        McpResponse::CallTool(result) => {
+            let args: serde_json::Value = serde_json::from_str(&result.all_text()).unwrap();
+            assert_eq!(args["timeout"], 60, "existing value should be preserved");
+        }
+        other => panic!("expected CallTool, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_proxy_with_inject_per_tool_overwrite() {
+    let proxy = build_proxy().await;
+    let tool_rules = vec![InjectArgsConfig {
+        tool: "echo_args".to_string(),
+        args: {
+            let mut m = serde_json::Map::new();
+            m.insert("forced".to_string(), serde_json::json!(true));
+            m
+        },
+        overwrite: true,
+    }];
+
+    let rules = vec![InjectionRules::new(
+        "math/".to_string(),
+        serde_json::Map::new(),
+        tool_rules,
+    )];
+    let mut svc = InjectArgsService::new(proxy, rules);
+
+    // Call with forced=false -- should be overwritten to true
+    let resp = call(
+        &mut svc,
+        tool_call(
+            "math/echo_args",
+            serde_json::json!({"data": "hi", "forced": false}),
+        ),
+    )
+    .await;
+
+    match resp.inner.unwrap() {
+        McpResponse::CallTool(result) => {
+            let args: serde_json::Value = serde_json::from_str(&result.all_text()).unwrap();
+            assert_eq!(args["forced"], true, "should be overwritten");
+            assert_eq!(args["data"], "hi", "other args preserved");
+        }
+        other => panic!("expected CallTool, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_proxy_with_inject_skips_other_namespace() {
+    let proxy = build_proxy().await;
+    let mut defaults = serde_json::Map::new();
+    defaults.insert("injected".to_string(), serde_json::json!(true));
+
+    // Only inject into math/ namespace
+    let rules = vec![InjectionRules::new("math/".to_string(), defaults, vec![])];
+    let mut svc = InjectArgsService::new(proxy, rules);
+
+    // Call text/echo -- should NOT get injected args
+    let resp = call(
+        &mut svc,
+        tool_call("text/echo", serde_json::json!({"message": "hello"})),
+    )
+    .await;
+
+    match resp.inner.unwrap() {
+        McpResponse::CallTool(result) => {
+            assert_eq!(result.all_text(), "hello");
+        }
+        other => panic!("expected CallTool, got: {:?}", other),
+    }
+}
+
+// --- Proxy + mirror ---
+
+#[tokio::test]
+async fn test_proxy_with_mirror_primary_response_returned() {
+    // Mirror sends a fire-and-forget copy; primary response is returned to caller.
+    let math_transport = ChannelTransport::new(math_router());
+    let text_transport = ChannelTransport::new(text_router());
+    let text_v2_transport = ChannelTransport::new(text_router());
+
+    let proxy = McpProxy::builder("mirror-proxy", "1.0.0")
+        .separator("/")
+        .backend("math", math_transport)
+        .await
+        .backend("text", text_transport)
+        .await
+        .backend("text-v2", text_v2_transport)
+        .await
+        .build_strict()
+        .await
+        .expect("proxy should build");
+
+    let mirror_mappings = [("text".to_string(), ("text-v2".to_string(), 100u32))]
+        .into_iter()
+        .collect();
+
+    let mut svc = MirrorService::new(proxy, mirror_mappings, "/");
+
+    // Call primary -- should get normal response
+    let resp = call(
+        &mut svc,
+        tool_call("text/echo", serde_json::json!({"message": "hello"})),
+    )
+    .await;
+
+    match resp.inner.unwrap() {
+        McpResponse::CallTool(result) => {
+            assert_eq!(result.all_text(), "hello");
+        }
+        other => panic!("expected CallTool, got: {:?}", other),
+    }
+
+    // List tools should show all backends
+    let resp = call(&mut svc, McpRequest::ListTools(Default::default())).await;
+    match resp.inner.unwrap() {
+        McpResponse::ListTools(result) => {
+            let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+            assert!(names.contains(&"text/echo"));
+            assert!(names.contains(&"text-v2/echo"));
+            assert!(names.contains(&"math/add"));
+        }
+        other => panic!("expected ListTools, got: {:?}", other),
+    }
+}
+
+// --- Proxy + coalesce ---
+
+#[tokio::test]
+async fn test_proxy_with_coalesce() {
+    let proxy = build_proxy().await;
+    let mut svc = CoalesceService::new(proxy);
+
+    // Sequential calls with same args should both succeed
+    let resp1 = call(
+        &mut svc,
+        tool_call("math/add", serde_json::json!({"a": 7, "b": 8})),
+    )
+    .await;
+    let resp2 = call(
+        &mut svc,
+        tool_call("math/add", serde_json::json!({"a": 7, "b": 8})),
+    )
+    .await;
+
+    match (resp1.inner.unwrap(), resp2.inner.unwrap()) {
+        (McpResponse::CallTool(r1), McpResponse::CallTool(r2)) => {
+            assert_eq!(r1.all_text(), "15");
+            assert_eq!(r2.all_text(), "15");
+        }
+        _ => panic!("expected CallTool responses"),
+    }
+}
+
+// --- Full middleware stack composition ---
+
+#[tokio::test]
+async fn test_full_middleware_stack() {
+    let proxy = build_proxy().await;
+
+    // Build a realistic middleware stack:
+    // validation -> alias -> filter -> inject -> proxy
+    let mut defaults = serde_json::Map::new();
+    defaults.insert("timeout".to_string(), serde_json::json!(30));
+    let inject_rules = vec![InjectionRules::new("math/".to_string(), defaults, vec![])];
+
+    let filters = vec![BackendFilter {
+        namespace: "text/".to_string(),
+        tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
+        resource_filter: NameFilter::PassAll,
+        prompt_filter: NameFilter::PassAll,
+    }];
+
+    let aliases = AliasMap::new(vec![(
+        "math/".to_string(),
+        "add".to_string(),
+        "sum".to_string(),
+    )])
+    .unwrap();
+
+    let validation = ValidationConfig {
+        max_argument_size: Some(4096),
+    };
+
+    // Stack: outermost -> innermost
+    let injected = InjectArgsService::new(proxy, inject_rules);
+    let filtered = CapabilityFilterService::new(injected, filters);
+    let aliased = AliasService::new(filtered, aliases);
+    let mut svc = ValidationService::new(aliased, validation);
+
+    // math/add is aliased to math/sum
+    let resp = call(
+        &mut svc,
+        tool_call("math/sum", serde_json::json!({"a": 100, "b": 200})),
+    )
+    .await;
+    match resp.inner.unwrap() {
+        McpResponse::CallTool(result) => assert_eq!(result.all_text(), "300"),
+        other => panic!("expected CallTool, got: {:?}", other),
+    }
+
+    // text/upper is filtered out
+    let resp = call(
+        &mut svc,
+        tool_call("text/upper", serde_json::json!({"message": "hi"})),
+    )
+    .await;
+    assert!(resp.inner.is_err());
+
+    // text/echo works normally
+    let resp = call(
+        &mut svc,
+        tool_call("text/echo", serde_json::json!({"message": "world"})),
+    )
+    .await;
+    match resp.inner.unwrap() {
+        McpResponse::CallTool(result) => assert_eq!(result.all_text(), "world"),
+        other => panic!("expected CallTool, got: {:?}", other),
+    }
+
+    // List tools shows aliased + filtered view
+    let resp = call(&mut svc, McpRequest::ListTools(Default::default())).await;
+    match resp.inner.unwrap() {
+        McpResponse::ListTools(result) => {
+            let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+            assert!(names.contains(&"math/sum"), "aliased name: {:?}", names);
+            assert!(!names.contains(&"math/add"), "original hidden: {:?}", names);
+            assert!(names.contains(&"text/echo"), "echo visible: {:?}", names);
+            assert!(
+                !names.contains(&"text/upper"),
+                "upper filtered: {:?}",
                 names
             );
         }
