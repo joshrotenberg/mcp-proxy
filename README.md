@@ -46,11 +46,32 @@ Built on [tower-mcp](https://github.com/joshrotenberg/tower-mcp) and the [tower]
 - **Admin API** -- health checks, backend status, cache stats
 - **Admin MCP tools** -- introspection tools under `proxy/` namespace
 
-## Quick Start
+## Installation
+
+### Homebrew
+
+```bash
+brew install joshrotenberg/brew/mcp-proxy
+```
+
+### Cargo
 
 ```bash
 cargo install mcp-proxy
 ```
+
+### Docker
+
+```bash
+docker pull ghcr.io/joshrotenberg/mcp-proxy:latest
+docker run -v ./proxy.toml:/etc/mcp-proxy/proxy.toml:ro -p 8080:8080 ghcr.io/joshrotenberg/mcp-proxy:latest
+```
+
+### Pre-built binaries
+
+Download from [GitHub Releases](https://github.com/joshrotenberg/mcp-proxy/releases).
+
+## Quick Start
 
 Create a `proxy.toml`:
 
