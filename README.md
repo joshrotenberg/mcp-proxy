@@ -1,5 +1,10 @@
 # mcp-proxy
 
+[![Crates.io](https://img.shields.io/crates/v/mcp-proxy.svg)](https://crates.io/crates/mcp-proxy)
+[![docs.rs](https://docs.rs/mcp-proxy/badge.svg)](https://docs.rs/mcp-proxy)
+[![CI](https://github.com/joshrotenberg/mcp-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/joshrotenberg/mcp-proxy/actions/workflows/ci.yml)
+[![License](https://img.shields.io/crates/l/mcp-proxy.svg)](LICENSE-MIT)
+
 A config-driven [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) reverse proxy built in Rust. Aggregates multiple MCP backends behind a single endpoint with per-backend middleware, authentication, and observability.
 
 Built on [tower-mcp](https://github.com/joshrotenberg/tower-mcp) and the [tower](https://github.com/tower-rs/tower) middleware ecosystem.
@@ -39,7 +44,7 @@ Built on [tower-mcp](https://github.com/joshrotenberg/tower-mcp) and the [tower]
 - **OpenTelemetry tracing** -- distributed trace export via OTLP
 - **Audit logging** -- structured logging of all MCP requests
 - **Admin API** -- health checks, backend status, cache stats
-- **Admin MCP tools** -- introspection tools under `gateway/` namespace
+- **Admin MCP tools** -- introspection tools under `proxy/` namespace
 
 ## Quick Start
 
@@ -47,14 +52,14 @@ Built on [tower-mcp](https://github.com/joshrotenberg/tower-mcp) and the [tower]
 cargo install mcp-proxy
 ```
 
-Create a `gateway.toml`:
+Create a `proxy.toml`:
 
 ```toml
-[gateway]
+[proxy]
 name = "my-proxy"
 separator = "/"
 
-[gateway.listen]
+[proxy.listen]
 host = "127.0.0.1"
 port = 8080
 
@@ -68,7 +73,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 Run:
 
 ```bash
-mcp-proxy --config gateway.toml
+mcp-proxy --config proxy.toml
 ```
 
 All tools from the filesystem server are now available under the `files/` namespace at `http://127.0.0.1:8080/mcp`.
@@ -212,16 +217,16 @@ mcp-proxy = "0.1"
 ```
 
 ```rust
-use mcp_proxy::{Gateway, GatewayConfig};
+use mcp_proxy::{Proxy, ProxyConfig};
 
-let config = GatewayConfig::load("gateway.toml".as_ref())?;
-let gateway = Gateway::from_config(config).await?;
+let config = ProxyConfig::load("proxy.toml".as_ref())?;
+let proxy = Proxy::from_config(config).await?;
 
 // Embed in an existing axum app
-let (router, session_handle) = gateway.into_router();
+let (router, session_handle) = proxy.into_router();
 
 // Or serve standalone
-gateway.serve().await?;
+proxy.serve().await?;
 ```
 
 ## Admin API
@@ -234,13 +239,13 @@ HTTP endpoints:
 - `GET /admin/cache/stats` -- per-backend cache hit/miss rates
 - `POST /admin/cache/clear` -- clear all caches
 
-MCP tools (under `gateway/` namespace):
+MCP tools (under `proxy/` namespace):
 
-- `gateway/list_backends` -- list backends with health status
-- `gateway/health_check` -- cached health check results
-- `gateway/session_count` -- active session count
-- `gateway/add_backend` -- dynamically add an HTTP backend
-- `gateway/config` -- dump current config
+- `proxy/list_backends` -- list backends with health status
+- `proxy/health_check` -- cached health check results
+- `proxy/session_count` -- active session count
+- `proxy/add_backend` -- dynamically add an HTTP backend
+- `proxy/config` -- dump current config
 
 ## Architecture
 

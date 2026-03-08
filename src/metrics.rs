@@ -1,4 +1,4 @@
-//! Prometheus metrics middleware for the gateway.
+//! Prometheus metrics middleware for the proxy.
 //!
 //! Records per-request counters and duration histograms, labeled by
 //! MCP method and backend namespace.

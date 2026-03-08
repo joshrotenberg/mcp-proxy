@@ -1,4 +1,4 @@
 /target
 CLAUDE.md
-gateway*.toml
+proxy*.toml
 !config.example.toml

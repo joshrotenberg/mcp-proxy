@@ -1,4 +1,4 @@
-//! Gateway configuration types and TOML parsing.
+//! Proxy configuration types and TOML parsing.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -7,11 +7,11 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// Top-level gateway configuration, typically loaded from a TOML file.
+/// Top-level proxy configuration, typically loaded from a TOML file.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct GatewayConfig {
-    /// Core gateway settings (name, version, listen address).
-    pub gateway: Gateway,
+pub struct ProxyConfig {
+    /// Core proxy settings (name, version, listen address).
+    pub proxy: ProxySettings,
     /// Backend MCP servers to proxy.
     #[serde(default)]
     pub backends: Vec<BackendConfig>,
@@ -28,12 +28,12 @@ pub struct GatewayConfig {
     pub observability: ObservabilityConfig,
 }
 
-/// Core gateway identity and server settings.
+/// Core proxy identity and server settings.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct Gateway {
-    /// Gateway name, used in MCP server info.
+pub struct ProxySettings {
+    /// Proxy name, used in MCP server info.
     pub name: String,
-    /// Gateway version, used in MCP server info (default: "0.1.0").
+    /// Proxy version, used in MCP server info (default: "0.1.0").
     #[serde(default = "default_version")]
     pub version: String,
     /// Namespace separator between backend name and tool/resource name (default: "/").
@@ -105,7 +105,7 @@ pub struct BackendConfig {
     /// Supports `${ENV_VAR}` syntax for env var resolution.
     pub bearer_token: Option<String>,
     /// Forward the client's inbound auth token to this backend.
-    /// Only works with HTTP backends when the gateway has auth enabled.
+    /// Only works with HTTP backends when the proxy has auth enabled.
     #[serde(default)]
     pub forward_auth: bool,
     /// Tool aliases: rename tools exposed by this backend
@@ -613,7 +613,7 @@ impl BackendConfig {
     }
 }
 
-impl GatewayConfig {
+impl ProxyConfig {
     /// Load and validate a config from a file path.
     pub fn load(path: &Path) -> Result<Self> {
         let content =
@@ -629,12 +629,12 @@ impl GatewayConfig {
     /// # Examples
     ///
     /// ```
-    /// use mcp_proxy::GatewayConfig;
+    /// use mcp_proxy::ProxyConfig;
     ///
-    /// let config = GatewayConfig::parse(r#"
-    ///     [gateway]
-    ///     name = "my-gateway"
-    ///     [gateway.listen]
+    /// let config = ProxyConfig::parse(r#"
+    ///     [proxy]
+    ///     name = "my-proxy"
+    ///     [proxy.listen]
     ///
     ///     [[backends]]
     ///     name = "echo"
@@ -642,7 +642,7 @@ impl GatewayConfig {
     ///     command = "echo"
     /// "#).unwrap();
     ///
-    /// assert_eq!(config.gateway.name, "my-gateway");
+    /// assert_eq!(config.proxy.name, "my-proxy");
     /// assert_eq!(config.backends.len(), 1);
     /// ```
     pub fn parse(toml: &str) -> Result<Self> {
@@ -791,9 +791,9 @@ mod tests {
 
     fn minimal_config() -> &'static str {
         r#"
-        [gateway]
+        [proxy]
         name = "test"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "echo"
@@ -804,14 +804,14 @@ mod tests {
 
     #[test]
     fn test_parse_minimal_config() {
-        let config = GatewayConfig::parse(minimal_config()).unwrap();
-        assert_eq!(config.gateway.name, "test");
-        assert_eq!(config.gateway.version, "0.1.0"); // default
-        assert_eq!(config.gateway.separator, "/"); // default
-        assert_eq!(config.gateway.listen.host, "127.0.0.1"); // default
-        assert_eq!(config.gateway.listen.port, 8080); // default
-        assert_eq!(config.gateway.shutdown_timeout_seconds, 30); // default
-        assert!(!config.gateway.hot_reload); // default false
+        let config = ProxyConfig::parse(minimal_config()).unwrap();
+        assert_eq!(config.proxy.name, "test");
+        assert_eq!(config.proxy.version, "0.1.0"); // default
+        assert_eq!(config.proxy.separator, "/"); // default
+        assert_eq!(config.proxy.listen.host, "127.0.0.1"); // default
+        assert_eq!(config.proxy.listen.port, 8080); // default
+        assert_eq!(config.proxy.shutdown_timeout_seconds, 30); // default
+        assert!(!config.proxy.hot_reload); // default false
         assert_eq!(config.backends.len(), 1);
         assert_eq!(config.backends[0].name, "echo");
         assert!(config.auth.is_none());
@@ -822,14 +822,14 @@ mod tests {
     #[test]
     fn test_parse_full_config() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "full-gw"
         version = "2.0.0"
         separator = "."
         shutdown_timeout_seconds = 60
         hot_reload = true
-        instructions = "A test gateway"
-        [gateway.listen]
+        instructions = "A test proxy"
+        [proxy.listen]
         host = "0.0.0.0"
         port = 9090
 
@@ -893,18 +893,15 @@ mod tests {
         max_argument_size = 1048576
         "#;
 
-        let config = GatewayConfig::parse(toml).unwrap();
-        assert_eq!(config.gateway.name, "full-gw");
-        assert_eq!(config.gateway.version, "2.0.0");
-        assert_eq!(config.gateway.separator, ".");
-        assert_eq!(config.gateway.shutdown_timeout_seconds, 60);
-        assert!(config.gateway.hot_reload);
-        assert_eq!(
-            config.gateway.instructions.as_deref(),
-            Some("A test gateway")
-        );
-        assert_eq!(config.gateway.listen.host, "0.0.0.0");
-        assert_eq!(config.gateway.listen.port, 9090);
+        let config = ProxyConfig::parse(toml).unwrap();
+        assert_eq!(config.proxy.name, "full-gw");
+        assert_eq!(config.proxy.version, "2.0.0");
+        assert_eq!(config.proxy.separator, ".");
+        assert_eq!(config.proxy.shutdown_timeout_seconds, 60);
+        assert!(config.proxy.hot_reload);
+        assert_eq!(config.proxy.instructions.as_deref(), Some("A test proxy"));
+        assert_eq!(config.proxy.listen.host, "0.0.0.0");
+        assert_eq!(config.proxy.listen.port, 9090);
 
         assert_eq!(config.backends.len(), 2);
 
@@ -946,9 +943,9 @@ mod tests {
     #[test]
     fn test_parse_bearer_auth() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "auth-gw"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "echo"
@@ -960,7 +957,7 @@ mod tests {
         tokens = ["token-1", "token-2"]
         "#;
 
-        let config = GatewayConfig::parse(toml).unwrap();
+        let config = ProxyConfig::parse(toml).unwrap();
         match &config.auth {
             Some(AuthConfig::Bearer { tokens }) => {
                 assert_eq!(tokens, &["token-1", "token-2"]);
@@ -972,9 +969,9 @@ mod tests {
     #[test]
     fn test_parse_jwt_auth_with_rbac() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "jwt-gw"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "echo"
@@ -999,7 +996,7 @@ mod tests {
         mapping = { "mcp:read" = "reader", "mcp:admin" = "admin" }
         "#;
 
-        let config = GatewayConfig::parse(toml).unwrap();
+        let config = ProxyConfig::parse(toml).unwrap();
         match &config.auth {
             Some(AuthConfig::Jwt {
                 issuer,
@@ -1029,12 +1026,12 @@ mod tests {
     #[test]
     fn test_reject_no_backends() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "empty"
-        [gateway.listen]
+        [proxy.listen]
         "#;
 
-        let err = GatewayConfig::parse(toml).unwrap_err();
+        let err = ProxyConfig::parse(toml).unwrap_err();
         assert!(
             format!("{err}").contains("at least one backend"),
             "unexpected error: {err}"
@@ -1044,16 +1041,16 @@ mod tests {
     #[test]
     fn test_reject_stdio_without_command() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "bad"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "broken"
         transport = "stdio"
         "#;
 
-        let err = GatewayConfig::parse(toml).unwrap_err();
+        let err = ProxyConfig::parse(toml).unwrap_err();
         assert!(
             format!("{err}").contains("stdio transport requires 'command'"),
             "unexpected error: {err}"
@@ -1063,16 +1060,16 @@ mod tests {
     #[test]
     fn test_reject_http_without_url() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "bad"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "broken"
         transport = "http"
         "#;
 
-        let err = GatewayConfig::parse(toml).unwrap_err();
+        let err = ProxyConfig::parse(toml).unwrap_err();
         assert!(
             format!("{err}").contains("http transport requires 'url'"),
             "unexpected error: {err}"
@@ -1082,9 +1079,9 @@ mod tests {
     #[test]
     fn test_reject_invalid_circuit_breaker_threshold() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "bad"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "svc"
@@ -1095,7 +1092,7 @@ mod tests {
         failure_rate_threshold = 1.5
         "#;
 
-        let err = GatewayConfig::parse(toml).unwrap_err();
+        let err = ProxyConfig::parse(toml).unwrap_err();
         assert!(
             format!("{err}").contains("failure_rate_threshold must be in (0.0, 1.0]"),
             "unexpected error: {err}"
@@ -1105,9 +1102,9 @@ mod tests {
     #[test]
     fn test_reject_zero_rate_limit() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "bad"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "svc"
@@ -1118,7 +1115,7 @@ mod tests {
         requests = 0
         "#;
 
-        let err = GatewayConfig::parse(toml).unwrap_err();
+        let err = ProxyConfig::parse(toml).unwrap_err();
         assert!(
             format!("{err}").contains("rate_limit.requests must be > 0"),
             "unexpected error: {err}"
@@ -1128,9 +1125,9 @@ mod tests {
     #[test]
     fn test_reject_zero_concurrency() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "bad"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "svc"
@@ -1141,7 +1138,7 @@ mod tests {
         max_concurrent = 0
         "#;
 
-        let err = GatewayConfig::parse(toml).unwrap_err();
+        let err = ProxyConfig::parse(toml).unwrap_err();
         assert!(
             format!("{err}").contains("concurrency.max_concurrent must be > 0"),
             "unexpected error: {err}"
@@ -1151,9 +1148,9 @@ mod tests {
     #[test]
     fn test_reject_expose_and_hide_tools() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "bad"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "svc"
@@ -1163,7 +1160,7 @@ mod tests {
         hide_tools = ["write"]
         "#;
 
-        let err = GatewayConfig::parse(toml).unwrap_err();
+        let err = ProxyConfig::parse(toml).unwrap_err();
         assert!(
             format!("{err}").contains("cannot specify both expose_tools and hide_tools"),
             "unexpected error: {err}"
@@ -1173,9 +1170,9 @@ mod tests {
     #[test]
     fn test_reject_expose_and_hide_resources() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "bad"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "svc"
@@ -1185,7 +1182,7 @@ mod tests {
         hide_resources = ["file:///b"]
         "#;
 
-        let err = GatewayConfig::parse(toml).unwrap_err();
+        let err = ProxyConfig::parse(toml).unwrap_err();
         assert!(
             format!("{err}").contains("cannot specify both expose_resources and hide_resources"),
             "unexpected error: {err}"
@@ -1195,9 +1192,9 @@ mod tests {
     #[test]
     fn test_reject_expose_and_hide_prompts() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "bad"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "svc"
@@ -1207,7 +1204,7 @@ mod tests {
         hide_prompts = ["admin"]
         "#;
 
-        let err = GatewayConfig::parse(toml).unwrap_err();
+        let err = ProxyConfig::parse(toml).unwrap_err();
         assert!(
             format!("{err}").contains("cannot specify both expose_prompts and hide_prompts"),
             "unexpected error: {err}"
@@ -1224,9 +1221,9 @@ mod tests {
         unsafe { std::env::set_var("MCP_GW_TEST_TOKEN", "secret-123") };
 
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "env-test"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "svc"
@@ -1238,7 +1235,7 @@ mod tests {
         STATIC_VAL = "unchanged"
         "#;
 
-        let mut config = GatewayConfig::parse(toml).unwrap();
+        let mut config = ProxyConfig::parse(toml).unwrap();
         config.resolve_env_vars();
 
         assert_eq!(
@@ -1257,9 +1254,9 @@ mod tests {
     #[test]
     fn test_parse_bearer_token_and_forward_auth() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "token-gw"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "github"
@@ -1274,7 +1271,7 @@ mod tests {
         url = "http://localhost:5432"
         "#;
 
-        let config = GatewayConfig::parse(toml).unwrap();
+        let config = ProxyConfig::parse(toml).unwrap();
         assert_eq!(
             config.backends[0].bearer_token.as_deref(),
             Some("ghp_abc123")
@@ -1289,9 +1286,9 @@ mod tests {
         unsafe { std::env::set_var("MCP_GW_TEST_BEARER", "resolved-token") };
 
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "env-token"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "api"
@@ -1300,7 +1297,7 @@ mod tests {
         bearer_token = "${MCP_GW_TEST_BEARER}"
         "#;
 
-        let mut config = GatewayConfig::parse(toml).unwrap();
+        let mut config = ProxyConfig::parse(toml).unwrap();
         config.resolve_env_vars();
 
         assert_eq!(
@@ -1314,9 +1311,9 @@ mod tests {
     #[test]
     fn test_parse_outlier_detection() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "od-gw"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "flaky"
@@ -1330,7 +1327,7 @@ mod tests {
         max_ejection_percent = 25
         "#;
 
-        let config = GatewayConfig::parse(toml).unwrap();
+        let config = ProxyConfig::parse(toml).unwrap();
         let od = config.backends[0]
             .outlier_detection
             .as_ref()
@@ -1344,9 +1341,9 @@ mod tests {
     #[test]
     fn test_parse_outlier_detection_defaults() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "od-gw"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "flaky"
@@ -1356,7 +1353,7 @@ mod tests {
         [backends.outlier_detection]
         "#;
 
-        let config = GatewayConfig::parse(toml).unwrap();
+        let config = ProxyConfig::parse(toml).unwrap();
         let od = config.backends[0]
             .outlier_detection
             .as_ref()
@@ -1370,9 +1367,9 @@ mod tests {
     #[test]
     fn test_parse_mirror_config() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "mirror-gw"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "api"
@@ -1387,7 +1384,7 @@ mod tests {
         mirror_percent = 10
         "#;
 
-        let config = GatewayConfig::parse(toml).unwrap();
+        let config = ProxyConfig::parse(toml).unwrap();
         assert!(config.backends[0].mirror_of.is_none());
         assert_eq!(config.backends[1].mirror_of.as_deref(), Some("api"));
         assert_eq!(config.backends[1].mirror_percent, 10);
@@ -1396,9 +1393,9 @@ mod tests {
     #[test]
     fn test_mirror_percent_defaults_to_100() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "mirror-gw"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "api"
@@ -1412,16 +1409,16 @@ mod tests {
         mirror_of = "api"
         "#;
 
-        let config = GatewayConfig::parse(toml).unwrap();
+        let config = ProxyConfig::parse(toml).unwrap();
         assert_eq!(config.backends[1].mirror_percent, 100);
     }
 
     #[test]
     fn test_reject_mirror_unknown_backend() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "bad"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "api-v2"
@@ -1430,7 +1427,7 @@ mod tests {
         mirror_of = "nonexistent"
         "#;
 
-        let err = GatewayConfig::parse(toml).unwrap_err();
+        let err = ProxyConfig::parse(toml).unwrap_err();
         assert!(
             format!("{err}").contains("mirror_of references unknown backend"),
             "unexpected error: {err}"
@@ -1440,9 +1437,9 @@ mod tests {
     #[test]
     fn test_reject_mirror_self() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "bad"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "api"
@@ -1451,7 +1448,7 @@ mod tests {
         mirror_of = "api"
         "#;
 
-        let err = GatewayConfig::parse(toml).unwrap_err();
+        let err = ProxyConfig::parse(toml).unwrap_err();
         assert!(
             format!("{err}").contains("mirror_of cannot reference itself"),
             "unexpected error: {err}"
@@ -1461,9 +1458,9 @@ mod tests {
     #[test]
     fn test_parse_hedging_config() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "hedge-gw"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "api"
@@ -1475,7 +1472,7 @@ mod tests {
         max_hedges = 2
         "#;
 
-        let config = GatewayConfig::parse(toml).unwrap();
+        let config = ProxyConfig::parse(toml).unwrap();
         let hedge = config.backends[0]
             .hedging
             .as_ref()
@@ -1487,9 +1484,9 @@ mod tests {
     #[test]
     fn test_parse_hedging_defaults() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "hedge-gw"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "api"
@@ -1499,7 +1496,7 @@ mod tests {
         [backends.hedging]
         "#;
 
-        let config = GatewayConfig::parse(toml).unwrap();
+        let config = ProxyConfig::parse(toml).unwrap();
         let hedge = config.backends[0]
             .hedging
             .as_ref()
@@ -1515,9 +1512,9 @@ mod tests {
     #[test]
     fn test_build_filter_allowlist() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "filter"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "svc"
@@ -1526,9 +1523,9 @@ mod tests {
         expose_tools = ["read", "list"]
         "#;
 
-        let config = GatewayConfig::parse(toml).unwrap();
+        let config = ProxyConfig::parse(toml).unwrap();
         let filter = config.backends[0]
-            .build_filter(&config.gateway.separator)
+            .build_filter(&config.proxy.separator)
             .expect("should have filter");
         assert_eq!(filter.namespace, "svc/");
         assert!(filter.tool_filter.allows("read"));
@@ -1539,9 +1536,9 @@ mod tests {
     #[test]
     fn test_build_filter_denylist() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "filter"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "svc"
@@ -1550,9 +1547,9 @@ mod tests {
         hide_tools = ["delete", "write"]
         "#;
 
-        let config = GatewayConfig::parse(toml).unwrap();
+        let config = ProxyConfig::parse(toml).unwrap();
         let filter = config.backends[0]
-            .build_filter(&config.gateway.separator)
+            .build_filter(&config.proxy.separator)
             .expect("should have filter");
         assert!(filter.tool_filter.allows("read"));
         assert!(!filter.tool_filter.allows("delete"));
@@ -1562,9 +1559,9 @@ mod tests {
     #[test]
     fn test_parse_inject_args() {
         let toml = r#"
-        [gateway]
+        [proxy]
         name = "inject-gw"
-        [gateway.listen]
+        [proxy.listen]
 
         [[backends]]
         name = "db"
@@ -1584,7 +1581,7 @@ mod tests {
         overwrite = true
         "#;
 
-        let config = GatewayConfig::parse(toml).unwrap();
+        let config = ProxyConfig::parse(toml).unwrap();
         let backend = &config.backends[0];
 
         assert_eq!(backend.default_args.len(), 1);
@@ -1603,17 +1600,17 @@ mod tests {
 
     #[test]
     fn test_parse_inject_args_defaults_to_empty() {
-        let config = GatewayConfig::parse(minimal_config()).unwrap();
+        let config = ProxyConfig::parse(minimal_config()).unwrap();
         assert!(config.backends[0].default_args.is_empty());
         assert!(config.backends[0].inject_args.is_empty());
     }
 
     #[test]
     fn test_build_filter_none_when_no_filtering() {
-        let config = GatewayConfig::parse(minimal_config()).unwrap();
+        let config = ProxyConfig::parse(minimal_config()).unwrap();
         assert!(
             config.backends[0]
-                .build_filter(&config.gateway.separator)
+                .build_filter(&config.proxy.separator)
                 .is_none()
         );
     }

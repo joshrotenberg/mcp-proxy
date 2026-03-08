@@ -1,10 +1,10 @@
 //! Library mode example -- embed mcp-proxy in a custom axum application.
 //!
-//! This example loads a gateway config, builds the proxy, and merges its
+//! This example loads a proxy config, builds the proxy, and merges its
 //! router into an existing axum app alongside custom application routes.
 //!
 //! Usage:
-//!   cargo run --example library-mode -- --config gateway.toml
+//!   cargo run --example library-mode -- --config proxy.toml
 //!
 //! The MCP proxy is available at the root path (/) and custom routes
 //! are available alongside it:
@@ -21,7 +21,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "library-mode-example")]
 struct Cli {
-    #[arg(short, long, default_value = "gateway.toml")]
+    #[arg(short, long, default_value = "proxy.toml")]
     config: PathBuf,
 }
 
@@ -34,19 +34,16 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Load and resolve config
-    let mut config = mcp_proxy::GatewayConfig::load(&cli.config)?;
+    let mut config = mcp_proxy::ProxyConfig::load(&cli.config)?;
     config.resolve_env_vars();
 
-    let addr = format!(
-        "{}:{}",
-        config.gateway.listen.host, config.gateway.listen.port
-    );
+    let addr = format!("{}:{}", config.proxy.listen.host, config.proxy.listen.port);
 
     // Build the proxy
-    let gateway = mcp_proxy::Gateway::from_config(config).await?;
+    let proxy = mcp_proxy::Proxy::from_config(config).await?;
 
     // Extract the router (includes MCP transport + admin API)
-    let (proxy_router, _session_handle) = gateway.into_router();
+    let (proxy_router, _session_handle) = proxy.into_router();
 
     // Build custom application routes
     let app_routes = Router::new().route("/app/status", get(app_status));

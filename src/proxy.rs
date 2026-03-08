@@ -1,4 +1,4 @@
-//! Core gateway construction and serving.
+//! Core proxy construction and serving.
 
 use std::convert::Infallible;
 use std::time::Duration;
@@ -18,30 +18,30 @@ use crate::admin::BackendMeta;
 use crate::alias;
 use crate::cache;
 use crate::coalesce;
-use crate::config::{AuthConfig, GatewayConfig, TransportType};
+use crate::config::{AuthConfig, ProxyConfig, TransportType};
 use crate::filter::CapabilityFilterService;
 use crate::metrics;
 use crate::rbac::{RbacConfig, RbacService};
 use crate::validation::{ValidationConfig, ValidationService};
 
-/// A fully constructed MCP gateway ready to serve or embed.
-pub struct Gateway {
+/// A fully constructed MCP proxy ready to serve or embed.
+pub struct Proxy {
     router: Router,
     session_handle: SessionHandle,
-    proxy: McpProxy,
-    config: GatewayConfig,
+    inner: McpProxy,
+    config: ProxyConfig,
 }
 
-impl Gateway {
-    /// Build a gateway from a [`GatewayConfig`].
+impl Proxy {
+    /// Build a proxy from a [`ProxyConfig`].
     ///
     /// Connects to all backends, builds the middleware stack, and prepares
     /// the axum router. Call [`serve()`](Self::serve) to run standalone or
     /// [`into_router()`](Self::into_router) to embed in an existing app.
-    pub async fn from_config(config: GatewayConfig) -> Result<Self> {
-        let proxy = build_proxy(&config).await?;
-        let proxy_for_admin = proxy.clone();
-        let proxy_for_caller = proxy.clone();
+    pub async fn from_config(config: ProxyConfig) -> Result<Self> {
+        let mcp_proxy = build_mcp_proxy(&config).await?;
+        let proxy_for_admin = mcp_proxy.clone();
+        let proxy_for_caller = mcp_proxy.clone();
 
         // Install Prometheus metrics recorder (must happen before middleware)
         let metrics_handle = if config.observability.metrics.enabled {
@@ -55,7 +55,7 @@ impl Gateway {
             None
         };
 
-        let (service, cache_handle) = build_middleware_stack(&config, proxy)?;
+        let (service, cache_handle) = build_middleware_stack(&config, mcp_proxy)?;
 
         let (router, session_handle) =
             tower_mcp::transport::http::HttpTransport::from_service(service)
@@ -81,8 +81,8 @@ impl Gateway {
         // Admin API
         let admin_state = crate::admin::spawn_health_checker(
             proxy_for_admin,
-            config.gateway.name.clone(),
-            config.gateway.version.clone(),
+            config.proxy.name.clone(),
+            config.proxy.version.clone(),
             config.backends.len(),
             backend_meta,
         );
@@ -97,7 +97,7 @@ impl Gateway {
         );
         tracing::info!("Admin API enabled at /admin/backends");
 
-        // MCP admin tools (gateway/ namespace)
+        // MCP admin tools (proxy/ namespace)
         if let Err(e) = crate::admin_tools::register_admin_tools(
             &proxy_for_caller,
             admin_state,
@@ -108,13 +108,13 @@ impl Gateway {
         {
             tracing::warn!("Failed to register admin tools: {e}");
         } else {
-            tracing::info!("MCP admin tools registered under gateway/ namespace");
+            tracing::info!("MCP admin tools registered under proxy/ namespace");
         }
 
         Ok(Self {
             router,
             session_handle,
-            proxy: proxy_for_caller,
+            inner: proxy_for_caller,
             config,
         })
     }
@@ -127,67 +127,67 @@ impl Gateway {
     /// Get a reference to the underlying [`McpProxy`] for dynamic operations.
     ///
     /// Use this to add backends dynamically via [`McpProxy::add_backend()`].
-    pub fn proxy(&self) -> &McpProxy {
-        &self.proxy
+    pub fn mcp_proxy(&self) -> &McpProxy {
+        &self.inner
     }
 
     /// Enable hot reload by watching the given config file path.
     ///
     /// New backends added to the config file will be connected dynamically
-    /// without restarting the gateway.
+    /// without restarting the proxy.
     pub fn enable_hot_reload(&self, config_path: std::path::PathBuf) {
         tracing::info!("Hot reload enabled, watching config file for changes");
-        crate::reload::spawn_config_watcher(config_path, self.proxy.clone());
+        crate::reload::spawn_config_watcher(config_path, self.inner.clone());
     }
 
-    /// Consume the gateway and return the axum Router and SessionHandle.
+    /// Consume the proxy and return the axum Router and SessionHandle.
     ///
-    /// Use this to embed the gateway in an existing axum application:
+    /// Use this to embed the proxy in an existing axum application:
     ///
     /// ```rust,ignore
-    /// let (gateway_router, session_handle) = gateway.into_router();
+    /// let (proxy_router, session_handle) = proxy.into_router();
     ///
     /// let app = Router::new()
-    ///     .nest("/mcp", gateway_router)
+    ///     .nest("/mcp", proxy_router)
     ///     .route("/health", get(|| async { "ok" }));
     /// ```
     pub fn into_router(self) -> (Router, SessionHandle) {
         (self.router, self.session_handle)
     }
 
-    /// Serve the gateway on the configured listen address.
+    /// Serve the proxy on the configured listen address.
     ///
     /// Blocks until a shutdown signal (SIGTERM/SIGINT) is received,
     /// then drains connections for the configured timeout period.
     pub async fn serve(self) -> Result<()> {
         let addr = format!(
             "{}:{}",
-            self.config.gateway.listen.host, self.config.gateway.listen.port
+            self.config.proxy.listen.host, self.config.proxy.listen.port
         );
 
-        tracing::info!(listen = %addr, "Gateway ready");
+        tracing::info!(listen = %addr, "Proxy ready");
 
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
             .with_context(|| format!("binding to {}", addr))?;
 
-        let shutdown_timeout = Duration::from_secs(self.config.gateway.shutdown_timeout_seconds);
+        let shutdown_timeout = Duration::from_secs(self.config.proxy.shutdown_timeout_seconds);
         axum::serve(listener, self.router)
             .with_graceful_shutdown(shutdown_signal(shutdown_timeout))
             .await
             .context("server error")?;
 
-        tracing::info!("Gateway shut down");
+        tracing::info!("Proxy shut down");
         Ok(())
     }
 }
 
 /// Build the McpProxy with all backends and per-backend middleware.
-async fn build_proxy(config: &GatewayConfig) -> Result<McpProxy> {
-    let mut builder = McpProxy::builder(&config.gateway.name, &config.gateway.version)
-        .separator(&config.gateway.separator);
+async fn build_mcp_proxy(config: &ProxyConfig) -> Result<McpProxy> {
+    let mut builder = McpProxy::builder(&config.proxy.name, &config.proxy.version)
+        .separator(&config.proxy.separator);
 
-    if let Some(instructions) = &config.gateway.instructions {
+    if let Some(instructions) = &config.proxy.instructions {
         builder = builder.instructions(instructions);
     }
 
@@ -365,7 +365,7 @@ async fn build_proxy(config: &GatewayConfig) -> Result<McpProxy> {
 
 /// Build the MCP-level middleware stack around the proxy.
 fn build_middleware_stack(
-    config: &GatewayConfig,
+    config: &ProxyConfig,
     proxy: McpProxy,
 ) -> Result<(
     BoxCloneService<RouterRequest, RouterResponse, Infallible>,
@@ -381,7 +381,7 @@ fn build_middleware_stack(
         .iter()
         .filter(|b| !b.default_args.is_empty() || !b.inject_args.is_empty())
         .map(|b| {
-            let namespace = format!("{}{}", b.name, config.gateway.separator);
+            let namespace = format!("{}{}", b.name, config.proxy.separator);
             tracing::info!(
                 backend = %b.name,
                 default_args = b.default_args.len(),
@@ -437,7 +437,7 @@ fn build_middleware_stack(
         service = BoxCloneService::new(crate::canary::CanaryService::new(
             service,
             canary_mappings,
-            &config.gateway.separator,
+            &config.proxy.separator,
         ));
     }
 
@@ -464,7 +464,7 @@ fn build_middleware_stack(
         service = BoxCloneService::new(crate::mirror::MirrorService::new(
             service,
             mirror_mappings,
-            &config.gateway.separator,
+            &config.proxy.separator,
         ));
     }
 
@@ -475,14 +475,14 @@ fn build_middleware_stack(
         .filter_map(|b| {
             b.cache
                 .as_ref()
-                .map(|c| (format!("{}{}", b.name, config.gateway.separator), c))
+                .map(|c| (format!("{}{}", b.name, config.proxy.separator), c))
         })
         .collect();
 
     if !cache_configs.is_empty() {
         for (ns, cfg) in &cache_configs {
             tracing::info!(
-                backend = %ns.trim_end_matches(&config.gateway.separator),
+                backend = %ns.trim_end_matches(&config.proxy.separator),
                 resource_ttl = cfg.resource_ttl_seconds,
                 tool_ttl = cfg.tool_ttl_seconds,
                 max_entries = cfg.max_entries,
@@ -515,13 +515,13 @@ fn build_middleware_stack(
     let filters: Vec<_> = config
         .backends
         .iter()
-        .filter_map(|b| b.build_filter(&config.gateway.separator))
+        .filter_map(|b| b.build_filter(&config.proxy.separator))
         .collect();
 
     if !filters.is_empty() {
         for f in &filters {
             tracing::info!(
-                backend = %f.namespace.trim_end_matches(&config.gateway.separator),
+                backend = %f.namespace.trim_end_matches(&config.proxy.separator),
                 tool_filter = ?f.tool_filter,
                 resource_filter = ?f.resource_filter,
                 prompt_filter = ?f.prompt_filter,
@@ -536,7 +536,7 @@ fn build_middleware_stack(
         .backends
         .iter()
         .flat_map(|b| {
-            let ns = format!("{}{}", b.name, config.gateway.separator);
+            let ns = format!("{}{}", b.name, config.proxy.separator);
             b.aliases
                 .iter()
                 .map(move |a| (ns.clone(), a.from.clone(), a.to.clone()))
@@ -575,7 +575,7 @@ fn build_middleware_stack(
         .backends
         .iter()
         .filter(|b| b.forward_auth)
-        .map(|b| format!("{}{}", b.name, config.gateway.separator))
+        .map(|b| format!("{}{}", b.name, config.proxy.separator))
         .collect();
 
     if !forward_namespaces.is_empty() {
@@ -605,7 +605,7 @@ fn build_middleware_stack(
 }
 
 /// Apply inbound authentication middleware to the router.
-async fn apply_auth(config: &GatewayConfig, router: Router) -> Result<Router> {
+async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
     let router = if let Some(auth) = &config.auth {
         match auth {
             AuthConfig::Bearer { tokens } => {
@@ -635,7 +635,7 @@ async fn apply_auth(config: &GatewayConfig, router: Router) -> Result<Router> {
 
                 let addr = format!(
                     "http://{}:{}",
-                    config.gateway.listen.host, config.gateway.listen.port
+                    config.proxy.listen.host, config.proxy.listen.port
                 );
                 let metadata = tower_mcp::oauth::ProtectedResourceMetadata::new(&addr)
                     .authorization_server(issuer);

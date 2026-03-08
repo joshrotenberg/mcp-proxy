@@ -22,7 +22,7 @@
 //!
 //! # How it works
 //!
-//! 1. The gateway's auth layer (JWT/bearer) validates the inbound token and
+//! 1. The proxy's auth layer (JWT/bearer) validates the inbound token and
 //!    stores [`TokenClaims`](tower_mcp::oauth::token::TokenClaims) in request extensions.
 //! 2. This middleware reads the `TokenClaims` and stores the subject (`sub` claim)
 //!    and any available identity info as a [`ClientToken`] in extensions.

@@ -11,15 +11,15 @@ Package name: `mcp-proxy`. Binary name: `mcp-proxy`. Library name: `mcp_proxy`.
 ```
 src/
   main.rs          # CLI entry point (clap), logging setup
-  lib.rs           # Library root, re-exports Gateway and GatewayConfig
-  gateway.rs       # Core: builds proxy, middleware stack, and axum router
+  lib.rs           # Library root, re-exports Proxy and ProxyConfig
+  proxy.rs         # Core: builds proxy, middleware stack, and axum router
   config.rs        # TOML config parsing, all config types
   admin.rs         # HTTP admin API (/admin/backends, /admin/health, etc.)
-  admin_tools.rs   # MCP admin tools (gateway/ namespace, via ChannelTransport)
+  admin_tools.rs   # MCP admin tools (proxy/ namespace, via ChannelTransport)
   reload.rs        # Hot reload: file watcher, dynamic backend addition
   test_util.rs     # MockService, ErrorMockService, call_service helper
 
-  # Global middleware (wraps the entire proxy, applied in gateway.rs)
+  # Global middleware (wraps the entire proxy, applied in proxy.rs)
   alias.rs         # Tool renaming (AliasService)
   filter.rs        # Capability filtering -- allow/deny lists (CapabilityFilterService)
   inject.rs        # Argument injection into tool calls (InjectArgsService)
@@ -31,7 +31,7 @@ src/
   rbac.rs          # Role-based access control (RbacService)
   token.rs         # Auth token passthrough to backends (TokenPassthroughService)
 
-  # Per-backend middleware (applied per-backend in gateway.rs and reload.rs)
+  # Per-backend middleware (applied per-backend in proxy.rs and reload.rs)
   retry.rs         # Retry with exponential backoff (McpRetryPolicy)
   outlier.rs       # Outlier detection and ejection (OutlierDetectionLayer)
 
@@ -39,7 +39,7 @@ tests/
   integration.rs   # End-to-end tests with in-process backends via ChannelTransport
 
 examples/
-  *.toml           # Example gateway configs for different deployment patterns
+  *.toml           # Example proxy configs for different deployment patterns
   docker-compose/  # Docker compose example with HTTP backend
 ```
 
@@ -47,7 +47,7 @@ examples/
 
 ### Middleware stack ordering
 
-The middleware stack is built in `gateway.rs::build_middleware_stack()`. Order matters -- outermost runs first.
+The middleware stack is built in `proxy.rs::build_middleware_stack()`. Order matters -- outermost runs first.
 
 **Global middleware** (wraps the entire proxy service):
 ```
@@ -77,7 +77,7 @@ let limited = tower::Layer::layer(&layer, svc);
 svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
 ```
 
-In `gateway.rs`, `builder.backend_layer(layer)` handles this internally.
+In `proxy.rs`, `builder.backend_layer(layer)` handles this internally.
 
 ### Adding a new middleware layer
 
@@ -91,7 +91,7 @@ Every middleware follows the same tower Service pattern. Use `inject.rs` as a te
 
 2. Add `pub mod your_middleware;` to `lib.rs`
 
-3. Wire it into the stack in `gateway.rs::build_middleware_stack()`:
+3. Wire it into the stack in `proxy.rs::build_middleware_stack()`:
    - For global middleware: wrap the `BoxCloneService` at the appropriate position
    - For per-backend: use `builder.backend_layer(layer)` in the backend loop
 
@@ -103,16 +103,16 @@ Every middleware follows the same tower Service pattern. Use `inject.rs` as a te
 
 ### Adding a new backend transport
 
-Transports are added in `gateway.rs::build_proxy()` and `reload.rs::add_backend()`:
+Transports are added in `proxy.rs::build_mcp_proxy()` and `reload.rs::add_backend()`:
 
 1. Add a variant to `TransportType` enum in `config.rs`
-2. Add a match arm in both `build_proxy()` and `add_backend()`
+2. Add a match arm in both `build_mcp_proxy()` and `add_backend()`
 3. The transport must implement tower-mcp's `ClientTransport` trait
 
 ### Configuration
 
-All config is in `config.rs`. The top-level type is `GatewayConfig`:
-- `gateway`: name, version, separator, listen address, hot_reload
+All config is in `config.rs`. The top-level type is `ProxyConfig`:
+- `proxy`: name, version, separator, listen address, hot_reload
 - `backends[]`: name, transport, command/url, per-backend middleware configs
 - `auth`: bearer tokens or JWT/JWKS with RBAC
 - `performance`: request coalescing
@@ -150,4 +150,4 @@ cargo doc --no-deps --all-features
 - Conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`
 - All public APIs have doc comments
 - Metrics use `mcp_proxy_` prefix
-- Admin tools live under `gateway/` namespace
+- Admin tools live under `proxy/` namespace

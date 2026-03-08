@@ -1,4 +1,4 @@
-//! Request validation middleware for the gateway.
+//! Request validation middleware for the proxy.
 //!
 //! Validates tool call arguments against size limits before forwarding.
 

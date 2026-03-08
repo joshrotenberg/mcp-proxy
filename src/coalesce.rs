@@ -1,4 +1,4 @@
-//! Request coalescing middleware for the gateway.
+//! Request coalescing middleware for the proxy.
 //!
 //! Deduplicates identical in-flight `CallTool` and `ReadResource` requests.
 //! When multiple identical requests arrive concurrently, only one is forwarded

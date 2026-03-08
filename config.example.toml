@@ -1,7 +1,7 @@
 # mcp-proxy configuration
 
-[gateway]
-name = "my-gateway"
+[proxy]
+name = "my-proxy"
 version = "0.1.0"
 # Separator between namespace and tool/resource/prompt names
 separator = "/"
@@ -10,7 +10,7 @@ separator = "/"
 # Watch config file for new backends and add them without restart
 # hot_reload = true
 
-[gateway.listen]
+[proxy.listen]
 # HTTP transport binding
 host = "127.0.0.1"
 port = 8080

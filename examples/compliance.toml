@@ -1,4 +1,4 @@
-# Compliance & Financial Services Gateway
+# Compliance & Financial Services Proxy
 #
 # Strict controls for regulated environments. Every tool call is audited,
 # argument sizes are limited, and only explicitly approved tools are exposed.
@@ -6,13 +6,13 @@
 #
 # See: docs/architectures.md #2
 
-[gateway]
-name = "compliance-gateway"
+[proxy]
+name = "compliance-proxy"
 version = "1.0.0"
 separator = "/"
-instructions = "Compliance-controlled gateway. All actions are audited. Contact compliance@corp.com for tool access requests."
+instructions = "Compliance-controlled proxy. All actions are audited. Contact compliance@corp.com for tool access requests."
 
-[gateway.listen]
+[proxy.listen]
 host = "0.0.0.0"
 port = 8080
 
@@ -137,4 +137,4 @@ enabled = true
 [observability.tracing]
 enabled = true
 endpoint = "http://otel-collector.internal:4317"
-service_name = "mcp-compliance-gateway"
+service_name = "mcp-compliance-proxy"

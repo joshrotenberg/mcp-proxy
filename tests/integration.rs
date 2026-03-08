@@ -1,4 +1,4 @@
-//! Integration tests for the gateway middleware stack.
+//! Integration tests for the proxy middleware stack.
 //!
 //! Uses in-process MCP backends via `ChannelTransport` to test the full
 //! middleware composition without external processes.
@@ -305,7 +305,7 @@ async fn test_proxy_with_cache_returns_cached_result() {
 async fn test_admin_tools_list_backends() {
     let mut proxy = build_proxy().await;
 
-    // Register admin tools as a gateway/ backend
+    // Register admin tools as a proxy/ backend
     let admin_router = tower_mcp::McpRouter::new()
         .server_info("admin", "1.0.0")
         .tool(
@@ -318,17 +318,17 @@ async fn test_admin_tools_list_backends() {
         );
     let admin_transport = ChannelTransport::new(admin_router);
     proxy
-        .add_backend("gateway", admin_transport)
+        .add_backend("proxy", admin_transport)
         .await
-        .expect("add gateway backend");
+        .expect("add proxy backend");
 
-    // List tools should include gateway/list_backends
+    // List tools should include proxy/list_backends
     let resp = call(&mut proxy, McpRequest::ListTools(Default::default())).await;
     match resp.inner.unwrap() {
         McpResponse::ListTools(result) => {
             let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
             assert!(
-                names.contains(&"gateway/list_backends"),
+                names.contains(&"proxy/list_backends"),
                 "should have admin tool: {:?}",
                 names
             );
@@ -340,7 +340,7 @@ async fn test_admin_tools_list_backends() {
     // Call admin tool
     let resp = call(
         &mut proxy,
-        tool_call("gateway/list_backends", serde_json::json!({})),
+        tool_call("proxy/list_backends", serde_json::json!({})),
     )
     .await;
     match resp.inner.unwrap() {

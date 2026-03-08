@@ -1,11 +1,11 @@
 # Docker Compose example configuration
 # Connects to the "everything" MCP server running in a sibling container.
 
-[gateway]
-name = "docker-gateway"
+[proxy]
+name = "docker-proxy"
 separator = "/"
 
-[gateway.listen]
+[proxy.listen]
 host = "0.0.0.0"
 port = 8080
 

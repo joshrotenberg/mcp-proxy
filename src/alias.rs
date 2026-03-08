@@ -1,4 +1,4 @@
-//! Tool aliasing middleware for the gateway.
+//! Tool aliasing middleware for the proxy.
 //!
 //! Rewrites tool names in list responses and call requests based on
 //! per-backend alias configuration.
