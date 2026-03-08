@@ -60,6 +60,22 @@ max_concurrent = 10
 # expose_prompts = ["help"]
 # hide_prompts = ["admin_prompt"]
 
+# --- Argument Injection ---
+# Default args merged into all tool calls for this backend (does not overwrite)
+# [backends.default_args]
+# timeout = 30
+
+# Per-tool argument injection
+# [[backends.inject_args]]
+# tool = "query"
+# args = { read_only = true, max_rows = 1000 }
+
+# Force overwrite existing arguments
+# [[backends.inject_args]]
+# tool = "dangerous_op"
+# args = { dry_run = true }
+# overwrite = true
+
 [[backends]]
 name = "github"
 transport = "stdio"
@@ -85,13 +101,47 @@ permitted_calls_in_half_open = 3
 requests = 30
 period_seconds = 1
 
+# Retry with exponential backoff
+# [backends.retry]
+# max_retries = 3              # max retry attempts (default: 3)
+# initial_backoff_ms = 100     # initial backoff (default: 100)
+# max_backoff_ms = 5000        # max backoff (default: 5000)
+# budget_percent = 20.0        # max % of requests that can be retries
+# min_retries_per_sec = 10     # min retries/sec regardless of budget
+
+# Request hedging -- fire parallel requests to reduce tail latency
+# [backends.hedging]
+# delay_ms = 200     # wait before sending hedge (default: 200, 0 = immediate)
+# max_hedges = 1     # max additional hedge requests (default: 1)
+
+# Outlier detection -- passive health checks that eject unhealthy backends
+# [backends.outlier_detection]
+# consecutive_errors = 5          # errors before ejection (default: 5)
+# interval_seconds = 10           # evaluation interval (default: 10)
+# base_ejection_seconds = 30      # ejection duration (default: 30)
+# max_ejection_percent = 50       # max % of backends ejectable (default: 50)
+
 # HTTP backend -- connects to a remote MCP server
 # [[backends]]
 # name = "remote"
 # transport = "http"
 # url = "http://mcp-server:8080"
+# # Static bearer token for authenticating to this backend
+# bearer_token = "${BACKEND_TOKEN}"
+# # Forward the client's inbound auth token to this backend
+# forward_auth = true
 # [backends.timeout]
 # seconds = 60
+
+# --- Traffic Mirroring ---
+# Shadow traffic to a canary backend (fire-and-forget).
+# The mirror receives a copy of matching requests; responses are discarded.
+# [[backends]]
+# name = "api-v2"
+# transport = "http"
+# url = "http://api-v2:8080"
+# mirror_of = "api"          # name of the source backend to mirror
+# mirror_percent = 10        # percentage of requests to mirror (default: 100)
 
 # --- Auth (optional) ---
 # Uncomment ONE of the following auth blocks.

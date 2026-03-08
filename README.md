@@ -6,14 +6,40 @@ Built on [tower-mcp](https://github.com/joshrotenberg/tower-mcp) and the [tower]
 
 ## Features
 
+### Proxy
 - **Multi-backend proxy** -- connect stdio and HTTP MCP servers behind one endpoint
-- **Per-backend middleware** -- timeout, rate limiting, circuit breaker, response caching, request coalescing
 - **Capability filtering** -- allow/deny lists for tools, resources, and prompts per backend
 - **Tool aliasing** -- rename tools exposed by backends
-- **Authentication** -- bearer token or JWT/JWKS with role-based access control
-- **Observability** -- Prometheus metrics, OpenTelemetry tracing, structured audit logging
+- **Argument injection** -- merge default or per-tool arguments into tool calls
 - **Hot reload** -- watch config file and add new backends without restart
 - **Library mode** -- embed the gateway in your own Rust application
+
+### Resilience
+- **Timeout** -- per-backend request timeouts
+- **Rate limiting** -- per-backend request rate limits
+- **Concurrency limiting** -- per-backend max concurrent requests
+- **Circuit breaker** -- trip open on failure rate threshold
+- **Retry** -- automatic retries with exponential backoff and optional budget
+- **Request hedging** -- parallel redundant requests to reduce tail latency
+- **Outlier detection** -- passive health checks that eject unhealthy backends
+
+### Traffic Management
+- **Traffic mirroring** -- shadow traffic to a canary backend (fire-and-forget)
+- **Response caching** -- per-backend TTL-based caching for tool calls and resource reads
+- **Request coalescing** -- deduplicate identical concurrent requests
+
+### Security
+- **Bearer token auth** -- static token validation
+- **JWT/JWKS auth** -- token verification with RBAC (role-based access control)
+- **Token passthrough** -- forward client auth tokens to backends
+- **Request validation** -- argument size limits
+
+### Observability
+- **Prometheus metrics** -- request counts and duration histograms
+- **OpenTelemetry tracing** -- distributed trace export via OTLP
+- **Audit logging** -- structured logging of all MCP requests
+- **Admin API** -- health checks, backend status, cache stats
+- **Admin MCP tools** -- gateway introspection tools under `gateway/` namespace
 
 ## Quick Start
 
@@ -75,9 +101,64 @@ failure_rate_threshold = 0.5
 minimum_calls = 5
 wait_duration_seconds = 30
 
+[backends.retry]
+max_retries = 3
+initial_backoff_ms = 100
+max_backoff_ms = 5000
+budget_percent = 20.0
+
+[backends.hedging]
+delay_ms = 200
+max_hedges = 1
+
+[backends.outlier_detection]
+consecutive_errors = 5
+base_ejection_seconds = 30
+max_ejection_percent = 50
+
 [backends.cache]
 tool_ttl_seconds = 60
 resource_ttl_seconds = 300
+```
+
+### Argument injection
+
+```toml
+[[backends]]
+name = "db"
+transport = "http"
+url = "http://db.internal:8080"
+
+# Inject into all tool calls for this backend
+[backends.default_args]
+timeout = 30
+
+# Inject into a specific tool (overrides default_args for matching keys)
+[[backends.inject_args]]
+tool = "query"
+args = { read_only = true, max_rows = 1000 }
+
+# Force overwrite existing arguments
+[[backends.inject_args]]
+tool = "dangerous_op"
+args = { dry_run = true }
+overwrite = true
+```
+
+### Traffic mirroring
+
+```toml
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://api-v1:8080"
+
+[[backends]]
+name = "api-v2"
+transport = "http"
+url = "http://api-v2:8080"
+mirror_of = "api"
+mirror_percent = 10
 ```
 
 ### Authentication
@@ -145,20 +226,40 @@ gateway.serve().await?;
 
 ## Admin API
 
-The gateway exposes admin endpoints:
+HTTP endpoints:
 
-- `GET /admin/backends` -- list backends with health status
+- `GET /admin/backends` -- list backends with health status and gateway info
+- `GET /admin/health` -- health check summary (healthy/degraded)
 - `GET /admin/metrics` -- Prometheus metrics
+- `GET /admin/cache/stats` -- per-backend cache hit/miss rates
+- `POST /admin/cache/clear` -- clear all caches
+
+MCP tools (under `gateway/` namespace):
+
+- `gateway/list_backends` -- list backends with health status
+- `gateway/health_check` -- cached health check results
+- `gateway/session_count` -- active session count
+- `gateway/add_backend` -- dynamically add an HTTP backend
+- `gateway/config` -- dump current config
 
 ## Architecture
 
 ```
-Client --> [Auth] --> [Metrics] --> [Validation] --> [Filter] --> [Alias]
-  --> McpProxy --> [Timeout] --> [RateLimit] --> [CircuitBreaker] --> Backend
-                   [Cache]      [Coalesce]
+Client
+  |
+  v
+[Auth] -> [Audit] -> [Metrics] -> [Token Passthrough] -> [RBAC]
+  -> [Alias] -> [Filter] -> [Validation] -> [Coalesce] -> [Cache]
+  -> [Mirror] -> [Inject Args]
+  -> McpProxy
+       |
+       v  (per-backend)
+     [Retry] -> [Hedge] -> [Concurrency] -> [Rate Limit]
+       -> [Timeout] -> [Circuit Breaker] -> [Outlier Detection]
+       -> Backend
 ```
 
-The middleware stack is built with tower `Service` layers. Proxy-level middleware (auth, metrics, validation, filtering, aliasing) wraps the entire proxy. Per-backend middleware (timeout, rate limit, circuit breaker) is applied individually to each backend connection.
+Global middleware wraps the entire proxy. Per-backend middleware is applied individually to each backend connection. All middleware is built with tower `Service` layers.
 
 ## License
 
