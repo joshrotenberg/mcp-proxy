@@ -190,6 +190,7 @@ struct HealthResponse {
     unhealthy_backends: Vec<String>,
 }
 
+#[cfg(feature = "metrics")]
 async fn handle_metrics(
     Extension(handle): Extension<Option<metrics_exporter_prometheus::PrometheusHandle>>,
 ) -> impl IntoResponse {
@@ -197,6 +198,11 @@ async fn handle_metrics(
         Some(h) => h.render(),
         None => String::new(),
     }
+}
+
+#[cfg(not(feature = "metrics"))]
+async fn handle_metrics() -> impl IntoResponse {
+    String::new()
 }
 
 async fn handle_cache_stats(
@@ -235,23 +241,36 @@ fn test_admin_state(
     }
 }
 
+/// Metrics handle type -- wraps the Prometheus handle when the feature is enabled.
+#[cfg(feature = "metrics")]
+pub type MetricsHandle = Option<metrics_exporter_prometheus::PrometheusHandle>;
+/// Metrics handle type -- no-op when the metrics feature is disabled.
+#[cfg(not(feature = "metrics"))]
+pub type MetricsHandle = Option<()>;
+
 /// Build the admin API router.
 pub fn admin_router(
     state: AdminState,
-    metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
+    metrics_handle: MetricsHandle,
     session_handle: SessionHandle,
     cache_handle: Option<crate::cache::CacheHandle>,
 ) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/backends", get(handle_backends))
         .route("/health", get(handle_health))
         .route("/cache/stats", get(handle_cache_stats))
         .route("/cache/clear", axum::routing::post(handle_cache_clear))
         .route("/metrics", get(handle_metrics))
         .layer(Extension(state))
-        .layer(Extension(metrics_handle))
         .layer(Extension(session_handle))
-        .layer(Extension(cache_handle))
+        .layer(Extension(cache_handle));
+
+    #[cfg(feature = "metrics")]
+    let router = router.layer(Extension(metrics_handle));
+    #[cfg(not(feature = "metrics"))]
+    let _ = metrics_handle;
+
+    router
 }
 
 #[cfg(test)]

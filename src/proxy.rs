@@ -20,7 +20,7 @@ use crate::cache;
 use crate::coalesce;
 use crate::config::{AuthConfig, ProxyConfig, TransportType};
 use crate::filter::CapabilityFilterService;
-use crate::metrics;
+#[cfg(feature = "oauth")]
 use crate::rbac::{RbacConfig, RbacService};
 use crate::validation::{ValidationConfig, ValidationService};
 
@@ -44,6 +44,7 @@ impl Proxy {
         let proxy_for_caller = mcp_proxy.clone();
 
         // Install Prometheus metrics recorder (must happen before middleware)
+        #[cfg(feature = "metrics")]
         let metrics_handle = if config.observability.metrics.enabled {
             tracing::info!("Prometheus metrics enabled at /admin/metrics");
             let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
@@ -54,6 +55,8 @@ impl Proxy {
         } else {
             None
         };
+        #[cfg(not(feature = "metrics"))]
+        let metrics_handle = None;
 
         let (service, cache_handle) = build_middleware_stack(&config, mcp_proxy)?;
 
@@ -550,48 +553,52 @@ fn build_middleware_stack(
     }
 
     // RBAC (JWT auth only)
-    let rbac_config = match &config.auth {
-        Some(AuthConfig::Jwt {
-            roles,
-            role_mapping: Some(mapping),
-            ..
-        }) if !roles.is_empty() => {
-            tracing::info!(
-                roles = roles.len(),
-                claim = %mapping.claim,
-                "Enabling RBAC"
-            );
-            Some(RbacConfig::new(roles, mapping))
+    #[cfg(feature = "oauth")]
+    {
+        let rbac_config = match &config.auth {
+            Some(AuthConfig::Jwt {
+                roles,
+                role_mapping: Some(mapping),
+                ..
+            }) if !roles.is_empty() => {
+                tracing::info!(
+                    roles = roles.len(),
+                    claim = %mapping.claim,
+                    "Enabling RBAC"
+                );
+                Some(RbacConfig::new(roles, mapping))
+            }
+            _ => None,
+        };
+
+        if let Some(rbac) = rbac_config {
+            service = BoxCloneService::new(RbacService::new(service, rbac));
         }
-        _ => None,
-    };
 
-    if let Some(rbac) = rbac_config {
-        service = BoxCloneService::new(RbacService::new(service, rbac));
-    }
+        // Token passthrough (inject ClientToken for forward_auth backends)
+        let forward_namespaces: std::collections::HashSet<String> = config
+            .backends
+            .iter()
+            .filter(|b| b.forward_auth)
+            .map(|b| format!("{}{}", b.name, config.proxy.separator))
+            .collect();
 
-    // Token passthrough (inject ClientToken for forward_auth backends)
-    let forward_namespaces: std::collections::HashSet<String> = config
-        .backends
-        .iter()
-        .filter(|b| b.forward_auth)
-        .map(|b| format!("{}{}", b.name, config.proxy.separator))
-        .collect();
-
-    if !forward_namespaces.is_empty() {
-        tracing::info!(
-            backends = ?forward_namespaces,
-            "Enabling token passthrough for forward_auth backends"
-        );
-        service = BoxCloneService::new(crate::token::TokenPassthroughService::new(
-            service,
-            forward_namespaces,
-        ));
+        if !forward_namespaces.is_empty() {
+            tracing::info!(
+                backends = ?forward_namespaces,
+                "Enabling token passthrough for forward_auth backends"
+            );
+            service = BoxCloneService::new(crate::token::TokenPassthroughService::new(
+                service,
+                forward_namespaces,
+            ));
+        }
     }
 
     // Metrics
+    #[cfg(feature = "metrics")]
     if config.observability.metrics.enabled {
-        service = BoxCloneService::new(metrics::MetricsService::new(service));
+        service = BoxCloneService::new(crate::metrics::MetricsService::new(service));
     }
 
     // Audit logging
@@ -614,6 +621,7 @@ async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
                 let layer = AuthLayer::new(validator);
                 router.layer(layer)
             }
+            #[cfg(feature = "oauth")]
             AuthConfig::Jwt {
                 issuer,
                 audience,
@@ -642,6 +650,12 @@ async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
 
                 let layer = tower_mcp::oauth::OAuthLayer::new(validator, metadata);
                 router.layer(layer)
+            }
+            #[cfg(not(feature = "oauth"))]
+            AuthConfig::Jwt { .. } => {
+                anyhow::bail!(
+                    "JWT auth requires the 'oauth' feature. Rebuild with: cargo install mcp-proxy --features oauth"
+                );
             }
         }
     } else {
