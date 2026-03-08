@@ -42,3 +42,8 @@ notify = { version = "7", default-features = false, features = ["macos_fsevent"]
 notify-debouncer-mini = "0.5"
 
 [dev-dependencies]
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

@@ -1,8 +1,7 @@
 target/
 .git/
 .github/
-docs/
-*.md
-LICENSE-*
+.claude/
 CLAUDE.md
-gateway*.toml
+docs/
+examples/
