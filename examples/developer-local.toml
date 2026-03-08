@@ -3,7 +3,7 @@
 # Lightweight config for individual developers. Consolidates personal
 # MCP servers behind a single endpoint. No auth needed for local use.
 #
-# Usage: mcp-gateway --config examples/developer-local.toml
+# Usage: mcp-proxy --config examples/developer-local.toml
 #
 # See: docs/architectures.md #3
 

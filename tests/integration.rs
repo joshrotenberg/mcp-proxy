@@ -15,15 +15,15 @@ use tower_mcp::proxy::McpProxy;
 use tower_mcp::router::{Extensions, RouterRequest, RouterResponse};
 use tower_mcp::{CallToolResult, McpRouter, ToolBuilder};
 
-use mcp_gateway::alias::{AliasMap, AliasService};
-use mcp_gateway::cache::CacheService;
-use mcp_gateway::coalesce::CoalesceService;
-use mcp_gateway::config::BackendCacheConfig;
-use mcp_gateway::config::{BackendFilter, InjectArgsConfig, NameFilter};
-use mcp_gateway::filter::CapabilityFilterService;
-use mcp_gateway::inject::{InjectArgsService, InjectionRules};
-use mcp_gateway::mirror::MirrorService;
-use mcp_gateway::validation::{ValidationConfig, ValidationService};
+use mcp_proxy::alias::{AliasMap, AliasService};
+use mcp_proxy::cache::CacheService;
+use mcp_proxy::coalesce::CoalesceService;
+use mcp_proxy::config::BackendCacheConfig;
+use mcp_proxy::config::{BackendFilter, InjectArgsConfig, NameFilter};
+use mcp_proxy::filter::CapabilityFilterService;
+use mcp_proxy::inject::{InjectArgsService, InjectionRules};
+use mcp_proxy::mirror::MirrorService;
+use mcp_proxy::validation::{ValidationConfig, ValidationService};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct AddInput {

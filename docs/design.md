@@ -1,8 +1,8 @@
-# mcp-gateway Design Document
+# mcp-proxy Design Document
 
 ## Overview
 
-mcp-gateway is a standalone, config-driven MCP proxy server built on tower-mcp.
+mcp-proxy is a standalone, config-driven MCP proxy server built on tower-mcp.
 It aggregates multiple MCP backend servers behind a single HTTP endpoint,
 adding auth, resilience, observability, and routing capabilities.
 
@@ -61,7 +61,7 @@ tokens = ["token-1", "token-2"]
 [auth]
 type = "jwt"
 issuer = "https://auth.example.com"
-audience = "mcp-gateway"
+audience = "mcp-proxy"
 jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 ```
 
@@ -314,14 +314,14 @@ Expose Prometheus-compatible metrics.
 enabled = true
 endpoint = "/metrics"     # Prometheus scrape endpoint
 # Metrics emitted:
-# - mcp_gateway_requests_total{backend, method, status}
-# - mcp_gateway_request_duration_seconds{backend, method}
-# - mcp_gateway_backend_health{backend}
-# - mcp_gateway_active_sessions
+# - mcp_proxy_requests_total{backend, method, status}
+# - mcp_proxy_request_duration_seconds{backend, method}
+# - mcp_proxy_backend_health{backend}
+# - mcp_proxy_active_sessions
 ```
 
-**Status:** Done. `MetricsService` middleware records `mcp_gateway_requests_total{method, status}`
-(counter) and `mcp_gateway_request_duration_seconds{method}` (histogram).
+**Status:** Done. `MetricsService` middleware records `mcp_proxy_requests_total{method, status}`
+(counter) and `mcp_proxy_request_duration_seconds{method}` (histogram).
 Uses `metrics` + `metrics-exporter-prometheus`. Prometheus scrape endpoint at `/admin/metrics`.
 Enabled via `[observability.metrics] enabled = true`.
 
@@ -334,7 +334,7 @@ OpenTelemetry trace propagation.
 enabled = true
 exporter = "otlp"         # or "jaeger", "zipkin"
 endpoint = "http://localhost:4317"
-service_name = "mcp-gateway"
+service_name = "mcp-proxy"
 ```
 
 **Status:** Done. When `[observability.tracing] enabled = true`, bridges all `tracing` spans
@@ -570,13 +570,13 @@ Power-user features.
 
 ### Phase 6: Library Mode
 
-Make mcp-gateway embeddable as a library so other Rust applications can
+Make mcp-proxy embeddable as a library so other Rust applications can
 programmatically build and run a gateway without the CLI/config file.
 
 21. **Extract `lib.rs`** -- move all gateway logic out of `main.rs` into a library crate
 22. **`GatewayBuilder` API** -- programmatic builder that mirrors the config-driven flow
     ```rust
-    let gateway = mcp_gateway::GatewayBuilder::new("my-gw", "1.0.0")
+    let gateway = mcp_proxy::GatewayBuilder::new("my-gw", "1.0.0")
         .backend_stdio("files", "npx", &["-y", "@mcp/server-filesystem", "/tmp"])
         .backend_http("remote", "http://mcp:8080")
         .auth_bearer(&["token-1"])
@@ -592,7 +592,7 @@ programmatically build and run a gateway without the CLI/config file.
     gateway.serve("127.0.0.1:8080").await?;
     ```
 23. **Config-from-struct** -- `GatewayConfig` usable directly without TOML parsing
-24. **Dual crate structure** -- `mcp-gateway` (lib) + `mcp-gateway-cli` (bin), or
+24. **Dual crate structure** -- `mcp-proxy` (lib) + `mcp-proxy-cli` (bin), or
     single crate with `[[bin]]` and `[lib]`
 
 **Status:** Done. Single crate with `[lib]` + `[[bin]]` targets.
@@ -660,7 +660,7 @@ port = 8080
 [auth]
 type = "jwt"
 issuer = "https://auth.example.com"
-audience = "mcp-gateway"
+audience = "mcp-proxy"
 jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 
 [[auth.roles]]
@@ -700,7 +700,7 @@ endpoint = "/metrics"
 enabled = true
 exporter = "otlp"
 endpoint = "http://localhost:4317"
-service_name = "mcp-gateway"
+service_name = "mcp-proxy"
 
 [observability.health]
 endpoint = "/health"
@@ -749,7 +749,7 @@ invalidate_on_notify = true
 
 ## tower-mcp Gaps Identified
 
-Tracked as tower-mcp issues (without mentioning mcp-gateway):
+Tracked as tower-mcp issues (without mentioning mcp-proxy):
 
 | Gap | Issue | Status |
 |-----|-------|--------|

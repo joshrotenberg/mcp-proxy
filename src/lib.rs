@@ -1,14 +1,14 @@
-//! MCP Gateway -- config-driven proxy with auth, rate limiting, and observability.
+//! MCP Proxy -- config-driven reverse proxy with auth, rate limiting, and observability.
 //!
-//! This crate can be used as a library to embed an MCP gateway in your application,
-//! or run standalone via the `mcp-gateway` CLI.
+//! This crate can be used as a library to embed an MCP proxy in your application,
+//! or run standalone via the `mcp-proxy` CLI.
 //!
 //! # Library Usage
 //!
-//! Build a gateway from a [`GatewayConfig`] and embed it in an existing axum app:
+//! Build a proxy from a [`GatewayConfig`] and embed it in an existing axum app:
 //!
 //! ```rust,no_run
-//! use mcp_gateway::{Gateway, GatewayConfig};
+//! use mcp_proxy::{Gateway, GatewayConfig};
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! let config = GatewayConfig::load("gateway.toml".as_ref())?;

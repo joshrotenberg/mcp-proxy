@@ -1,6 +1,6 @@
 # Enterprise Tool Consolidation Hub
 #
-# Central IT-managed gateway for all developer MCP tooling.
+# Central IT-managed proxy for all developer MCP tooling.
 # Replaces per-developer mcp.json configs with a single managed endpoint.
 # JWT auth via corporate IdP, RBAC per team, full audit trail.
 #
@@ -20,7 +20,7 @@ port = 8080
 [auth]
 type = "jwt"
 issuer = "https://corp.okta.com"
-audience = "mcp-gateway"
+audience = "mcp-proxy"
 jwks_uri = "https://corp.okta.com/oauth2/default/v1/keys"
 
 # Role definitions
@@ -144,4 +144,4 @@ enabled = true
 [observability.tracing]
 enabled = true
 endpoint = "http://jaeger.internal:4317"
-service_name = "mcp-gateway"
+service_name = "mcp-proxy"

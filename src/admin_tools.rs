@@ -200,7 +200,7 @@ fn build_admin_router(state: AdminToolState) -> McpRouter {
         .build();
 
     McpRouter::new()
-        .server_info("mcp-gateway-admin", "0.1.0")
+        .server_info("mcp-proxy-admin", "0.1.0")
         .tool(list_backends)
         .tool(health_check)
         .tool(session_count)

@@ -62,10 +62,10 @@ where
                 Err(_) => "error",
             };
 
-            counter!("mcp_gateway_requests_total", "method" => method.clone(), "status" => status)
+            counter!("mcp_proxy_requests_total", "method" => method.clone(), "status" => status)
                 .increment(1);
             histogram!(
-                "mcp_gateway_request_duration_seconds",
+                "mcp_proxy_request_duration_seconds",
                 "method" => method,
             )
             .record(duration);

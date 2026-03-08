@@ -3,7 +3,7 @@
 Research compiled March 2026. This document catalogs theoretical and real-world
 architecture patterns for an MCP gateway, informed by emerging industry practice,
 traditional API gateway patterns (Kong, Envoy, Traefik), and the specific
-capabilities of `mcp-gateway`.
+capabilities of `mcp-proxy`.
 
 ---
 
@@ -17,7 +17,7 @@ unmanageable, and IT has no visibility into what tools are being used or by whom
 **Architecture:**
 ```
 Developer (Claude Code / Cursor / Windsurf)
-  --> mcp-gateway (central, IT-managed)
+  --> mcp-proxy (central, IT-managed)
         --> github backend (stdio)
         --> jira backend (http)
         --> confluence backend (http)
@@ -39,7 +39,7 @@ circuit breaker, capability filtering, audit logging, Prometheus metrics.
 
 **Industry precedent:** Kong, Traefik Hub, and Envoy AI Gateway all offer
 enterprise MCP gateway products with similar consolidation patterns. Microsoft's
-mcp-gateway project provides Kubernetes-based session-aware routing for this
+mcp-proxy project provides Kubernetes-based session-aware routing for this
 use case.
 
 ---
@@ -55,7 +55,7 @@ the network.
 **Architecture:**
 ```
 AI Assistants (restricted network)
-  --> mcp-gateway (DMZ, hardened)
+  --> mcp-proxy (DMZ, hardened)
         --> market-data backend (http, read-only)
         --> portfolio-analytics backend (http, read-only)
         --> trade-execution backend (http, write, restricted)
@@ -92,7 +92,7 @@ with isolated permissions.
 **Architecture:**
 ```
 Agent
-  --> mcp-gateway
+  --> mcp-proxy
         --> fs backend (stdio, runs as restricted user)
         --> search backend (http, Kubernetes pod)
         --> db backend (http, Kubernetes pod)
@@ -111,7 +111,7 @@ circuit breaker, capability filtering, hot reload.
 
 **Industry precedent:** The MicroMCP project on GitHub explicitly implements
 this pattern. Envoy AI Gateway auto-prefixes tool names with backend names
-(e.g., `github__issue_read`), identical to mcp-gateway's namespace separator.
+(e.g., `github__issue_read`), identical to mcp-proxy's namespace separator.
 
 ---
 
@@ -125,7 +125,7 @@ want both to see the same tools without duplicating config.
 **Architecture:**
 ```
 Claude Code  --\
-                --> mcp-gateway (localhost:8080)
+                --> mcp-proxy (localhost:8080)
 Cursor       --/      --> filesystem backend (stdio)
                       --> github backend (stdio)
                       --> sqlite backend (stdio)
@@ -161,7 +161,7 @@ identity.
 **Architecture:**
 ```
 Planning Agent (role: orchestrator)  --\
-Coding Agent (role: coder)           --+--> mcp-gateway
+Coding Agent (role: coder)           --+--> mcp-proxy
 Research Agent (role: researcher)    --/      --> github backend
 Data Agent (role: analyst)           --/      --> web-search backend
                                               --> filesystem backend
@@ -199,7 +199,7 @@ and rate limits. The gateway is the product boundary.
 
 **Architecture:**
 ```
-Customer A Agent --> mcp-gateway (multi-tenant)
+Customer A Agent --> mcp-proxy (multi-tenant)
 Customer B Agent -->      --> customer-a/crm backend
 Customer C Agent -->      --> customer-a/analytics backend
                           --> customer-b/crm backend
@@ -239,7 +239,7 @@ reliability are critical.
 **Architecture:**
 ```
 Central AI System
-  --> mcp-gateway (edge aggregation point)
+  --> mcp-proxy (edge aggregation point)
         --> sensor-array-1 backend (http, 10.0.1.x)
         --> sensor-array-2 backend (http, 10.0.2.x)
         --> plc-controller backend (http, 10.0.3.x)
@@ -277,7 +277,7 @@ to prevent unintended deployments.
 **Architecture:**
 ```
 CI Agent (role: ci-bot)
-  --> mcp-gateway
+  --> mcp-proxy
         --> circleci backend (http)
         --> github backend (stdio)
         --> sonarqube backend (http)
@@ -314,7 +314,7 @@ configuration changes before production.
 **Architecture:**
 ```
 Test harness / MCP Inspector
-  --> mcp-gateway (test config)
+  --> mcp-proxy (test config)
         --> stable-api backend (http, production mirror)
         --> experimental-api backend (http, staging)
         --> mock-db backend (stdio, returns canned responses)
@@ -350,7 +350,7 @@ audit trail. No direct MCP server access is permitted.
 **Architecture:**
 ```
 Any AI client (must present JWT)
-  --> mcp-gateway (zero-trust perimeter)
+  --> mcp-proxy (zero-trust perimeter)
         [Auth layer: verify JWT, extract claims]
         [Validation layer: check argument sizes, scan for injection]
         [Filter layer: RBAC-based tool visibility]
@@ -390,7 +390,7 @@ and reduce token consumption.
 **Architecture:**
 ```
 Multiple AI agents
-  --> mcp-gateway (cost optimization layer)
+  --> mcp-proxy (cost optimization layer)
         [Cache layer: aggressive TTLs on read-heavy tools]
         [Coalesce layer: deduplicate concurrent identical requests]
         [Filter layer: hide tools that generate excessive tokens]
@@ -430,7 +430,7 @@ lightweight MCP server adapters that wrap each legacy API.
 **Architecture:**
 ```
 AI Agents
-  --> mcp-gateway
+  --> mcp-proxy
         --> crm-adapter backend (stdio, wraps REST CRM API)
         --> erp-adapter backend (stdio, wraps gRPC ERP)
         --> legacy-db backend (stdio, wraps ODBC connection)
@@ -467,11 +467,11 @@ team autonomy.
 ```
 Organization-wide AI agents
   --> org-gateway (top-level federation)
-        --> engineering-gateway backend (http, runs its own mcp-gateway)
+        --> engineering-gateway backend (http, runs its own mcp-proxy)
               --> github, ci, monitoring backends
-        --> data-team-gateway backend (http, runs its own mcp-gateway)
+        --> data-team-gateway backend (http, runs its own mcp-proxy)
               --> warehouse, analytics, ml-ops backends
-        --> security-gateway backend (http, runs its own mcp-gateway)
+        --> security-gateway backend (http, runs its own mcp-proxy)
               --> siem, scanner, compliance backends
 ```
 
@@ -502,7 +502,7 @@ human-in-the-loop oversight.
 **Architecture:**
 ```
 Autonomous AI Agents
-  --> mcp-gateway (guardrail layer)
+  --> mcp-proxy (guardrail layer)
         [Admin API: enable/disable tools in real-time]
         [Rate limiting: detect and throttle runaway agents]
         [Circuit breaker: automatic protection]
@@ -538,7 +538,7 @@ its own interface without running a separate gateway process.
 **Architecture:**
 ```
 Custom Rust Application
-  --> embedded mcp-gateway (library)
+  --> embedded mcp-proxy (library)
         --> app-specific backend (in-process)
         --> external-api backend (http)
         --> local-tools backend (stdio)
@@ -556,7 +556,7 @@ Custom Rust Application
 
 **Industry precedent:** This follows the pattern of embedding Envoy as a
 library (via envoy-mobile) or embedding Kong's core as a library. The
-mcp-gateway already supports this via `mcp-gateway = "0.1"` as a crate
+mcp-proxy already supports this via `mcp-proxy = "0.1"` as a crate
 dependency with `into_router()` for axum integration.
 
 ---
@@ -598,7 +598,7 @@ dependency with `into_router()` for axum integration.
 5. **Federation and registry** patterns are maturing, with ContextForge
    and MintMCP providing tool discovery, versioning, and marketplace features.
 
-6. **Rust-based gateways** (Sentinel, mcp-gateway) are emerging for
+6. **Rust-based gateways** (Sentinel, mcp-proxy) are emerging for
    performance-critical deployments, following the trajectory of Envoy (C++)
    and Linkerd (Rust) in the service mesh space.
 
@@ -610,17 +610,17 @@ dependency with `into_router()` for axum integration.
 - [Micro-MCP: Namespaces and Policy (GitHub/DEV)](https://github.com/mabualzait/MicroMCP)
 - [Envoy AI Gateway MCP Implementation](https://aigateway.envoyproxy.io/blog/mcp-implementation/)
 - [Envoy AI Gateway MCP Performance](https://aigateway.envoyproxy.io/blog/mcp-in-envoy-ai-gateway/)
-- [Kong Enterprise MCP Gateway](https://konghq.com/blog/product-releases/enterprise-mcp-gateway)
-- [Traefik MCP Gateway](https://traefik.io/solutions/mcp-gateway)
+- [Kong Enterprise MCP Gateway](https://konghq.com/blog/product-releases/enterprise-mcp-proxy)
+- [Traefik MCP Gateway](https://traefik.io/solutions/mcp-proxy)
 - [IBM ContextForge](https://ibm.github.io/mcp-context-forge/)
 - [MCP Best Practices (modelcontextprotocol.info)](https://modelcontextprotocol.info/docs/best-practices/)
 - [Enterprise MCP Part Two (FactSet)](https://medium.com/factset/enterprise-mcp-model-context-protocol-part-two-f5cdd7c0444b)
 - [MCP for IoT (Glama)](https://glama.ai/blog/2025-08-19-bringing-ai-to-the-edge-mcp-for-iot)
 - [MCP and IoT (IEEE)](https://ieeexplore.ieee.org/iel8/8548628/11333934/11235950.pdf)
-- [MCP Gateway (Composio)](https://composio.dev/blog/mcp-gateways-guide)
-- [MCP Gateway Best Practices (Traefik Hub)](https://doc.traefik.io/traefik-hub/mcp-gateway/guides/mcp-gateway-best-practices)
+- [MCP Gateway (Composio)](https://composio.dev/blog/mcp-proxys-guide)
+- [MCP Gateway Best Practices (Traefik Hub)](https://doc.traefik.io/traefik-hub/mcp-proxy/guides/mcp-proxy-best-practices)
 - [MCP API Gateway Explained (Gravitee)](https://www.gravitee.io/blog/mcp-api-gateway-explained-protocols-caching-and-remote-server-integration)
-- [Advanced Auth for MCP Gateway (Red Hat)](https://developers.redhat.com/articles/2025/12/12/advanced-authentication-authorization-mcp-gateway)
+- [Advanced Auth for MCP Gateway (Red Hat)](https://developers.redhat.com/articles/2025/12/12/advanced-authentication-authorization-mcp-proxy)
 - [MCP Registry and Gateway Comparison](https://www.paperclipped.de/en/blog/mcp-registry-gateway-enterprise-ai-agents/)
 - [Sentinel MCP Gateway (Rust)](https://wallyblanchard.com/sentinel.html)
 - [Resilient AI Agents: Timeout and Retry (Octopus)](https://octopus.com/blog/mcp-timeout-retry)
