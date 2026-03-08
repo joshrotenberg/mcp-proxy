@@ -46,4 +46,5 @@ notify-debouncer-mini = "0.5"
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
-lto = "thin"
+lto = "fat"
+strip = true
