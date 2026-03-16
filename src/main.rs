@@ -140,8 +140,17 @@ fn print_config_summary(config: &ProxyConfig) -> Result<()> {
     }
 
     let auth_str = match &config.auth {
-        Some(mcp_proxy::config::AuthConfig::Bearer { tokens }) => {
-            format!("bearer ({} tokens)", tokens.len())
+        Some(mcp_proxy::config::AuthConfig::Bearer {
+            tokens,
+            scoped_tokens,
+        }) => {
+            let total = tokens.len() + scoped_tokens.len();
+            let scoped = if scoped_tokens.is_empty() {
+                String::new()
+            } else {
+                format!(", {} scoped", scoped_tokens.len())
+            };
+            format!("bearer ({} tokens{})", total, scoped)
         }
         #[cfg(feature = "oauth")]
         Some(mcp_proxy::config::AuthConfig::Jwt { .. }) => "jwt/jwks".to_string(),

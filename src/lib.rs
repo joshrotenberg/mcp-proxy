@@ -50,6 +50,8 @@ pub mod access_log;
 pub mod admin;
 pub mod admin_tools;
 pub mod alias;
+#[cfg(feature = "oauth")]
+pub mod bearer_scope;
 pub mod builder;
 pub mod cache;
 pub mod canary;

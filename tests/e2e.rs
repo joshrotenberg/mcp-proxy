@@ -1392,3 +1392,137 @@ async fn e2e_cache_with_multiple_backends() {
     assert_eq!(text_stats.hits, 1);
     assert_eq!(text_stats.misses, 1);
 }
+
+// ===========================================================================
+// Tier 11: Bearer token scoping
+// ===========================================================================
+
+#[cfg(feature = "oauth")]
+mod bearer_scoping {
+    use std::collections::HashMap;
+
+    use tower::Service;
+    use tower_mcp::oauth::token::TokenClaims;
+    use tower_mcp::protocol::{CallToolParams, ListToolsParams, McpRequest, RequestId};
+    use tower_mcp::router::{Extensions, RouterRequest};
+
+    use mcp_proxy::bearer_scope::BearerScopingService;
+
+    use super::{build_proxy, get_tool_names, get_tool_result_text};
+
+    const BEARER_SCOPE_KEY: &str = "__bearer_scope";
+
+    fn call_with_scope(allow: &[&str], deny: &[&str], inner: McpRequest) -> RouterRequest {
+        let mut extra = HashMap::new();
+        extra.insert(
+            BEARER_SCOPE_KEY.to_string(),
+            serde_json::json!({ "allow": allow, "deny": deny }),
+        );
+        let mut extensions = Extensions::new();
+        extensions.insert(TokenClaims {
+            sub: None,
+            iss: None,
+            aud: None,
+            exp: None,
+            scope: None,
+            client_id: None,
+            extra,
+        });
+        RouterRequest {
+            id: RequestId::Number(1),
+            inner,
+            extensions,
+        }
+    }
+
+    fn call_unscoped(inner: McpRequest) -> RouterRequest {
+        RouterRequest {
+            id: RequestId::Number(1),
+            inner,
+            extensions: Extensions::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn e2e_bearer_scope_allow_list_filters_list_tools() {
+        let proxy = build_proxy().await;
+        let mut svc = BearerScopingService::new(proxy);
+
+        let req = call_with_scope(
+            &["math/add"],
+            &[],
+            McpRequest::ListTools(ListToolsParams::default()),
+        );
+        let resp = svc.call(req).await.unwrap();
+        let names = get_tool_names(&resp);
+        assert_eq!(names, vec!["math/add"]);
+    }
+
+    #[tokio::test]
+    async fn e2e_bearer_scope_deny_list_filters_list_tools() {
+        let proxy = build_proxy().await;
+        let mut svc = BearerScopingService::new(proxy);
+
+        let req = call_with_scope(
+            &[],
+            &["math/add"],
+            McpRequest::ListTools(ListToolsParams::default()),
+        );
+        let resp = svc.call(req).await.unwrap();
+        let names = get_tool_names(&resp);
+        assert!(!names.contains(&"math/add".to_string()));
+        assert!(names.len() >= 2); // text/echo, text/upper, math/echo_args still present
+    }
+
+    #[tokio::test]
+    async fn e2e_bearer_scope_blocks_disallowed_call() {
+        let proxy = build_proxy().await;
+        let mut svc = BearerScopingService::new(proxy);
+
+        let req = call_with_scope(
+            &["math/add"],
+            &[],
+            McpRequest::CallTool(CallToolParams {
+                name: "text/echo".to_string(),
+                arguments: serde_json::json!({"message": "hi"}),
+                meta: None,
+                task: None,
+            }),
+        );
+        let resp = svc.call(req).await.unwrap();
+        assert!(resp.inner.is_err());
+        let err = resp.inner.unwrap_err();
+        assert!(err.message.contains("text/echo"));
+    }
+
+    #[tokio::test]
+    async fn e2e_bearer_scope_allows_permitted_call() {
+        let proxy = build_proxy().await;
+        let mut svc = BearerScopingService::new(proxy);
+
+        let req = call_with_scope(
+            &["math/add"],
+            &[],
+            McpRequest::CallTool(CallToolParams {
+                name: "math/add".to_string(),
+                arguments: serde_json::json!({"a": 3, "b": 4}),
+                meta: None,
+                task: None,
+            }),
+        );
+        let resp = svc.call(req).await.unwrap();
+        let text = get_tool_result_text(&resp);
+        assert_eq!(text, "7");
+    }
+
+    #[tokio::test]
+    async fn e2e_bearer_scope_unscoped_token_sees_all() {
+        let proxy = build_proxy().await;
+        let mut svc = BearerScopingService::new(proxy);
+
+        let req = call_unscoped(McpRequest::ListTools(ListToolsParams::default()));
+        let resp = svc.call(req).await.unwrap();
+        let names = get_tool_names(&resp);
+        assert!(names.len() >= 4); // math/add, math/echo_args, text/echo, text/upper
+    }
+}

@@ -204,8 +204,27 @@ impl ProxyBuilder {
     }
 
     /// Enable bearer token authentication.
+    /// Enable bearer token authentication.
+    ///
+    /// All tokens in this list have unrestricted access to all tools.
+    /// For per-token tool scoping, use [`scoped_bearer_auth`](Self::scoped_bearer_auth).
     pub fn bearer_auth(mut self, tokens: Vec<String>) -> Self {
-        self.config.auth = Some(AuthConfig::Bearer { tokens });
+        self.config.auth = Some(AuthConfig::Bearer {
+            tokens,
+            scoped_tokens: vec![],
+        });
+        self
+    }
+
+    /// Enable bearer token authentication with per-token tool scoping.
+    ///
+    /// Each [`BearerTokenConfig`] can specify
+    /// `allow_tools` or `deny_tools` to restrict which tools that token can access.
+    pub fn scoped_bearer_auth(mut self, scoped_tokens: Vec<BearerTokenConfig>) -> Self {
+        self.config.auth = Some(AuthConfig::Bearer {
+            tokens: vec![],
+            scoped_tokens,
+        });
         self
     }
 

@@ -616,6 +616,19 @@ fn build_middleware_stack(
         ));
     }
 
+    // Bearer token scoping (per-token allow/deny lists)
+    #[cfg(feature = "oauth")]
+    if matches!(
+        &config.auth,
+        Some(AuthConfig::Bearer {
+            scoped_tokens,
+            ..
+        }) if !scoped_tokens.is_empty()
+    ) {
+        tracing::info!("Enabling bearer token scoping middleware");
+        service = BoxCloneService::new(crate::bearer_scope::BearerScopingService::new(service));
+    }
+
     // RBAC (JWT auth only)
     #[cfg(feature = "oauth")]
     {
@@ -701,11 +714,38 @@ fn build_middleware_stack(
 async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
     let router = if let Some(auth) = &config.auth {
         match auth {
-            AuthConfig::Bearer { tokens } => {
-                tracing::info!(token_count = tokens.len(), "Enabling bearer token auth");
-                let validator = StaticBearerValidator::new(tokens.iter().cloned());
-                let layer = AuthLayer::new(validator);
-                router.layer(layer)
+            AuthConfig::Bearer {
+                tokens,
+                scoped_tokens,
+            } => {
+                let total = tokens.len() + scoped_tokens.len();
+                if scoped_tokens.is_empty() {
+                    // Simple bearer auth: use StaticBearerValidator
+                    tracing::info!(token_count = total, "Enabling bearer token auth");
+                    let validator = StaticBearerValidator::new(tokens.iter().cloned());
+                    let layer = AuthLayer::new(validator);
+                    router.layer(layer)
+                } else {
+                    // Scoped bearer auth: use custom layer that injects TokenClaims
+                    #[cfg(feature = "oauth")]
+                    {
+                        tracing::info!(
+                            token_count = total,
+                            scoped = scoped_tokens.len(),
+                            "Enabling bearer token auth with per-token scoping"
+                        );
+                        let layer =
+                            crate::bearer_scope::ScopedBearerAuthLayer::new(tokens, scoped_tokens);
+                        router.layer(layer)
+                    }
+                    #[cfg(not(feature = "oauth"))]
+                    {
+                        anyhow::bail!(
+                            "Per-token tool scoping requires the 'oauth' feature. \
+                             Rebuild with: cargo install mcp-proxy --features oauth"
+                        );
+                    }
+                }
             }
             #[cfg(feature = "oauth")]
             AuthConfig::Jwt {
