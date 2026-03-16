@@ -22,8 +22,8 @@ metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
 oauth = ["tower-mcp/oauth", "tower-mcp/jwks"]
 
 [dependencies]
-tower-mcp = { version = "0.8.3", features = ["http", "http-client", "proxy"] }
-tower-mcp-types = "0.8.3"
+tower-mcp = { version = "0.8.7", features = ["http", "http-client", "proxy"] }
+tower-mcp-types = "0.8.7"
 axum = "0.8"
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 tower-resilience = { version = "0.9.1", default-features = false, features = ["circuitbreaker", "ratelimiter", "hedge", "retry"] }

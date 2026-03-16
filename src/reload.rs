@@ -1,9 +1,9 @@
-//! Hot reload: watch the config file for changes and add new backends dynamically.
+//! Hot reload: watch the config file for changes and manage backends dynamically.
 //!
-//! Only new backends are added. Removed or modified backends are logged as warnings
-//! since the proxy currently supports add-only dynamic updates.
+//! Supports adding, removing, and replacing backends at runtime when the config
+//! file changes. Uses content hashing to detect modifications.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::mpsc as std_mpsc;
@@ -53,12 +53,16 @@ async fn watch_loop(config_path: PathBuf, proxy: McpProxy) {
 
     tracing::info!(path = %config_path.display(), "Hot reload watching config file");
 
-    // Track known backend names
-    let mut known_backends: HashSet<String> = {
+    // Track known backends and their config fingerprints for change detection
+    let mut backend_fingerprints: HashMap<String, String> = {
         if let Ok(config) = ProxyConfig::load(&config_path) {
-            config.backends.iter().map(|b| b.name.clone()).collect()
+            config
+                .backends
+                .iter()
+                .map(|b| (b.name.clone(), config_fingerprint(b)))
+                .collect()
         } else {
-            HashSet::new()
+            HashMap::new()
         }
     };
 
@@ -84,7 +88,7 @@ async fn watch_loop(config_path: PathBuf, proxy: McpProxy) {
             continue;
         }
 
-        tracing::info!("Config file changed, checking for new backends");
+        tracing::info!("Config file changed, reloading backends");
 
         let mut new_config = match ProxyConfig::load(&config_path) {
             Ok(c) => c,
@@ -95,24 +99,50 @@ async fn watch_loop(config_path: PathBuf, proxy: McpProxy) {
         };
         new_config.resolve_env_vars();
 
-        let new_names: HashSet<String> =
-            new_config.backends.iter().map(|b| b.name.clone()).collect();
+        let new_fingerprints: HashMap<String, String> = new_config
+            .backends
+            .iter()
+            .map(|b| (b.name.clone(), config_fingerprint(b)))
+            .collect();
 
-        // Detect removed backends
-        for removed in known_backends.difference(&new_names) {
-            tracing::warn!(
-                backend = %removed,
-                "Backend removed from config but cannot be removed at runtime (add-only)"
-            );
+        let old_names: HashSet<&String> = backend_fingerprints.keys().collect();
+        let new_names: HashSet<&String> = new_fingerprints.keys().collect();
+
+        // Remove backends that are no longer in config
+        for removed in old_names.difference(&new_names) {
+            tracing::info!(backend = %removed, "Removing backend via hot reload");
+            if proxy.remove_backend(removed).await {
+                tracing::info!(backend = %removed, "Backend removed");
+            } else {
+                tracing::warn!(backend = %removed, "Backend not found for removal");
+            }
         }
-
-        // Detect modified backends (name exists but config may have changed)
-        // We don't track config content, so we can't detect modifications.
-        // Just log that existing backends are not updated.
 
         // Add new backends
         for backend in &new_config.backends {
-            if known_backends.contains(&backend.name) {
+            if backend_fingerprints.contains_key(&backend.name) {
+                // Existing backend -- check for modification
+                let old_fp = &backend_fingerprints[&backend.name];
+                let new_fp = &new_fingerprints[&backend.name];
+
+                if old_fp != new_fp {
+                    tracing::info!(
+                        backend = %backend.name,
+                        "Backend config changed, replacing via hot reload"
+                    );
+
+                    // Remove old, add new
+                    proxy.remove_backend(&backend.name).await;
+                    if let Err(e) = add_backend(&proxy, backend).await {
+                        tracing::error!(
+                            backend = %backend.name,
+                            error = %e,
+                            "Failed to replace backend via hot reload"
+                        );
+                    } else {
+                        tracing::info!(backend = %backend.name, "Backend replaced");
+                    }
+                }
                 continue;
             }
 
@@ -130,10 +160,18 @@ async fn watch_loop(config_path: PathBuf, proxy: McpProxy) {
                 );
             } else {
                 tracing::info!(backend = %backend.name, "Backend added via hot reload");
-                known_backends.insert(backend.name.clone());
             }
         }
+
+        // Update fingerprints to reflect current state
+        backend_fingerprints = new_fingerprints;
     }
+}
+
+/// Generate a fingerprint for a backend config to detect changes.
+/// Uses TOML serialization for a stable, content-based comparison.
+fn config_fingerprint(backend: &BackendConfig) -> String {
+    toml::to_string(backend).unwrap_or_default()
 }
 
 /// Connect and add a single backend to the proxy, including per-backend middleware.
