@@ -225,6 +225,8 @@ pub enum TransportType {
     Stdio,
     /// HTTP+SSE remote server.
     Http,
+    /// WebSocket remote server.
+    Websocket,
 }
 
 /// Per-backend request timeout.
@@ -981,6 +983,14 @@ impl ProxyConfig {
                 TransportType::Http => {
                     if backend.url.is_none() {
                         anyhow::bail!("backend '{}': http transport requires 'url'", backend.name);
+                    }
+                }
+                TransportType::Websocket => {
+                    if backend.url.is_none() {
+                        anyhow::bail!(
+                            "backend '{}': websocket transport requires 'url'",
+                            backend.name
+                        );
                     }
                 }
             }
@@ -2501,6 +2511,71 @@ mod tests {
         assert!(
             err.to_string().contains("cannot specify both"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_websocket_transport() {
+        let toml = r#"
+        [proxy]
+        name = "ws-proxy"
+        [proxy.listen]
+
+        [[backends]]
+        name = "ws-backend"
+        transport = "websocket"
+        url = "ws://localhost:9090/ws"
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        assert!(matches!(
+            config.backends[0].transport,
+            TransportType::Websocket
+        ));
+        assert_eq!(
+            config.backends[0].url.as_deref(),
+            Some("ws://localhost:9090/ws")
+        );
+    }
+
+    #[test]
+    fn test_websocket_transport_requires_url() {
+        let toml = r#"
+        [proxy]
+        name = "ws-proxy"
+        [proxy.listen]
+
+        [[backends]]
+        name = "ws-backend"
+        transport = "websocket"
+        "#;
+
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("websocket transport requires 'url'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_websocket_with_bearer_token() {
+        let toml = r#"
+        [proxy]
+        name = "ws-proxy"
+        [proxy.listen]
+
+        [[backends]]
+        name = "ws-backend"
+        transport = "websocket"
+        url = "wss://secure.example.com/mcp"
+        bearer_token = "my-secret"
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        assert_eq!(
+            config.backends[0].bearer_token.as_deref(),
+            Some("my-secret")
         );
     }
 }

@@ -91,6 +91,7 @@ fn print_config_summary(config: &ProxyConfig) -> Result<()> {
         let transport = match backend.transport {
             mcp_proxy::config::TransportType::Stdio => "stdio",
             mcp_proxy::config::TransportType::Http => "http",
+            mcp_proxy::config::TransportType::Websocket => "websocket",
         };
 
         let mut features = Vec::new();

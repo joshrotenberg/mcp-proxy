@@ -237,6 +237,39 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
             }
         }
+        #[cfg(feature = "websocket")]
+        TransportType::Websocket => {
+            let url = backend
+                .url
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("websocket backend requires 'url'"))?;
+            let transport = if let Some(token) = &backend.bearer_token {
+                crate::ws_transport::WebSocketClientTransport::connect_with_bearer_token(url, token)
+                    .await?
+            } else {
+                crate::ws_transport::WebSocketClientTransport::connect(url).await?
+            };
+
+            if has_middleware {
+                let layer = build_backend_layer(backend);
+                proxy
+                    .add_backend_with_layer(&backend.name, transport, layer)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            } else {
+                proxy
+                    .add_backend(&backend.name, transport)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            }
+        }
+        #[cfg(not(feature = "websocket"))]
+        TransportType::Websocket => {
+            anyhow::bail!(
+                "WebSocket transport requires the 'websocket' feature. \
+                 Rebuild with: cargo install mcp-proxy --features websocket"
+            );
+        }
     }
 
     if has_middleware {

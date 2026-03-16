@@ -1526,3 +1526,114 @@ mod bearer_scoping {
         assert!(names.len() >= 4); // math/add, math/echo_args, text/echo, text/upper
     }
 }
+
+// ===========================================================================
+// Tier 12: WebSocket backend transport
+// ===========================================================================
+
+#[cfg(feature = "websocket")]
+mod websocket_transport {
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+    use tower::Service;
+    use tower_mcp::protocol::{
+        CallToolParams, ListToolsParams, McpRequest, McpResponse, RequestId,
+    };
+    use tower_mcp::proxy::McpProxy;
+    use tower_mcp::router::{Extensions, RouterRequest, RouterResponse};
+    use tower_mcp::{CallToolResult, McpRouter, ToolBuilder};
+
+    use mcp_proxy::ws_transport::WebSocketClientTransport;
+
+    use std::convert::Infallible;
+
+    #[derive(Debug, Deserialize, JsonSchema)]
+    struct WsInput {
+        value: String,
+    }
+
+    fn ws_router() -> McpRouter {
+        let echo = ToolBuilder::new("echo")
+            .description("Echo a value")
+            .handler(|input: WsInput| async move { Ok(CallToolResult::text(input.value)) })
+            .build();
+
+        McpRouter::new()
+            .server_info("ws-server", "1.0.0")
+            .tool(echo)
+    }
+
+    async fn call<S>(svc: &mut S, request: McpRequest) -> RouterResponse
+    where
+        S: Service<RouterRequest, Response = RouterResponse, Error = Infallible>,
+    {
+        let req = RouterRequest {
+            id: RequestId::Number(1),
+            inner: request,
+            extensions: Extensions::new(),
+        };
+        svc.call(req).await.expect("infallible")
+    }
+
+    #[tokio::test]
+    async fn e2e_websocket_backend_list_and_call() {
+        // Start a WebSocket MCP server
+        let router = ws_router();
+        let ws_transport = tower_mcp::transport::websocket::WebSocketTransport::new(router);
+        let axum_router = ws_transport.into_router();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, axum_router).await.unwrap();
+        });
+
+        // Give the server a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Connect via WebSocket transport
+        let ws_url = format!("ws://127.0.0.1:{}", addr.port());
+        let transport = WebSocketClientTransport::connect(&ws_url).await.unwrap();
+
+        // Build proxy with WebSocket backend
+        let mut proxy = McpProxy::builder("ws-test", "1.0.0")
+            .separator("/")
+            .backend("ws", transport)
+            .await
+            .build_strict()
+            .await
+            .expect("proxy should build with WebSocket backend");
+
+        // List tools
+        let resp = call(
+            &mut proxy,
+            McpRequest::ListTools(ListToolsParams::default()),
+        )
+        .await;
+        let tools = match resp.inner.unwrap() {
+            McpResponse::ListTools(r) => r.tools,
+            other => panic!("expected ListTools, got: {other:?}"),
+        };
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "ws/echo");
+
+        // Call tool
+        let resp = call(
+            &mut proxy,
+            McpRequest::CallTool(CallToolParams {
+                name: "ws/echo".to_string(),
+                arguments: serde_json::json!({"value": "hello ws"}),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await;
+        let result = match resp.inner.unwrap() {
+            McpResponse::CallTool(r) => r,
+            other => panic!("expected CallTool, got: {other:?}"),
+        };
+        assert_eq!(result.all_text(), "hello ws");
+
+        server_handle.abort();
+    }
+}
