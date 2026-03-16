@@ -3,7 +3,15 @@
 //! Caches `ReadResource` and `CallTool` responses with per-backend TTL.
 //! Cache keys are derived from the request type, name/URI, and arguments.
 //!
-//! # Configuration
+//! # Cache Backends
+//!
+//! The cache backend is configurable via `[cache]` in the proxy config:
+//!
+//! - `"memory"` (default): In-process moka cache. Fast, no external deps.
+//! - `"redis"` and `"sqlite"`: Planned external backends (require upstream
+//!   RouterResponse serialization support, see tower-mcp#732).
+//!
+//! # Per-Backend Configuration
 //!
 //! ```toml
 //! [[backends]]

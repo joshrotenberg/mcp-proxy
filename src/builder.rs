@@ -65,6 +65,7 @@ impl ProxyBuilder {
                 auth: None,
                 performance: PerformanceConfig::default(),
                 security: SecurityConfig::default(),
+                cache: CacheBackendConfig::default(),
                 observability: ObservabilityConfig::default(),
             },
         }

@@ -156,6 +156,13 @@ fn print_config_summary(config: &ProxyConfig) -> Result<()> {
     if let Some(ref rl) = config.proxy.rate_limit {
         println!("  Rate limit: {} req/{}s", rl.requests, rl.period_seconds);
     }
+    if config.cache.backend != "memory" {
+        println!(
+            "  Cache:    {} ({})",
+            config.cache.backend,
+            config.cache.url.as_deref().unwrap_or("n/a")
+        );
+    }
     if config.proxy.hot_reload {
         println!("  Hot reload: enabled");
     }
