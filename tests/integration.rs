@@ -170,6 +170,8 @@ async fn test_proxy_with_filter_hides_tools() {
         tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
+        hide_destructive: false,
+        read_only_only: false,
     }];
     let mut svc = CapabilityFilterService::new(proxy, filters);
 
@@ -193,6 +195,8 @@ async fn test_proxy_with_filter_denies_call() {
         tool_filter: NameFilter::AllowList(["echo".to_string()].into()),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
+        hide_destructive: false,
+        read_only_only: false,
     }];
     let mut svc = CapabilityFilterService::new(proxy, filters);
 
@@ -454,6 +458,8 @@ async fn test_proxy_with_stacked_middleware() {
         tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
+        hide_destructive: false,
+        read_only_only: false,
     }];
 
     let filtered = CapabilityFilterService::new(proxy, filters);
@@ -835,6 +841,8 @@ async fn test_canary_with_filter_hides_canary_tools() {
         tool_filter: NameFilter::AllowList(std::collections::HashSet::new()),
         resource_filter: NameFilter::AllowList(std::collections::HashSet::new()),
         prompt_filter: NameFilter::AllowList(std::collections::HashSet::new()),
+        hide_destructive: false,
+        read_only_only: false,
     }];
     let mut svc = CapabilityFilterService::new(canary_svc, filters);
 
@@ -886,6 +894,8 @@ async fn test_full_middleware_stack() {
         tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
+        hide_destructive: false,
+        read_only_only: false,
     }];
 
     let aliases = AliasMap::new(vec![(

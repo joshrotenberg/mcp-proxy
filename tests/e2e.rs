@@ -305,6 +305,8 @@ async fn e2e_filter_hides_tools_from_listing() {
         tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
+        hide_destructive: false,
+        read_only_only: false,
     }];
     let mut svc = CapabilityFilterService::new(proxy, filters);
 
@@ -324,6 +326,8 @@ async fn e2e_filter_blocks_call_to_hidden_tool() {
         tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
+        hide_destructive: false,
+        read_only_only: false,
     }];
     let mut svc = CapabilityFilterService::new(proxy, filters);
 
@@ -345,6 +349,8 @@ async fn e2e_filter_allowlist_only_permits_listed_tools() {
         tool_filter: NameFilter::AllowList(["add".to_string()].into()),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
+        hide_destructive: false,
+        read_only_only: false,
     }];
     let mut svc = CapabilityFilterService::new(proxy, filters);
 
@@ -516,6 +522,8 @@ async fn e2e_full_stack_filter_alias_inject_validate() {
         tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
+        hide_destructive: false,
+        read_only_only: false,
     }];
     let filtered = CapabilityFilterService::new(injected, filters);
 
@@ -1199,6 +1207,8 @@ async fn e2e_filter_then_cache_filters_before_caching() {
         tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
+        hide_destructive: false,
+        read_only_only: false,
     }];
     let filtered = CapabilityFilterService::new(proxy, filters);
 
@@ -1236,6 +1246,8 @@ async fn e2e_alias_then_filter_uses_original_names_for_filter() {
         tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
+        hide_destructive: false,
+        read_only_only: false,
     }];
     let filtered = CapabilityFilterService::new(proxy, filters);
 
@@ -1310,12 +1322,16 @@ async fn e2e_multiple_filters_on_different_namespaces() {
             tool_filter: NameFilter::AllowList(["add".to_string()].into()),
             resource_filter: NameFilter::PassAll,
             prompt_filter: NameFilter::PassAll,
+            hide_destructive: false,
+            read_only_only: false,
         },
         BackendFilter {
             namespace: "text/".to_string(),
             tool_filter: NameFilter::AllowList(["echo".to_string()].into()),
             resource_filter: NameFilter::PassAll,
             prompt_filter: NameFilter::PassAll,
+            hide_destructive: false,
+            read_only_only: false,
         },
     ];
     let mut svc = CapabilityFilterService::new(proxy, filters);
