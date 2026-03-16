@@ -16,10 +16,11 @@ name = "mcp-proxy"
 path = "src/main.rs"
 
 [features]
-default = ["otel", "metrics", "oauth"]
+default = ["otel", "metrics", "oauth", "openapi"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
 oauth = ["tower-mcp/oauth", "tower-mcp/jwks"]
+openapi = ["dep:utoipa", "dep:utoipa-axum"]
 
 [dependencies]
 tower-mcp = { version = "0.8.7", features = ["http", "http-client", "proxy"] }
@@ -47,9 +48,11 @@ moka = { version = "0.12.14", features = ["future"] }
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 glob-match = "0.2"
 notify-debouncer-mini = "0.5"
+utoipa = { version = "5", features = ["chrono"], optional = true }
+utoipa-axum = { version = "0.2", optional = true }
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 tokio-stream = "0.1"
 tower-resilience-chaos = "0.9"
 
