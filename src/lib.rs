@@ -54,6 +54,7 @@ pub mod builder;
 pub mod cache;
 pub mod canary;
 pub mod coalesce;
+pub mod composite;
 pub mod config;
 pub mod failover;
 pub mod filter;

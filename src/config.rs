@@ -29,6 +29,46 @@ pub struct ProxyConfig {
     /// Logging, metrics, and tracing configuration.
     #[serde(default)]
     pub observability: ObservabilityConfig,
+    /// Composite tools that fan out to multiple backend tools.
+    #[serde(default)]
+    pub composite_tools: Vec<CompositeToolConfig>,
+}
+
+/// Fan-out strategy for composite tools.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CompositeStrategy {
+    /// Execute all tools concurrently using `tokio::JoinSet`.
+    #[default]
+    Parallel,
+}
+
+/// Configuration for a composite tool that fans out to multiple backend tools.
+///
+/// Composite tools appear in `ListTools` responses alongside regular tools.
+/// When called, the proxy dispatches the request to every tool in [`tools`](Self::tools)
+/// concurrently (for `parallel` strategy) and aggregates all results.
+///
+/// # Example
+///
+/// ```toml
+/// [[composite_tools]]
+/// name = "search_all"
+/// description = "Search across all knowledge sources"
+/// tools = ["github/search", "jira/search", "docs/search"]
+/// strategy = "parallel"
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CompositeToolConfig {
+    /// Name of the composite tool as it appears to MCP clients.
+    pub name: String,
+    /// Human-readable description of the composite tool.
+    pub description: String,
+    /// Fully-qualified backend tool names to fan out to (e.g. `"github/search"`).
+    pub tools: Vec<String>,
+    /// Execution strategy (default: `parallel`).
+    #[serde(default)]
+    pub strategy: CompositeStrategy,
 }
 
 /// Core proxy identity and server settings.
@@ -903,6 +943,25 @@ impl ProxyConfig {
                         "backend '{}': failover_for cannot reference itself",
                         backend.name
                     );
+                }
+            }
+        }
+
+        // Validate composite tools
+        {
+            let mut composite_names = HashSet::new();
+            for ct in &self.composite_tools {
+                if ct.name.is_empty() {
+                    anyhow::bail!("composite_tools: name must not be empty");
+                }
+                if ct.tools.is_empty() {
+                    anyhow::bail!(
+                        "composite_tools '{}': must reference at least one tool",
+                        ct.name
+                    );
+                }
+                if !composite_names.insert(&ct.name) {
+                    anyhow::bail!("duplicate composite_tools name '{}'", ct.name);
                 }
             }
         }
