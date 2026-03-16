@@ -15,6 +15,9 @@ struct Cli {
     /// Validate the config file and exit without starting the server
     #[arg(long)]
     check: bool,
+    /// Import backends from a .mcp.json file (merges with config file backends)
+    #[arg(long, value_name = "PATH")]
+    import_mcp_json: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -23,6 +26,29 @@ async fn main() -> Result<()> {
 
     let mut config = ProxyConfig::load(&cli.config)?;
     config.resolve_env_vars();
+
+    // Import backends from .mcp.json if specified
+    if let Some(ref mcp_json_path) = cli.import_mcp_json {
+        let mcp_json = mcp_proxy::mcp_json::McpJsonConfig::load(mcp_json_path)?;
+        let imported = mcp_json.into_backends()?;
+        let count = imported.len();
+        for backend in imported {
+            // Skip if a backend with this name already exists in the TOML config
+            if config.backends.iter().any(|b| b.name == backend.name) {
+                eprintln!(
+                    "  Skipping '{}' from .mcp.json (already defined in config)",
+                    backend.name
+                );
+                continue;
+            }
+            config.backends.push(backend);
+        }
+        eprintln!(
+            "Imported {} backends from {}",
+            count,
+            mcp_json_path.display()
+        );
+    }
 
     if cli.check {
         return print_config_summary(&config);
