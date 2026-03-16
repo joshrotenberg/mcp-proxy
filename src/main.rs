@@ -12,6 +12,9 @@ struct Cli {
     /// Path to config file
     #[arg(short, long, default_value = "proxy.toml")]
     config: PathBuf,
+    /// Validate the config file and exit without starting the server
+    #[arg(long)]
+    check: bool,
 }
 
 #[tokio::main]
@@ -20,6 +23,10 @@ async fn main() -> Result<()> {
 
     let mut config = ProxyConfig::load(&cli.config)?;
     config.resolve_env_vars();
+
+    if cli.check {
+        return print_config_summary(&config);
+    }
 
     init_logging(&config);
 
@@ -39,6 +46,101 @@ async fn main() -> Result<()> {
     }
 
     proxy.serve().await
+}
+
+fn print_config_summary(config: &ProxyConfig) -> Result<()> {
+    println!("Config OK");
+    println!();
+    println!(
+        "  Proxy:    {} v{}",
+        config.proxy.name, config.proxy.version
+    );
+    println!(
+        "  Listen:   {}:{}",
+        config.proxy.listen.host, config.proxy.listen.port
+    );
+    println!("  Backends: {}", config.backends.len());
+
+    for backend in &config.backends {
+        let transport = match backend.transport {
+            mcp_proxy::config::TransportType::Stdio => "stdio",
+            mcp_proxy::config::TransportType::Http => "http",
+        };
+
+        let mut features = Vec::new();
+        if backend.timeout.is_some() {
+            features.push("timeout");
+        }
+        if backend.rate_limit.is_some() {
+            features.push("rate-limit");
+        }
+        if backend.circuit_breaker.is_some() {
+            features.push("circuit-breaker");
+        }
+        if backend.retry.is_some() {
+            features.push("retry");
+        }
+        if backend.hedging.is_some() {
+            features.push("hedging");
+        }
+        if backend.concurrency.is_some() {
+            features.push("concurrency-limit");
+        }
+        if backend.outlier_detection.is_some() {
+            features.push("outlier-detection");
+        }
+        if backend.cache.is_some() {
+            features.push("cache");
+        }
+        if !backend.expose_tools.is_empty() || !backend.hide_tools.is_empty() {
+            features.push("filter");
+        }
+        if !backend.aliases.is_empty() {
+            features.push("alias");
+        }
+        if backend.canary_of.is_some() {
+            features.push("canary");
+        }
+        if backend.mirror_of.is_some() {
+            features.push("mirror");
+        }
+
+        let features_str = if features.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", features.join(", "))
+        };
+        println!("    - {} ({}){}", backend.name, transport, features_str);
+    }
+
+    let auth_str = match &config.auth {
+        Some(mcp_proxy::config::AuthConfig::Bearer { tokens }) => {
+            format!("bearer ({} tokens)", tokens.len())
+        }
+        #[cfg(feature = "oauth")]
+        Some(mcp_proxy::config::AuthConfig::Jwt { .. }) => "jwt/jwks".to_string(),
+        #[cfg(not(feature = "oauth"))]
+        Some(mcp_proxy::config::AuthConfig::Jwt { .. }) => {
+            "jwt/jwks (feature disabled)".to_string()
+        }
+        None => "none".to_string(),
+    };
+    println!("  Auth:     {}", auth_str);
+
+    if config.proxy.hot_reload {
+        println!("  Hot reload: enabled");
+    }
+    if config.performance.coalesce_requests {
+        println!("  Request coalescing: enabled");
+    }
+    if config.observability.audit {
+        println!("  Audit logging: enabled");
+    }
+    if config.observability.metrics.enabled {
+        println!("  Metrics: enabled");
+    }
+
+    Ok(())
 }
 
 fn init_logging(config: &ProxyConfig) {

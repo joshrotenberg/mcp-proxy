@@ -655,6 +655,15 @@ impl ProxyConfig {
         if self.backends.is_empty() {
             anyhow::bail!("at least one backend is required");
         }
+
+        // Check for duplicate backend names
+        let mut seen_names = HashSet::new();
+        for backend in &self.backends {
+            if !seen_names.insert(&backend.name) {
+                anyhow::bail!("duplicate backend name '{}'", backend.name);
+            }
+        }
+
         for backend in &self.backends {
             match backend.transport {
                 TransportType::Stdio => {
@@ -1612,6 +1621,31 @@ mod tests {
             config.backends[0]
                 .build_filter(&config.proxy.separator)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_duplicate_backend_names() {
+        let toml = r#"
+        [proxy]
+        name = "test"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "cat"
+        "#;
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate backend name"),
+            "expected duplicate error, got: {}",
+            err
         );
     }
 }
