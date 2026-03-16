@@ -62,6 +62,7 @@ impl CacheStats {
 /// Returned by [`CacheHandle::stats()`] to report hit/miss rates
 /// and entry counts per cached namespace.
 #[derive(Serialize, Clone)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CacheStatsSnapshot {
     /// Backend namespace this cache covers.
     pub namespace: String,

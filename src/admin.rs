@@ -50,6 +50,7 @@ impl AdminState {
 
 /// Health status of a single backend, updated by the background health checker.
 #[derive(Serialize, Clone)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BackendStatus {
     /// Backend namespace (e.g. "db/").
     pub namespace: String,
@@ -66,12 +67,14 @@ pub struct BackendStatus {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 struct AdminBackendsResponse {
     proxy: ProxyInfo,
     backends: Vec<BackendStatus>,
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 struct ProxyInfo {
     name: String,
     version: String,
@@ -186,6 +189,7 @@ async fn handle_health(Extension(state): Extension<AdminState>) -> Json<HealthRe
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 struct HealthResponse {
     status: String,
     unhealthy_backends: Vec<String>,
@@ -255,6 +259,7 @@ pub type MetricsHandle = Option<()>;
 
 /// Request body for adding an HTTP backend via REST.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 struct AddBackendRequest {
     /// Backend name (becomes the namespace prefix).
     name: String,
@@ -266,6 +271,7 @@ struct AddBackendRequest {
 
 /// Response body for backend operations.
 #[derive(Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 struct BackendOpResponse {
     ok: bool,
     message: String,
@@ -355,8 +361,38 @@ async fn handle_list_sessions(
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 struct SessionsResponse {
     active_sessions: usize,
+}
+
+/// OpenAPI spec for the admin API.
+///
+/// Available at `GET /admin/openapi.json` when the `openapi` feature is enabled.
+#[cfg(feature = "openapi")]
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    info(
+        title = "mcp-proxy Admin API",
+        description = "REST API for managing and monitoring the MCP proxy.",
+        version = "0.1.0",
+    ),
+    components(schemas(
+        AdminBackendsResponse,
+        ProxyInfo,
+        BackendStatus,
+        HealthResponse,
+        crate::cache::CacheStatsSnapshot,
+        SessionsResponse,
+        AddBackendRequest,
+        BackendOpResponse,
+    ))
+)]
+struct ApiDoc;
+
+#[cfg(feature = "openapi")]
+async fn handle_openapi() -> impl IntoResponse {
+    axum::Json(<ApiDoc as utoipa::OpenApi>::openapi())
 }
 
 /// Build the admin API router.
@@ -393,6 +429,9 @@ pub fn admin_router(
     let router = router.layer(Extension(metrics_handle));
     #[cfg(not(feature = "metrics"))]
     let _ = metrics_handle;
+
+    #[cfg(feature = "openapi")]
+    let router = router.route("/openapi.json", get(handle_openapi));
 
     router
 }
