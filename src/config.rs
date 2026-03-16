@@ -23,6 +23,9 @@ pub struct ProxyConfig {
     /// Security policies.
     #[serde(default)]
     pub security: SecurityConfig,
+    /// Global cache backend configuration.
+    #[serde(default)]
+    pub cache: CacheBackendConfig,
     /// Logging, metrics, and tracing configuration.
     #[serde(default)]
     pub observability: ObservabilityConfig,
@@ -394,6 +397,49 @@ pub struct BackendCacheConfig {
     pub max_entries: u64,
 }
 
+/// Global cache backend configuration.
+///
+/// Controls which storage backend is used for response caching. Per-backend
+/// TTL and max_entries settings remain the same regardless of backend.
+///
+/// # Backends
+///
+/// - `"memory"` (default): In-process cache using moka. Fast, no external deps,
+///   but not shared across proxy instances.
+/// - `"redis"`: External Redis cache. Shared across instances. Requires the
+///   `redis-cache` feature and upstream RouterResponse serialization support.
+/// - `"sqlite"`: Local SQLite cache. Persistent across restarts. Requires the
+///   `sqlite-cache` feature.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CacheBackendConfig {
+    /// Cache backend type: "memory" (default), "redis", or "sqlite".
+    #[serde(default = "default_cache_backend")]
+    pub backend: String,
+    /// Connection URL for external backends (Redis or SQLite path).
+    pub url: Option<String>,
+    /// Key prefix for external cache entries (default: "mcp-proxy:").
+    #[serde(default = "default_cache_prefix")]
+    pub prefix: String,
+}
+
+impl Default for CacheBackendConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_cache_backend(),
+            url: None,
+            prefix: default_cache_prefix(),
+        }
+    }
+}
+
+fn default_cache_backend() -> String {
+    "memory".to_string()
+}
+
+fn default_cache_prefix() -> String {
+    "mcp-proxy:".to_string()
+}
+
 /// Performance tuning options.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct PerformanceConfig {
@@ -756,6 +802,25 @@ impl ProxyConfig {
     fn validate(&self) -> Result<()> {
         if self.backends.is_empty() {
             anyhow::bail!("at least one backend is required");
+        }
+
+        // Validate cache backend
+        match self.cache.backend.as_str() {
+            "memory" => {}
+            "redis" | "sqlite" => {
+                if self.cache.url.is_none() {
+                    anyhow::bail!(
+                        "cache.url is required when cache.backend = \"{}\"",
+                        self.cache.backend
+                    );
+                }
+            }
+            other => {
+                anyhow::bail!(
+                    "unknown cache backend \"{}\", expected \"memory\", \"redis\", or \"sqlite\"",
+                    other
+                );
+            }
         }
 
         // Validate global rate limit
@@ -2048,5 +2113,70 @@ mod tests {
             format!("{err}").contains("duplicate rename target"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn test_cache_backend_defaults_to_memory() {
+        let config = ProxyConfig::parse(minimal_config()).unwrap();
+        assert_eq!(config.cache.backend, "memory");
+        assert!(config.cache.url.is_none());
+    }
+
+    #[test]
+    fn test_cache_backend_redis_requires_url() {
+        let toml = r#"
+        [proxy]
+        name = "test"
+        [proxy.listen]
+        [cache]
+        backend = "redis"
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+        "#;
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(err.to_string().contains("cache.url is required"));
+    }
+
+    #[test]
+    fn test_cache_backend_unknown_rejected() {
+        let toml = r#"
+        [proxy]
+        name = "test"
+        [proxy.listen]
+        [cache]
+        backend = "memcached"
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+        "#;
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(err.to_string().contains("unknown cache backend"));
+    }
+
+    #[test]
+    fn test_cache_backend_redis_with_url() {
+        let toml = r#"
+        [proxy]
+        name = "test"
+        [proxy.listen]
+        [cache]
+        backend = "redis"
+        url = "redis://localhost:6379"
+        prefix = "myapp:"
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+        "#;
+        let config = ProxyConfig::parse(toml).unwrap();
+        assert_eq!(config.cache.backend, "redis");
+        assert_eq!(config.cache.url.as_deref(), Some("redis://localhost:6379"));
+        assert_eq!(config.cache.prefix, "myapp:");
     }
 }
