@@ -8,9 +8,30 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use tower::Service;
+use tower::{Layer, Service};
 
 use tower_mcp::protocol::McpRequest;
+
+/// Tower layer that produces a [`ValidationService`].
+#[derive(Clone)]
+pub struct ValidationLayer {
+    config: ValidationConfig,
+}
+
+impl ValidationLayer {
+    /// Create a new validation layer.
+    pub fn new(config: ValidationConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl<S> Layer<S> for ValidationLayer {
+    type Service = ValidationService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        ValidationService::new(inner, self.config.clone())
+    }
+}
 use tower_mcp::{RouterRequest, RouterResponse};
 use tower_mcp_types::JsonRpcError;
 

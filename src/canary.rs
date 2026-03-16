@@ -40,9 +40,39 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 
-use tower::Service;
+use tower::{Layer, Service};
 use tower_mcp::router::{Extensions, RouterRequest, RouterResponse};
 use tower_mcp_types::protocol::{CallToolParams, GetPromptParams, McpRequest, ReadResourceParams};
+
+/// Tower layer that produces a [`CanaryService`].
+#[derive(Clone)]
+pub struct CanaryLayer {
+    canaries: HashMap<String, (String, u32, u32)>,
+    separator: String,
+}
+
+impl CanaryLayer {
+    /// Create a new canary routing layer.
+    ///
+    /// `canaries` maps primary backend names to `(canary_name, primary_weight, canary_weight)`.
+    pub fn new(
+        canaries: HashMap<String, (String, u32, u32)>,
+        separator: impl Into<String>,
+    ) -> Self {
+        Self {
+            canaries,
+            separator: separator.into(),
+        }
+    }
+}
+
+impl<S> Layer<S> for CanaryLayer {
+    type Service = CanaryService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        CanaryService::new(inner, self.canaries.clone(), &self.separator)
+    }
+}
 
 /// Mapping from a primary backend namespace to its canary configuration.
 #[derive(Debug, Clone)]

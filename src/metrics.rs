@@ -10,8 +10,27 @@ use std::task::{Context, Poll};
 use std::time::Instant;
 
 use metrics::{counter, histogram};
-use tower::Service;
+use tower::{Layer, Service};
 use tower_mcp::{RouterRequest, RouterResponse};
+
+/// Tower layer that produces a [`MetricsService`].
+#[derive(Clone, Default)]
+pub struct MetricsLayer;
+
+impl MetricsLayer {
+    /// Create a new metrics layer.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl<S> Layer<S> for MetricsLayer {
+    type Service = MetricsService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        MetricsService::new(inner)
+    }
+}
 
 /// Tower service that records request metrics.
 #[derive(Clone)]

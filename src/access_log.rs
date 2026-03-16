@@ -10,9 +10,28 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Instant;
 
-use tower::Service;
+use tower::{Layer, Service};
 use tower_mcp::protocol::McpRequest;
 use tower_mcp::{RouterRequest, RouterResponse};
+
+/// Tower layer that produces an [`AccessLogService`].
+#[derive(Clone, Default)]
+pub struct AccessLogLayer;
+
+impl AccessLogLayer {
+    /// Create a new access log layer.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl<S> Layer<S> for AccessLogLayer {
+    type Service = AccessLogService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        AccessLogService::new(inner)
+    }
+}
 
 /// Tower service that emits structured access log entries.
 #[derive(Clone)]

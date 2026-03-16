@@ -35,9 +35,30 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use tower::Service;
+use tower::{Layer, Service};
 use tower_mcp::router::{RouterRequest, RouterResponse};
 use tower_mcp_types::protocol::McpRequest;
+
+/// Tower layer that produces an [`InjectArgsService`].
+#[derive(Clone)]
+pub struct InjectArgsLayer {
+    rules: Vec<InjectionRules>,
+}
+
+impl InjectArgsLayer {
+    /// Create a new argument injection layer.
+    pub fn new(rules: Vec<InjectionRules>) -> Self {
+        Self { rules }
+    }
+}
+
+impl<S> Layer<S> for InjectArgsLayer {
+    type Service = InjectArgsService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        InjectArgsService::new(inner, self.rules.clone())
+    }
+}
 
 /// Per-tool injection rule.
 #[derive(Debug, Clone)]
