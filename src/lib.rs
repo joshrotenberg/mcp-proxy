@@ -63,6 +63,7 @@ pub mod mcp_json;
 pub mod metrics;
 pub mod mirror;
 pub mod outlier;
+pub mod param_override;
 #[cfg(feature = "oauth")]
 pub mod rbac;
 pub mod reload;

@@ -116,6 +116,7 @@ fn server_to_backend(name: String, server: McpJsonServer) -> Result<BackendConfi
         cache: None,
         default_args: serde_json::Map::new(),
         inject_args: Vec::new(),
+        param_overrides: Vec::new(),
         expose_tools: Vec::new(),
         hide_tools: Vec::new(),
         expose_resources: Vec::new(),
