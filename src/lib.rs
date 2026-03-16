@@ -36,6 +36,7 @@ pub mod cache;
 pub mod canary;
 pub mod coalesce;
 pub mod config;
+pub mod failover;
 pub mod filter;
 pub mod inject;
 #[cfg(feature = "metrics")]

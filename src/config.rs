@@ -136,6 +136,10 @@ pub struct BackendConfig {
     /// Capability filtering: hide these prompts (denylist)
     #[serde(default)]
     pub hide_prompts: Vec<String>,
+    /// Failover: name of the primary backend this is a failover for.
+    /// When set, this backend's tools are hidden and requests are only
+    /// routed here when the primary returns an error.
+    pub failover_for: Option<String>,
     /// Canary routing: name of the primary backend this is a canary for.
     /// When set, this backend's tools are hidden and requests targeting
     /// the primary are probabilistically routed here based on weight.
@@ -577,13 +581,13 @@ impl BackendConfig {
     /// Build a [`BackendFilter`] from this backend's expose/hide lists.
     /// Returns `None` if no filtering is configured.
     ///
-    /// Canary backends automatically hide all capabilities so their tools
-    /// don't appear in `ListTools` responses (traffic reaches them via the
-    /// canary routing middleware, not direct tool calls).
+    /// Canary and failover backends automatically hide all capabilities so
+    /// their tools don't appear in `ListTools` responses (traffic reaches
+    /// them via routing middleware, not direct tool calls).
     pub fn build_filter(&self, separator: &str) -> Option<BackendFilter> {
-        // Canary backends hide all capabilities -- tools are accessed via
-        // the canary routing middleware rewriting the primary namespace.
-        if self.canary_of.is_some() {
+        // Canary and failover backends hide all capabilities -- tools are
+        // accessed via routing middleware rewriting the primary namespace.
+        if self.canary_of.is_some() || self.failover_for.is_some() {
             return Some(BackendFilter {
                 namespace: format!("{}{}", self.name, separator),
                 tool_filter: NameFilter::AllowList(HashSet::new()),
@@ -762,6 +766,25 @@ impl ProxyConfig {
                 if source == &backend.name {
                     anyhow::bail!(
                         "backend '{}': mirror_of cannot reference itself",
+                        backend.name
+                    );
+                }
+            }
+        }
+
+        // Validate failover_for references
+        for backend in &self.backends {
+            if let Some(ref primary) = backend.failover_for {
+                if !backend_names.contains(primary.as_str()) {
+                    anyhow::bail!(
+                        "backend '{}': failover_for references unknown backend '{}'",
+                        backend.name,
+                        primary
+                    );
+                }
+                if primary == &backend.name {
+                    anyhow::bail!(
+                        "backend '{}': failover_for cannot reference itself",
                         backend.name
                     );
                 }
