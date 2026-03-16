@@ -444,6 +444,32 @@ fn build_middleware_stack(
         ));
     }
 
+    // Failover routing (deterministic fallback on primary error)
+    let failover_mappings: std::collections::HashMap<String, String> = config
+        .backends
+        .iter()
+        .filter_map(|b| {
+            b.failover_for
+                .as_ref()
+                .map(|primary| (primary.clone(), b.name.clone()))
+        })
+        .collect();
+
+    if !failover_mappings.is_empty() {
+        for (primary, failover) in &failover_mappings {
+            tracing::info!(
+                primary = %primary,
+                failover = %failover,
+                "Enabling failover routing"
+            );
+        }
+        service = BoxCloneService::new(crate::failover::FailoverService::new(
+            service,
+            failover_mappings,
+            &config.proxy.separator,
+        ));
+    }
+
     // Traffic mirroring (sends cloned requests through the proxy)
     let mirror_mappings: std::collections::HashMap<String, (String, u32)> = config
         .backends
