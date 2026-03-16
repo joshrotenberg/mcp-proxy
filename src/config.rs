@@ -49,6 +49,18 @@ pub struct ProxySettings {
     /// Enable hot reload: watch config file for new backends
     #[serde(default)]
     pub hot_reload: bool,
+    /// Global rate limit applied to all requests before per-backend dispatch.
+    pub rate_limit: Option<GlobalRateLimitConfig>,
+}
+
+/// Global rate limit configuration applied across all backends.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct GlobalRateLimitConfig {
+    /// Maximum number of requests allowed per period.
+    pub requests: usize,
+    /// Period length in seconds (default: 1).
+    #[serde(default = "default_rate_period")]
+    pub period_seconds: u64,
 }
 
 /// HTTP server listen address.
@@ -678,6 +690,16 @@ impl ProxyConfig {
     fn validate(&self) -> Result<()> {
         if self.backends.is_empty() {
             anyhow::bail!("at least one backend is required");
+        }
+
+        // Validate global rate limit
+        if let Some(rl) = &self.proxy.rate_limit {
+            if rl.requests == 0 {
+                anyhow::bail!("proxy.rate_limit.requests must be > 0");
+            }
+            if rl.period_seconds == 0 {
+                anyhow::bail!("proxy.rate_limit.period_seconds must be > 0");
+            }
         }
 
         // Check for duplicate backend names
@@ -1690,6 +1712,45 @@ mod tests {
             "expected duplicate error, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn test_validate_global_rate_limit_zero_requests() {
+        let toml = r#"
+        [proxy]
+        name = "test"
+        [proxy.listen]
+        [proxy.rate_limit]
+        requests = 0
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+        "#;
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(err.to_string().contains("requests must be > 0"));
+    }
+
+    #[test]
+    fn test_parse_global_rate_limit() {
+        let toml = r#"
+        [proxy]
+        name = "test"
+        [proxy.listen]
+        [proxy.rate_limit]
+        requests = 500
+        period_seconds = 1
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+        "#;
+        let config = ProxyConfig::parse(toml).unwrap();
+        let rl = config.proxy.rate_limit.unwrap();
+        assert_eq!(rl.requests, 500);
+        assert_eq!(rl.period_seconds, 1);
     }
 
     #[test]
