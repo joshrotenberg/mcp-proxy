@@ -66,6 +66,7 @@ impl ProxyBuilder {
                 performance: PerformanceConfig::default(),
                 security: SecurityConfig::default(),
                 observability: ObservabilityConfig::default(),
+                composite_tools: Vec::new(),
             },
         }
     }

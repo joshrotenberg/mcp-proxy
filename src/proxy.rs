@@ -581,6 +581,16 @@ fn build_middleware_stack(
         service = BoxCloneService::new(alias::AliasService::new(service, alias_map));
     }
 
+    // Composite tools (fan-out to multiple backend tools)
+    if !config.composite_tools.is_empty() {
+        let count = config.composite_tools.len();
+        tracing::info!(composite_tools = count, "Applying composite tool fan-out");
+        service = BoxCloneService::new(crate::composite::CompositeService::new(
+            service,
+            config.composite_tools.clone(),
+        ));
+    }
+
     // RBAC (JWT auth only)
     #[cfg(feature = "oauth")]
     {
