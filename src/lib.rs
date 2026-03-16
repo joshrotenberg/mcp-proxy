@@ -5,7 +5,7 @@
 //!
 //! # Library Usage
 //!
-//! Build a proxy from a [`ProxyConfig`] and embed it in an existing axum app:
+//! Build a proxy from a TOML config file:
 //!
 //! ```rust,no_run
 //! use mcp_proxy::{Proxy, ProxyConfig};
@@ -23,6 +23,24 @@
 //! # }
 //! ```
 //!
+//! Or build programmatically with [`ProxyBuilder`]:
+//!
+//! ```rust,no_run
+//! use mcp_proxy::ProxyBuilder;
+//!
+//! # async fn example() -> anyhow::Result<()> {
+//! let proxy = ProxyBuilder::new("my-proxy")
+//!     .listen("0.0.0.0", 9090)
+//!     .http_backend("api", "http://api:8080")
+//!     .stdio_backend("files", "npx", &["-y", "@mcp/server-files"])
+//!     .build()
+//!     .await?;
+//!
+//! proxy.serve().await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! # Hot Reload
 //!
 //! Enable `hot_reload = true` in the config to watch the config file for new
@@ -32,6 +50,7 @@ pub mod access_log;
 pub mod admin;
 pub mod admin_tools;
 pub mod alias;
+pub mod builder;
 pub mod cache;
 pub mod canary;
 pub mod coalesce;
@@ -57,5 +76,6 @@ mod test_util;
 
 mod proxy;
 
+pub use builder::ProxyBuilder;
 pub use config::ProxyConfig;
 pub use proxy::Proxy;
