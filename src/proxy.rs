@@ -42,6 +42,7 @@ impl Proxy {
         let mcp_proxy = build_mcp_proxy(&config).await?;
         let proxy_for_admin = mcp_proxy.clone();
         let proxy_for_caller = mcp_proxy.clone();
+        let proxy_for_management = mcp_proxy.clone();
 
         // Install Prometheus metrics recorder (must happen before middleware)
         #[cfg(feature = "metrics")]
@@ -96,6 +97,8 @@ impl Proxy {
                 metrics_handle,
                 session_handle.clone(),
                 cache_handle,
+                proxy_for_management,
+                &config,
             ),
         );
         tracing::info!("Admin API enabled at /admin/backends");
