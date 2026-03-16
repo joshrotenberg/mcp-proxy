@@ -133,7 +133,22 @@ where
                         result.tools.retain(|tool| {
                             for f in filters.iter() {
                                 if let Some(local_name) = tool.name.strip_prefix(&f.namespace) {
-                                    return f.tool_filter.allows(local_name);
+                                    if !f.tool_filter.allows(local_name) {
+                                        return false;
+                                    }
+                                    // Annotation-based filtering
+                                    if let Some(ref annotations) = tool.annotations {
+                                        if f.hide_destructive && annotations.destructive_hint {
+                                            return false;
+                                        }
+                                        if f.read_only_only && !annotations.read_only_hint {
+                                            return false;
+                                        }
+                                    } else if f.read_only_only {
+                                        // No annotations = not known to be read-only
+                                        return false;
+                                    }
+                                    return true;
                                 }
                             }
                             true
@@ -234,6 +249,8 @@ mod tests {
             tool_filter: NameFilter::AllowList(tools.iter().map(|s| s.to_string()).collect()),
             resource_filter: NameFilter::PassAll,
             prompt_filter: NameFilter::PassAll,
+            hide_destructive: false,
+            read_only_only: false,
         }
     }
 
@@ -243,6 +260,8 @@ mod tests {
             tool_filter: NameFilter::DenyList(tools.iter().map(|s| s.to_string()).collect()),
             resource_filter: NameFilter::PassAll,
             prompt_filter: NameFilter::PassAll,
+            hide_destructive: false,
+            read_only_only: false,
         }
     }
 
@@ -335,6 +354,8 @@ mod tests {
             tool_filter: NameFilter::PassAll,
             resource_filter: NameFilter::PassAll,
             prompt_filter: NameFilter::PassAll,
+            hide_destructive: false,
+            read_only_only: false,
         }];
         let mut svc = CapabilityFilterService::new(mock, filters);
 
@@ -358,6 +379,122 @@ mod tests {
             McpResponse::ListTools(result) => {
                 assert_eq!(result.tools.len(), 1, "unmatched namespace should pass");
                 assert_eq!(result.tools[0].name, "db/query");
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+
+    // --- Annotation-based filtering ---
+
+    /// Create a mock service with tools that have annotations.
+    fn mock_with_annotated_tools() -> MockService {
+        use tower_mcp::protocol::ToolDefinition;
+        use tower_mcp_types::protocol::ToolAnnotations;
+
+        let tools = vec![
+            ToolDefinition {
+                name: "fs/read_file".to_string(),
+                title: None,
+                description: Some("Read a file".to_string()),
+                input_schema: serde_json::json!({"type": "object"}),
+                output_schema: None,
+                icons: None,
+                annotations: Some(ToolAnnotations {
+                    title: None,
+                    read_only_hint: true,
+                    destructive_hint: false,
+                    idempotent_hint: true,
+                    open_world_hint: false,
+                }),
+                execution: None,
+                meta: None,
+            },
+            ToolDefinition {
+                name: "fs/delete_file".to_string(),
+                title: None,
+                description: Some("Delete a file".to_string()),
+                input_schema: serde_json::json!({"type": "object"}),
+                output_schema: None,
+                icons: None,
+                annotations: Some(ToolAnnotations {
+                    title: None,
+                    read_only_hint: false,
+                    destructive_hint: true,
+                    idempotent_hint: false,
+                    open_world_hint: false,
+                }),
+                execution: None,
+                meta: None,
+            },
+            ToolDefinition {
+                name: "fs/write_file".to_string(),
+                title: None,
+                description: Some("Write a file".to_string()),
+                input_schema: serde_json::json!({"type": "object"}),
+                output_schema: None,
+                icons: None,
+                annotations: Some(ToolAnnotations {
+                    title: None,
+                    read_only_hint: false,
+                    destructive_hint: false,
+                    idempotent_hint: true,
+                    open_world_hint: false,
+                }),
+                execution: None,
+                meta: None,
+            },
+        ];
+        MockService { tools }
+    }
+
+    #[tokio::test]
+    async fn test_filter_hide_destructive() {
+        let mock = mock_with_annotated_tools();
+        let filters = vec![BackendFilter {
+            namespace: "fs/".to_string(),
+            tool_filter: NameFilter::PassAll,
+            resource_filter: NameFilter::PassAll,
+            prompt_filter: NameFilter::PassAll,
+            hide_destructive: true,
+            read_only_only: false,
+        }];
+        let mut svc = CapabilityFilterService::new(mock, filters);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+                assert!(names.contains(&"fs/read_file"));
+                assert!(names.contains(&"fs/write_file"));
+                assert!(
+                    !names.contains(&"fs/delete_file"),
+                    "destructive tool should be hidden"
+                );
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_filter_read_only_only() {
+        let mock = mock_with_annotated_tools();
+        let filters = vec![BackendFilter {
+            namespace: "fs/".to_string(),
+            tool_filter: NameFilter::PassAll,
+            resource_filter: NameFilter::PassAll,
+            prompt_filter: NameFilter::PassAll,
+            hide_destructive: false,
+            read_only_only: true,
+        }];
+        let mut svc = CapabilityFilterService::new(mock, filters);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+                assert!(names.contains(&"fs/read_file"), "read-only tool visible");
+                assert!(!names.contains(&"fs/delete_file"), "non-read-only hidden");
+                assert!(!names.contains(&"fs/write_file"), "non-read-only hidden");
             }
             other => panic!("expected ListTools, got: {:?}", other),
         }

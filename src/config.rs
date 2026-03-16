@@ -197,6 +197,12 @@ pub struct BackendConfig {
     /// Capability filtering: hide these prompts (denylist)
     #[serde(default)]
     pub hide_prompts: Vec<String>,
+    /// Hide tools annotated as destructive (`destructive_hint = true`).
+    #[serde(default)]
+    pub hide_destructive: bool,
+    /// Only expose tools annotated as read-only (`read_only_hint = true`).
+    #[serde(default)]
+    pub read_only_only: bool,
     /// Failover: name of the primary backend this is a failover for.
     /// When set, this backend's tools are hidden and requests are only
     /// routed here when the primary returns an error.
@@ -665,6 +671,10 @@ pub struct BackendFilter {
     pub resource_filter: NameFilter,
     /// Filter for prompt names.
     pub prompt_filter: NameFilter,
+    /// Hide tools with `destructive_hint = true`.
+    pub hide_destructive: bool,
+    /// Only allow tools with `read_only_hint = true`.
+    pub read_only_only: bool,
 }
 
 /// A name-based allow/deny filter.
@@ -731,6 +741,8 @@ impl BackendConfig {
                 tool_filter: NameFilter::AllowList(HashSet::new()),
                 resource_filter: NameFilter::AllowList(HashSet::new()),
                 prompt_filter: NameFilter::AllowList(HashSet::new()),
+                hide_destructive: false,
+                read_only_only: false,
             });
         }
 
@@ -762,6 +774,8 @@ impl BackendConfig {
         if matches!(tool_filter, NameFilter::PassAll)
             && matches!(resource_filter, NameFilter::PassAll)
             && matches!(prompt_filter, NameFilter::PassAll)
+            && !self.hide_destructive
+            && !self.read_only_only
         {
             return None;
         }
@@ -771,6 +785,8 @@ impl BackendConfig {
             tool_filter,
             resource_filter,
             prompt_filter,
+            hide_destructive: self.hide_destructive,
+            read_only_only: self.read_only_only,
         })
     }
 }
