@@ -12,9 +12,34 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use tokio::sync::{Mutex, broadcast};
-use tower::Service;
+use tower::{Layer, Service};
 use tower_mcp::router::{RouterRequest, RouterResponse};
 use tower_mcp_types::protocol::McpRequest;
+
+/// Tower layer that produces a [`CoalesceService`].
+#[derive(Clone)]
+pub struct CoalesceLayer;
+
+impl CoalesceLayer {
+    /// Create a new request coalescing layer.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for CoalesceLayer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<S> Layer<S> for CoalesceLayer {
+    type Service = CoalesceService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        CoalesceService::new(inner)
+    }
+}
 
 /// Tower service that coalesces identical in-flight requests.
 #[derive(Clone)]

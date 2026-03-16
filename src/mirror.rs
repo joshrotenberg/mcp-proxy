@@ -37,9 +37,36 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 
-use tower::Service;
+use tower::{Layer, Service};
 use tower_mcp::router::{Extensions, RouterRequest, RouterResponse};
 use tower_mcp_types::protocol::{CallToolParams, GetPromptParams, McpRequest, ReadResourceParams};
+
+/// Tower layer that produces a [`MirrorService`].
+#[derive(Clone)]
+pub struct MirrorLayer {
+    mirrors: HashMap<String, (String, u32)>,
+    separator: String,
+}
+
+impl MirrorLayer {
+    /// Create a new mirror layer.
+    ///
+    /// `mirrors` maps source backend names to `(mirror_name, percent)`.
+    pub fn new(mirrors: HashMap<String, (String, u32)>, separator: impl Into<String>) -> Self {
+        Self {
+            mirrors,
+            separator: separator.into(),
+        }
+    }
+}
+
+impl<S> Layer<S> for MirrorLayer {
+    type Service = MirrorService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        MirrorService::new(inner, self.mirrors.clone(), &self.separator)
+    }
+}
 
 /// Mapping from a source backend namespace to its mirror configuration.
 #[derive(Debug, Clone)]

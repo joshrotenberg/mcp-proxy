@@ -10,9 +10,45 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use tower::Service;
+use tower::{Layer, Service};
 use tower_mcp::router::{RouterRequest, RouterResponse};
 use tower_mcp_types::protocol::{McpRequest, McpResponse};
+
+/// Tower layer that produces an [`AliasService`].
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use tower::ServiceBuilder;
+/// use mcp_proxy::alias::{AliasLayer, AliasMap};
+///
+/// let aliases = AliasMap::new(vec![
+///     ("math/".into(), "add".into(), "sum".into()),
+/// ]).unwrap();
+///
+/// let service = ServiceBuilder::new()
+///     .layer(AliasLayer::new(aliases))
+///     .service(proxy);
+/// ```
+#[derive(Clone)]
+pub struct AliasLayer {
+    aliases: AliasMap,
+}
+
+impl AliasLayer {
+    /// Create a new alias layer with the given alias map.
+    pub fn new(aliases: AliasMap) -> Self {
+        Self { aliases }
+    }
+}
+
+impl<S> Layer<S> for AliasLayer {
+    type Service = AliasService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        AliasService::new(inner, self.aliases.clone())
+    }
+}
 
 /// Resolved alias mappings for all backends.
 #[derive(Clone)]

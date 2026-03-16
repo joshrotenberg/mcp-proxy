@@ -9,13 +9,45 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use tower::Service;
+use tower::{Layer, Service};
 
 use tower_mcp::protocol::{McpRequest, McpResponse};
 use tower_mcp::{RouterRequest, RouterResponse};
 use tower_mcp_types::JsonRpcError;
 
 use crate::config::BackendFilter;
+
+/// Tower layer that produces a [`CapabilityFilterService`].
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use tower::ServiceBuilder;
+/// use mcp_proxy::filter::CapabilityFilterLayer;
+///
+/// let service = ServiceBuilder::new()
+///     .layer(CapabilityFilterLayer::new(filters))
+///     .service(proxy);
+/// ```
+#[derive(Clone)]
+pub struct CapabilityFilterLayer {
+    filters: Vec<BackendFilter>,
+}
+
+impl CapabilityFilterLayer {
+    /// Create a new capability filter layer with the given filter rules.
+    pub fn new(filters: Vec<BackendFilter>) -> Self {
+        Self { filters }
+    }
+}
+
+impl<S> Layer<S> for CapabilityFilterLayer {
+    type Service = CapabilityFilterService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        CapabilityFilterService::new(inner, self.filters.clone())
+    }
+}
 
 /// Middleware that filters capabilities from proxy responses.
 #[derive(Clone)]
