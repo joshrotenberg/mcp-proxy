@@ -640,6 +640,22 @@ fn build_middleware_stack(
         service = BoxCloneService::new(tower_mcp::CatchError::new(audited));
     }
 
+    // Global rate limit (outermost -- protects entire proxy)
+    if let Some(ref rl) = config.proxy.rate_limit {
+        tracing::info!(
+            requests = rl.requests,
+            period_seconds = rl.period_seconds,
+            "Applying global rate limit"
+        );
+        let layer = tower_resilience::ratelimiter::RateLimiterLayer::builder()
+            .limit_for_period(rl.requests)
+            .refresh_period(Duration::from_secs(rl.period_seconds))
+            .name("global-ratelimit")
+            .build();
+        let limited = tower::Layer::layer(&layer, service);
+        service = BoxCloneService::new(tower_mcp::CatchError::new(limited));
+    }
+
     Ok((service, cache_handle))
 }
 

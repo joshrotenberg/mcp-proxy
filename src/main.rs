@@ -153,6 +153,9 @@ fn print_config_summary(config: &ProxyConfig) -> Result<()> {
     };
     println!("  Auth:     {}", auth_str);
 
+    if let Some(ref rl) = config.proxy.rate_limit {
+        println!("  Rate limit: {} req/{}s", rl.requests, rl.period_seconds);
+    }
     if config.proxy.hot_reload {
         println!("  Hot reload: enabled");
     }
