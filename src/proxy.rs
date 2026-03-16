@@ -601,6 +601,12 @@ fn build_middleware_stack(
         service = BoxCloneService::new(crate::metrics::MetricsService::new(service));
     }
 
+    // Structured access logging
+    if config.observability.access_log.enabled {
+        tracing::info!("Access logging enabled (target: mcp::access)");
+        service = BoxCloneService::new(crate::access_log::AccessLogService::new(service));
+    }
+
     // Audit logging
     if config.observability.audit {
         tracing::info!("Audit logging enabled (target: mcp::audit)");

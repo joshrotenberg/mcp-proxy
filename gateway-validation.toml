@@ -1,0 +1,28 @@
+# Test config with capability filtering + request validation
+
+[gateway]
+name = "validation-gateway"
+version = "0.1.0"
+separator = "/"
+
+[gateway.listen]
+host = "127.0.0.1"
+port = 8083
+
+[[backends]]
+name = "files"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/private/tmp"]
+
+expose_tools = ["read_file", "list_directory", "list_allowed_directories"]
+
+[backends.timeout]
+seconds = 30
+
+[security]
+max_argument_size = 100
+
+[observability]
+audit = true
+log_level = "debug"
