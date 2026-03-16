@@ -49,6 +49,9 @@ pub struct ProxySettings {
     /// Enable hot reload: watch config file for new backends
     #[serde(default)]
     pub hot_reload: bool,
+    /// Import backends from a `.mcp.json` file. Backends defined in the TOML
+    /// config take precedence over imported ones with the same name.
+    pub import_backends: Option<String>,
     /// Global rate limit applied to all requests before per-backend dispatch.
     pub rate_limit: Option<GlobalRateLimitConfig>,
 }
@@ -651,11 +654,37 @@ impl BackendConfig {
 
 impl ProxyConfig {
     /// Load and validate a config from a file path.
+    ///
+    /// If `import_backends` is set in the config, backends from the referenced
+    /// `.mcp.json` file are merged (TOML backends take precedence on name conflicts).
     pub fn load(path: &Path) -> Result<Self> {
         let content =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let config: Self =
+        let mut config: Self =
             toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+
+        // Import backends from .mcp.json if configured
+        if let Some(ref mcp_json_path) = config.proxy.import_backends {
+            let mcp_path = if std::path::Path::new(mcp_json_path).is_relative() {
+                // Resolve relative to config file directory
+                path.parent().unwrap_or(Path::new(".")).join(mcp_json_path)
+            } else {
+                std::path::PathBuf::from(mcp_json_path)
+            };
+
+            let mcp_json = crate::mcp_json::McpJsonConfig::load(&mcp_path)
+                .with_context(|| format!("importing backends from {}", mcp_path.display()))?;
+
+            let existing_names: HashSet<String> =
+                config.backends.iter().map(|b| b.name.clone()).collect();
+
+            for backend in mcp_json.into_backends()? {
+                if !existing_names.contains(&backend.name) {
+                    config.backends.push(backend);
+                }
+            }
+        }
+
         config.validate()?;
         Ok(config)
     }

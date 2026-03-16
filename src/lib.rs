@@ -39,6 +39,7 @@ pub mod config;
 pub mod failover;
 pub mod filter;
 pub mod inject;
+pub mod mcp_json;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod mirror;

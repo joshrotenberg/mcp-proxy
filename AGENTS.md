@@ -20,8 +20,9 @@ src/
   test_util.rs     # MockService, ErrorMockService, call_service helper
 
   # Global middleware (wraps the entire proxy, applied in proxy.rs)
+  access_log.rs    # Structured access logging (AccessLogService, target: mcp::access)
   alias.rs         # Tool renaming (AliasService)
-  filter.rs        # Capability filtering -- allow/deny lists (CapabilityFilterService)
+  filter.rs        # Capability filtering -- allow/deny lists, glob patterns (CapabilityFilterService)
   inject.rs        # Argument injection into tool calls (InjectArgsService)
   mirror.rs        # Traffic mirroring to canary backends (MirrorService)
   cache.rs         # Response caching with TTL (CacheService)
@@ -36,7 +37,8 @@ src/
   outlier.rs       # Outlier detection and ejection (OutlierDetectionLayer)
 
 tests/
-  integration.rs   # End-to-end tests with in-process backends via ChannelTransport
+  integration.rs   # Middleware composition tests with in-process backends via ChannelTransport
+  e2e.rs           # Comprehensive E2E test suite (44 tests, 10 tiers)
 
 examples/
   *.toml           # Example proxy configs for different deployment patterns
@@ -52,7 +54,7 @@ The middleware stack is built in `proxy.rs::build_middleware_stack()`. Order mat
 **Global middleware** (wraps the entire proxy service):
 ```
 Request flow (outer to inner):
-Auth (axum layer) -> Audit -> Metrics -> Token Passthrough -> RBAC
+Auth (axum layer) -> Audit -> Access Log -> Metrics -> Token Passthrough -> RBAC
   -> Alias -> Filter -> Validation -> Coalesce -> Cache
   -> Mirror -> Inject Args -> McpProxy
 ```
@@ -125,22 +127,40 @@ Environment variable substitution: `${VAR_NAME}` in string values is resolved vi
 
 ### Testing
 
+Every feature gets tests. No exceptions.
+
 **Unit tests** (`#[cfg(test)]` in each module):
 - Use `MockService::with_tools(&["tool1", "tool2"])` for a service that returns tool lists and echoes call results
 - Use `ErrorMockService` for a service that returns JSON-RPC errors
 - Use `call_service(&mut svc, McpRequest::...)` to send requests through the service
 
-**Integration tests** (`tests/integration.rs`):
+**E2E tests** (`tests/e2e.rs`):
+- Comprehensive test suite covering full proxy pipeline
 - Use `ChannelTransport` to create in-process MCP backends (no external processes)
-- Build an `McpRouter` with tools, wrap in `ChannelTransport`, add to `McpProxy`
-- Test middleware composition end-to-end
+- Build an `McpProxy` with tools, compose middleware, verify end-to-end behavior
+- Includes error backends, slow backends, concurrent request testing
+- Use `tower-resilience-chaos` for chaos engineering / failure injection tests
 
-**CI checks** (run before committing):
+**Integration tests** (`tests/integration.rs`):
+- Middleware composition tests with real proxy routing
+
+### Documentation
+
+Rust docs are the single source of truth for both CLI users and library users.
+
+- All public APIs must have doc comments
+- Module-level docs explain purpose and usage patterns
+- Doc examples should be runnable (`cargo test --doc`)
+- Keep examples up to date -- stale doc examples break `cargo test --doc`
+
+**Pre-push checks** (MUST pass before every push):
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
-cargo doc --no-deps --all-features
+cargo test --lib --all-features
+cargo test --test '*' --all-features
+cargo doc --no-deps --all-features       # catches missing/broken docs
+cargo test --doc --all-features          # catches stale doc examples
 ```
 
 ## Conventions
