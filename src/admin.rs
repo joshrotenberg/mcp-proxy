@@ -7,11 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::Extension;
+use axum::extract::{Extension, Path};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
-use axum::routing::get;
+use axum::routing::{delete, get, post};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tower_mcp::SessionHandle;
 use tower_mcp::proxy::McpProxy;
@@ -248,22 +249,145 @@ pub type MetricsHandle = Option<metrics_exporter_prometheus::PrometheusHandle>;
 #[cfg(not(feature = "metrics"))]
 pub type MetricsHandle = Option<()>;
 
+// ---------------------------------------------------------------------------
+// Management API handlers
+// ---------------------------------------------------------------------------
+
+/// Request body for adding an HTTP backend via REST.
+#[derive(Debug, Deserialize)]
+struct AddBackendRequest {
+    /// Backend name (becomes the namespace prefix).
+    name: String,
+    /// Backend URL.
+    url: String,
+    /// Optional bearer token for the backend.
+    bearer_token: Option<String>,
+}
+
+/// Response body for backend operations.
+#[derive(Serialize)]
+struct BackendOpResponse {
+    ok: bool,
+    message: String,
+}
+
+async fn handle_add_backend(
+    Extension(proxy): Extension<McpProxy>,
+    Json(req): Json<AddBackendRequest>,
+) -> (StatusCode, Json<BackendOpResponse>) {
+    let mut transport = tower_mcp::client::HttpClientTransport::new(&req.url);
+    if let Some(token) = &req.bearer_token {
+        transport = transport.bearer_token(token);
+    }
+
+    match proxy.add_backend(&req.name, transport).await {
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(BackendOpResponse {
+                ok: true,
+                message: format!("Backend '{}' added", req.name),
+            }),
+        ),
+        Err(e) => (
+            StatusCode::CONFLICT,
+            Json(BackendOpResponse {
+                ok: false,
+                message: format!("Failed to add backend: {e}"),
+            }),
+        ),
+    }
+}
+
+async fn handle_remove_backend(
+    Extension(proxy): Extension<McpProxy>,
+    Path(name): Path<String>,
+) -> (StatusCode, Json<BackendOpResponse>) {
+    if proxy.remove_backend(&name).await {
+        (
+            StatusCode::OK,
+            Json(BackendOpResponse {
+                ok: true,
+                message: format!("Backend '{}' removed", name),
+            }),
+        )
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(BackendOpResponse {
+                ok: false,
+                message: format!("Backend '{}' not found", name),
+            }),
+        )
+    }
+}
+
+async fn handle_get_config(
+    Extension(config_toml): Extension<std::sync::Arc<String>>,
+) -> impl IntoResponse {
+    config_toml.as_str().to_string()
+}
+
+async fn handle_validate_config(body: String) -> (StatusCode, Json<BackendOpResponse>) {
+    match crate::config::ProxyConfig::parse(&body) {
+        Ok(config) => (
+            StatusCode::OK,
+            Json(BackendOpResponse {
+                ok: true,
+                message: format!("Valid config with {} backends", config.backends.len()),
+            }),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(BackendOpResponse {
+                ok: false,
+                message: format!("Invalid config: {e}"),
+            }),
+        ),
+    }
+}
+
+async fn handle_list_sessions(
+    Extension(session_handle): Extension<SessionHandle>,
+) -> Json<SessionsResponse> {
+    Json(SessionsResponse {
+        active_sessions: session_handle.session_count().await,
+    })
+}
+
+#[derive(Serialize)]
+struct SessionsResponse {
+    active_sessions: usize,
+}
+
 /// Build the admin API router.
 pub fn admin_router(
     state: AdminState,
     metrics_handle: MetricsHandle,
     session_handle: SessionHandle,
     cache_handle: Option<crate::cache::CacheHandle>,
+    proxy: McpProxy,
+    config: &crate::config::ProxyConfig,
 ) -> Router {
+    let config_toml = std::sync::Arc::new(toml::to_string_pretty(config).unwrap_or_default());
+
     let router = Router::new()
+        // Read-only endpoints
         .route("/backends", get(handle_backends))
         .route("/health", get(handle_health))
         .route("/cache/stats", get(handle_cache_stats))
         .route("/cache/clear", axum::routing::post(handle_cache_clear))
         .route("/metrics", get(handle_metrics))
+        .route("/sessions", get(handle_list_sessions))
+        .route("/config", get(handle_get_config))
+        .route("/config/validate", post(handle_validate_config))
+        // Management endpoints
+        .route("/backends/add", post(handle_add_backend))
+        .route("/backends/{name}", delete(handle_remove_backend))
         .layer(Extension(state))
         .layer(Extension(session_handle))
-        .layer(Extension(cache_handle));
+        .layer(Extension(cache_handle))
+        .layer(Extension(proxy))
+        .layer(Extension(config_toml));
 
     #[cfg(feature = "metrics")]
     let router = router.layer(Extension(metrics_handle));
@@ -304,6 +428,41 @@ mod tests {
             error: Some("ping failed".to_string()),
             transport: Some("stdio".to_string()),
         }
+    }
+
+    async fn make_test_proxy() -> McpProxy {
+        use tower_mcp::client::ChannelTransport;
+        use tower_mcp::{CallToolResult, McpRouter, ToolBuilder};
+
+        let router = McpRouter::new().server_info("test", "1.0.0").tool(
+            ToolBuilder::new("ping")
+                .description("Ping")
+                .handler(|_: tower_mcp::NoParams| async move { Ok(CallToolResult::text("pong")) })
+                .build(),
+        );
+
+        McpProxy::builder("test-proxy", "1.0.0")
+            .backend("test", ChannelTransport::new(router))
+            .await
+            .build_strict()
+            .await
+            .unwrap()
+    }
+
+    fn make_test_config() -> crate::config::ProxyConfig {
+        crate::config::ProxyConfig::parse(
+            r#"
+            [proxy]
+            name = "test"
+            [proxy.listen]
+
+            [[backends]]
+            name = "echo"
+            transport = "stdio"
+            command = "echo"
+            "#,
+        )
+        .unwrap()
     }
 
     fn make_session_handle() -> SessionHandle {
@@ -350,7 +509,14 @@ mod tests {
     async fn test_health_endpoint_all_healthy() {
         let state = make_state(vec![healthy_backend("db/"), healthy_backend("api/")]);
         let session_handle = make_session_handle();
-        let router = admin_router(state, None, session_handle, None);
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
 
         let json = get_json(&router, "/health").await;
         assert_eq!(json["status"], "healthy");
@@ -361,7 +527,14 @@ mod tests {
     async fn test_health_endpoint_degraded() {
         let state = make_state(vec![healthy_backend("db/"), unhealthy_backend("flaky/")]);
         let session_handle = make_session_handle();
-        let router = admin_router(state, None, session_handle, None);
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
 
         let json = get_json(&router, "/health").await;
         assert_eq!(json["status"], "degraded");
@@ -374,7 +547,14 @@ mod tests {
     async fn test_backends_endpoint() {
         let state = make_state(vec![healthy_backend("db/")]);
         let session_handle = make_session_handle();
-        let router = admin_router(state, None, session_handle, None);
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
 
         let json = get_json(&router, "/backends").await;
         assert_eq!(json["proxy"]["name"], "test-gw");
@@ -389,7 +569,14 @@ mod tests {
     async fn test_cache_stats_no_cache() {
         let state = make_state(vec![]);
         let session_handle = make_session_handle();
-        let router = admin_router(state, None, session_handle, None);
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
 
         let json = get_json(&router, "/cache/stats").await;
         assert!(json.as_array().unwrap().is_empty());
@@ -399,7 +586,14 @@ mod tests {
     async fn test_cache_clear_no_cache() {
         let state = make_state(vec![]);
         let session_handle = make_session_handle();
-        let router = admin_router(state, None, session_handle, None);
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
 
         let resp = router
             .clone()
@@ -423,7 +617,14 @@ mod tests {
     async fn test_metrics_endpoint_no_recorder() {
         let state = make_state(vec![]);
         let session_handle = make_session_handle();
-        let router = admin_router(state, None, session_handle, None);
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
 
         let resp = router
             .clone()
