@@ -49,6 +49,9 @@ glob-match = "0.2"
 notify-debouncer-mini = "0.5"
 
 [dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+tokio-stream = "0.1"
+tower-resilience-chaos = "0.9"
 
 # The profile that 'dist' will build with
 [profile.dist]
