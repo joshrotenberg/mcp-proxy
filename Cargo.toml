@@ -16,11 +16,12 @@ name = "mcp-proxy"
 path = "src/main.rs"
 
 [features]
-default = ["otel", "metrics", "oauth", "openapi"]
+default = ["otel", "metrics", "oauth", "openapi", "websocket"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
 oauth = ["tower-mcp/oauth", "tower-mcp/jwks"]
 openapi = ["dep:utoipa", "dep:utoipa-axum"]
+websocket = ["dep:tokio-tungstenite", "dep:async-trait", "dep:futures-util"]
 
 [dependencies]
 tower-mcp = { version = "0.8.7", features = ["http", "http-client", "proxy"] }
@@ -50,11 +51,16 @@ glob-match = "0.2"
 notify-debouncer-mini = "0.5"
 utoipa = { version = "5", features = ["chrono"], optional = true }
 utoipa-axum = { version = "0.2", optional = true }
+tokio-tungstenite = { version = "0.28", features = ["connect", "rustls-tls-webpki-roots"], optional = true }
+async-trait = { version = "0.1", optional = true }
+futures-util = { version = "0.3", optional = true }
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json"] }
 tokio-stream = "0.1"
 tower-resilience-chaos = "0.9"
+tower-mcp = { version = "0.8.7", features = ["http", "http-client", "proxy", "websocket"] }
+futures-util = "0.3"
 
 # The profile that 'dist' will build with
 [profile.dist]

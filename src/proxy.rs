@@ -239,6 +239,35 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<McpProxy> {
 
                 builder = builder.backend(&backend.name, transport).await;
             }
+            #[cfg(feature = "websocket")]
+            TransportType::Websocket => {
+                let url = backend.url.as_deref().unwrap();
+                tracing::info!(url = %url, "Connecting to WebSocket backend");
+                let transport = if let Some(token) = &backend.bearer_token {
+                    crate::ws_transport::WebSocketClientTransport::connect_with_bearer_token(
+                        url, token,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!("connecting to WebSocket backend '{}'", backend.name)
+                    })?
+                } else {
+                    crate::ws_transport::WebSocketClientTransport::connect(url)
+                        .await
+                        .with_context(|| {
+                            format!("connecting to WebSocket backend '{}'", backend.name)
+                        })?
+                };
+
+                builder = builder.backend(&backend.name, transport).await;
+            }
+            #[cfg(not(feature = "websocket"))]
+            TransportType::Websocket => {
+                anyhow::bail!(
+                    "WebSocket transport requires the 'websocket' feature. \
+                     Rebuild with: cargo install mcp-proxy --features websocket"
+                );
+            }
         }
 
         // Per-backend middleware stack (applied in order: inner -> outer)

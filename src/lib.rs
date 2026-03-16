@@ -74,6 +74,8 @@ pub mod retry;
 #[cfg(feature = "oauth")]
 pub mod token;
 pub mod validation;
+#[cfg(feature = "websocket")]
+pub mod ws_transport;
 
 #[cfg(test)]
 mod test_util;
