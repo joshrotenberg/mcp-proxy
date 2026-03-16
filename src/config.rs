@@ -539,6 +539,9 @@ pub enum NameFilter {
 impl NameFilter {
     /// Check if a capability name is allowed by this filter.
     ///
+    /// Supports glob patterns: `*` matches any sequence of characters,
+    /// `?` matches a single character. Exact strings match themselves.
+    ///
     /// # Examples
     ///
     /// ```
@@ -554,12 +557,18 @@ impl NameFilter {
     /// assert!(!filter.allows("write"));
     ///
     /// assert!(NameFilter::PassAll.allows("anything"));
+    ///
+    /// // Glob patterns
+    /// let filter = NameFilter::AllowList(["*_file".to_string()].into());
+    /// assert!(filter.allows("read_file"));
+    /// assert!(filter.allows("write_file"));
+    /// assert!(!filter.allows("query"));
     /// ```
     pub fn allows(&self, name: &str) -> bool {
         match self {
             Self::PassAll => true,
-            Self::AllowList(set) => set.contains(name),
-            Self::DenyList(set) => !set.contains(name),
+            Self::AllowList(set) => set.iter().any(|pat| glob_match::glob_match(pat, name)),
+            Self::DenyList(set) => !set.iter().any(|pat| glob_match::glob_match(pat, name)),
         }
     }
 }
@@ -1658,5 +1667,59 @@ mod tests {
             "expected duplicate error, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn test_name_filter_glob_wildcard() {
+        let filter = NameFilter::AllowList(["*_file".to_string()].into());
+        assert!(filter.allows("read_file"));
+        assert!(filter.allows("write_file"));
+        assert!(!filter.allows("query"));
+        assert!(!filter.allows("file_read"));
+    }
+
+    #[test]
+    fn test_name_filter_glob_prefix() {
+        let filter = NameFilter::AllowList(["list_*".to_string()].into());
+        assert!(filter.allows("list_files"));
+        assert!(filter.allows("list_users"));
+        assert!(!filter.allows("get_files"));
+    }
+
+    #[test]
+    fn test_name_filter_glob_question_mark() {
+        let filter = NameFilter::AllowList(["get_?".to_string()].into());
+        assert!(filter.allows("get_a"));
+        assert!(filter.allows("get_1"));
+        assert!(!filter.allows("get_ab"));
+        assert!(!filter.allows("get_"));
+    }
+
+    #[test]
+    fn test_name_filter_glob_deny_list() {
+        let filter = NameFilter::DenyList(["*_delete*".to_string()].into());
+        assert!(filter.allows("read_file"));
+        assert!(filter.allows("create_issue"));
+        assert!(!filter.allows("force_delete_all"));
+        assert!(!filter.allows("soft_delete"));
+    }
+
+    #[test]
+    fn test_name_filter_glob_exact_match_still_works() {
+        let filter = NameFilter::AllowList(["read_file".to_string()].into());
+        assert!(filter.allows("read_file"));
+        assert!(!filter.allows("write_file"));
+    }
+
+    #[test]
+    fn test_name_filter_glob_multiple_patterns() {
+        let filter = NameFilter::AllowList(
+            ["read_*".to_string(), "list_*".to_string()]
+                .into_iter()
+                .collect(),
+        );
+        assert!(filter.allows("read_file"));
+        assert!(filter.allows("list_users"));
+        assert!(!filter.allows("delete_file"));
     }
 }

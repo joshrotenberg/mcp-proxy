@@ -45,6 +45,7 @@ chrono = { version = "0.4", features = ["serde"] }
 schemars = "1"
 moka = { version = "0.12.14", features = ["future"] }
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
+glob-match = "0.2"
 notify-debouncer-mini = "0.5"
 
 [dev-dependencies]
