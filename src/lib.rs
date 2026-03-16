@@ -28,6 +28,7 @@
 //! Enable `hot_reload = true` in the config to watch the config file for new
 //! backends. The proxy will add them dynamically without restart.
 
+pub mod access_log;
 pub mod admin;
 pub mod admin_tools;
 pub mod alias;

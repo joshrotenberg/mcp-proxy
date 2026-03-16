@@ -371,6 +371,17 @@ pub struct ObservabilityConfig {
     /// OpenTelemetry distributed tracing configuration.
     #[serde(default)]
     pub tracing: TracingConfig,
+    /// Structured access logging configuration.
+    #[serde(default)]
+    pub access_log: AccessLogConfig,
+}
+
+/// Structured access log configuration.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct AccessLogConfig {
+    /// Enable structured access logging (default: false).
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 /// Prometheus metrics configuration.
