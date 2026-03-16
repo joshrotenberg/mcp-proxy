@@ -379,8 +379,12 @@ pub struct HedgingConfig {
 pub enum AuthConfig {
     /// Static bearer token authentication.
     Bearer {
-        /// Accepted bearer tokens.
+        /// Accepted bearer tokens (all tools allowed).
+        #[serde(default)]
         tokens: Vec<String>,
+        /// Tokens with per-token tool access control.
+        #[serde(default)]
+        scoped_tokens: Vec<BearerTokenConfig>,
     },
     /// JWT authentication via JWKS endpoint.
     Jwt {
@@ -396,6 +400,41 @@ pub enum AuthConfig {
         /// Map JWT claims to roles
         role_mapping: Option<RoleMappingConfig>,
     },
+}
+
+/// Per-token configuration for bearer auth with optional tool scoping.
+///
+/// Allows restricting which tools each bearer token can access, bridging
+/// the gap between all-or-nothing bearer auth and full JWT/RBAC.
+///
+/// # Examples
+///
+/// ```
+/// use mcp_proxy::config::BearerTokenConfig;
+///
+/// let frontend = BearerTokenConfig {
+///     token: "frontend-token".into(),
+///     allow_tools: vec!["files/read_file".into()],
+///     deny_tools: vec![],
+/// };
+///
+/// let admin = BearerTokenConfig {
+///     token: "admin-token".into(),
+///     allow_tools: vec![],
+///     deny_tools: vec![],
+/// };
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BearerTokenConfig {
+    /// The bearer token value. Supports `${ENV_VAR}` syntax.
+    pub token: String,
+    /// Tools this token can access (namespaced, e.g. "files/read_file").
+    /// Empty means all tools allowed.
+    #[serde(default)]
+    pub allow_tools: Vec<String>,
+    /// Tools this token cannot access.
+    #[serde(default)]
+    pub deny_tools: Vec<String>,
 }
 
 /// RBAC role definition.
@@ -889,6 +928,38 @@ impl ProxyConfig {
             }
         }
 
+        // Validate bearer auth config
+        if let Some(AuthConfig::Bearer {
+            tokens,
+            scoped_tokens,
+        }) = &self.auth
+        {
+            if tokens.is_empty() && scoped_tokens.is_empty() {
+                anyhow::bail!(
+                    "bearer auth requires at least one token in 'tokens' or 'scoped_tokens'"
+                );
+            }
+            // Check for duplicate tokens across both lists
+            let mut seen_tokens = HashSet::new();
+            for t in tokens {
+                if !seen_tokens.insert(t.as_str()) {
+                    anyhow::bail!("duplicate bearer token in 'tokens'");
+                }
+            }
+            for st in scoped_tokens {
+                if !seen_tokens.insert(st.token.as_str()) {
+                    anyhow::bail!(
+                        "duplicate bearer token (appears in both 'tokens' and 'scoped_tokens' or duplicated within 'scoped_tokens')"
+                    );
+                }
+                if !st.allow_tools.is_empty() && !st.deny_tools.is_empty() {
+                    anyhow::bail!(
+                        "scoped_tokens: cannot specify both allow_tools and deny_tools for the same token"
+                    );
+                }
+            }
+        }
+
         // Check for duplicate backend names
         let mut seen_names = HashSet::new();
         for backend in &self.backends {
@@ -1108,6 +1179,31 @@ impl ProxyConfig {
                 *token = env_val;
             }
         }
+
+        // Resolve env vars in auth config
+        if let Some(AuthConfig::Bearer {
+            tokens,
+            scoped_tokens,
+        }) = &mut self.auth
+        {
+            for token in tokens.iter_mut() {
+                if let Some(var_name) = token.strip_prefix("${").and_then(|s| s.strip_suffix('}'))
+                    && let Ok(env_val) = std::env::var(var_name)
+                {
+                    *token = env_val;
+                }
+            }
+            for st in scoped_tokens.iter_mut() {
+                if let Some(var_name) = st
+                    .token
+                    .strip_prefix("${")
+                    .and_then(|s| s.strip_suffix('}'))
+                    && let Ok(env_val) = std::env::var(var_name)
+                {
+                    st.token = env_val;
+                }
+            }
+        }
     }
 }
 
@@ -1285,7 +1381,7 @@ mod tests {
 
         let config = ProxyConfig::parse(toml).unwrap();
         match &config.auth {
-            Some(AuthConfig::Bearer { tokens }) => {
+            Some(AuthConfig::Bearer { tokens, .. }) => {
                 assert_eq!(tokens, &["token-1", "token-2"]);
             }
             other => panic!("expected Bearer auth, got: {:?}", other),
@@ -2253,5 +2349,158 @@ mod tests {
         assert_eq!(config.cache.backend, "redis");
         assert_eq!(config.cache.url.as_deref(), Some("redis://localhost:6379"));
         assert_eq!(config.cache.prefix, "myapp:");
+    }
+
+    #[test]
+    fn test_parse_bearer_scoped_tokens() {
+        let toml = r#"
+        [proxy]
+        name = "scoped"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "bearer"
+
+        [[auth.scoped_tokens]]
+        token = "frontend-token"
+        allow_tools = ["echo/read_file"]
+
+        [[auth.scoped_tokens]]
+        token = "admin-token"
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        match &config.auth {
+            Some(AuthConfig::Bearer {
+                tokens,
+                scoped_tokens,
+            }) => {
+                assert!(tokens.is_empty());
+                assert_eq!(scoped_tokens.len(), 2);
+                assert_eq!(scoped_tokens[0].token, "frontend-token");
+                assert_eq!(scoped_tokens[0].allow_tools, vec!["echo/read_file"]);
+                assert!(scoped_tokens[1].allow_tools.is_empty());
+            }
+            other => panic!("expected Bearer auth, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_bearer_mixed_tokens() {
+        let toml = r#"
+        [proxy]
+        name = "mixed"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "bearer"
+        tokens = ["simple-token"]
+
+        [[auth.scoped_tokens]]
+        token = "scoped-token"
+        deny_tools = ["echo/delete"]
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        match &config.auth {
+            Some(AuthConfig::Bearer {
+                tokens,
+                scoped_tokens,
+            }) => {
+                assert_eq!(tokens, &["simple-token"]);
+                assert_eq!(scoped_tokens.len(), 1);
+                assert_eq!(scoped_tokens[0].deny_tools, vec!["echo/delete"]);
+            }
+            other => panic!("expected Bearer auth, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_bearer_empty_tokens_rejected() {
+        let toml = r#"
+        [proxy]
+        name = "empty"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "bearer"
+        "#;
+
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("at least one token"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_bearer_duplicate_across_lists_rejected() {
+        let toml = r#"
+        [proxy]
+        name = "dup"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "bearer"
+        tokens = ["shared-token"]
+
+        [[auth.scoped_tokens]]
+        token = "shared-token"
+        allow_tools = ["echo/read"]
+        "#;
+
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate bearer token"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_bearer_allow_and_deny_rejected() {
+        let toml = r#"
+        [proxy]
+        name = "both"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "bearer"
+
+        [[auth.scoped_tokens]]
+        token = "conflict"
+        allow_tools = ["echo/read"]
+        deny_tools = ["echo/write"]
+        "#;
+
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot specify both"),
+            "unexpected error: {err}"
+        );
     }
 }
