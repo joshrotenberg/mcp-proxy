@@ -409,6 +409,31 @@ fn build_middleware_stack(
         ));
     }
 
+    // Parameter overrides (after inject, before filter -- hides/renames tool params)
+    let param_overrides: Vec<_> = config
+        .backends
+        .iter()
+        .filter(|b| !b.param_overrides.is_empty())
+        .flat_map(|b| {
+            let namespace = format!("{}{}", b.name, config.proxy.separator);
+            tracing::info!(
+                backend = %b.name,
+                overrides = b.param_overrides.len(),
+                "Applying parameter overrides"
+            );
+            b.param_overrides
+                .iter()
+                .map(move |c| crate::param_override::ToolOverride::new(&namespace, c))
+        })
+        .collect();
+
+    if !param_overrides.is_empty() {
+        service = BoxCloneService::new(crate::param_override::ParamOverrideService::new(
+            service,
+            param_overrides,
+        ));
+    }
+
     // Canary routing (rewrites requests from primary to canary namespace based on weight)
     let canary_mappings: std::collections::HashMap<String, (String, u32, u32)> = config
         .backends

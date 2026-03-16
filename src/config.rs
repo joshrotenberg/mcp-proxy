@@ -176,6 +176,9 @@ pub struct BackendConfig {
     /// Per-tool argument injection rules.
     #[serde(default)]
     pub inject_args: Vec<InjectArgsConfig>,
+    /// Per-tool parameter overrides: hide, rename, and inject defaults.
+    #[serde(default)]
+    pub param_overrides: Vec<ParamOverrideConfig>,
     /// Capability filtering: only expose these tools (allowlist)
     #[serde(default)]
     pub expose_tools: Vec<String>,
@@ -312,6 +315,40 @@ pub struct InjectArgsConfig {
     /// Whether injected args should overwrite existing values (default: false).
     #[serde(default)]
     pub overwrite: bool,
+}
+
+/// Per-tool parameter override configuration.
+///
+/// Allows hiding parameters from tool schemas (injecting defaults instead),
+/// and renaming parameters to present a more domain-specific interface.
+///
+/// # Configuration
+///
+/// ```toml
+/// [[backends.param_overrides]]
+/// tool = "list_directory"
+/// hide = ["path"]
+/// defaults = { path = "/home/docs" }
+/// rename = { recursive = "deep_search" }
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ParamOverrideConfig {
+    /// Tool name (backend-local, without namespace prefix).
+    pub tool: String,
+    /// Parameters to hide from the tool's input schema.
+    /// Hidden parameters are removed from the schema and their values
+    /// are injected from `defaults` at call time.
+    #[serde(default)]
+    pub hide: Vec<String>,
+    /// Default values for hidden parameters. These are injected into
+    /// tool call arguments when the parameter is hidden.
+    #[serde(default)]
+    pub defaults: serde_json::Map<String, serde_json::Value>,
+    /// Parameter renames: maps original parameter names to new names.
+    /// The schema exposes the new name; at call time the new name is
+    /// mapped back to the original before forwarding to the backend.
+    #[serde(default)]
+    pub rename: HashMap<String, String>,
 }
 
 /// Request hedging configuration.
@@ -984,6 +1021,52 @@ impl ProxyConfig {
                 }
                 if backend.weight == 0 {
                     anyhow::bail!("backend '{}': weight must be > 0", backend.name);
+                }
+            }
+        }
+
+        // Validate param_overrides
+        for backend in &self.backends {
+            let mut seen_tools = HashSet::new();
+            for po in &backend.param_overrides {
+                if po.tool.is_empty() {
+                    anyhow::bail!(
+                        "backend '{}': param_overrides.tool must not be empty",
+                        backend.name
+                    );
+                }
+                if !seen_tools.insert(&po.tool) {
+                    anyhow::bail!(
+                        "backend '{}': duplicate param_overrides for tool '{}'",
+                        backend.name,
+                        po.tool
+                    );
+                }
+                // Hidden params that have no default are a warning-level concern,
+                // but renamed params that conflict with hide are an error.
+                for hidden in &po.hide {
+                    if po.rename.contains_key(hidden) {
+                        anyhow::bail!(
+                            "backend '{}': param_overrides for tool '{}': \
+                             parameter '{}' cannot be both hidden and renamed",
+                            backend.name,
+                            po.tool,
+                            hidden
+                        );
+                    }
+                }
+                // Check for rename target conflicts (two originals mapping to same name)
+                let mut rename_targets = HashSet::new();
+                for target in po.rename.values() {
+                    if !rename_targets.insert(target) {
+                        anyhow::bail!(
+                            "backend '{}': param_overrides for tool '{}': \
+                             duplicate rename target '{}'",
+                            backend.name,
+                            po.tool,
+                            target
+                        );
+                    }
                 }
             }
         }
@@ -1958,6 +2041,137 @@ mod tests {
         assert!(filter.allows("read_file"));
         assert!(filter.allows("list_users"));
         assert!(!filter.allows("delete_file"));
+    }
+
+    #[test]
+    fn test_parse_param_overrides() {
+        let toml = r#"
+        [proxy]
+        name = "override-gw"
+        [proxy.listen]
+
+        [[backends]]
+        name = "fs"
+        transport = "http"
+        url = "http://localhost:8080"
+
+        [[backends.param_overrides]]
+        tool = "list_directory"
+        hide = ["path"]
+        rename = { recursive = "deep_search" }
+
+        [backends.param_overrides.defaults]
+        path = "/home/docs"
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        assert_eq!(config.backends[0].param_overrides.len(), 1);
+        let po = &config.backends[0].param_overrides[0];
+        assert_eq!(po.tool, "list_directory");
+        assert_eq!(po.hide, vec!["path"]);
+        assert_eq!(po.defaults.get("path").unwrap(), "/home/docs");
+        assert_eq!(po.rename.get("recursive").unwrap(), "deep_search");
+    }
+
+    #[test]
+    fn test_reject_param_override_empty_tool() {
+        let toml = r#"
+        [proxy]
+        name = "bad"
+        [proxy.listen]
+
+        [[backends]]
+        name = "fs"
+        transport = "http"
+        url = "http://localhost:8080"
+
+        [[backends.param_overrides]]
+        tool = ""
+        hide = ["path"]
+        "#;
+
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("tool must not be empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_param_override_duplicate_tool() {
+        let toml = r#"
+        [proxy]
+        name = "bad"
+        [proxy.listen]
+
+        [[backends]]
+        name = "fs"
+        transport = "http"
+        url = "http://localhost:8080"
+
+        [[backends.param_overrides]]
+        tool = "list_directory"
+        hide = ["path"]
+
+        [[backends.param_overrides]]
+        tool = "list_directory"
+        hide = ["pattern"]
+        "#;
+
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("duplicate param_overrides"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_param_override_hide_and_rename_same_param() {
+        let toml = r#"
+        [proxy]
+        name = "bad"
+        [proxy.listen]
+
+        [[backends]]
+        name = "fs"
+        transport = "http"
+        url = "http://localhost:8080"
+
+        [[backends.param_overrides]]
+        tool = "list_directory"
+        hide = ["path"]
+        rename = { path = "dir" }
+        "#;
+
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("cannot be both hidden and renamed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_param_override_duplicate_rename_target() {
+        let toml = r#"
+        [proxy]
+        name = "bad"
+        [proxy.listen]
+
+        [[backends]]
+        name = "fs"
+        transport = "http"
+        url = "http://localhost:8080"
+
+        [[backends.param_overrides]]
+        tool = "list_directory"
+        rename = { path = "location", dir = "location" }
+        "#;
+
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("duplicate rename target"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
