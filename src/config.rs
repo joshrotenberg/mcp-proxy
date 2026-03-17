@@ -774,50 +774,126 @@ pub struct BackendFilter {
     pub read_only_only: bool,
 }
 
+/// A compiled pattern for name matching -- either a glob or a regex.
+///
+/// Constructed internally by [`NameFilter::allow_list`] and
+/// [`NameFilter::deny_list`].
+#[derive(Debug, Clone)]
+pub enum CompiledPattern {
+    /// A glob pattern (matched via `glob_match`).
+    Glob(String),
+    /// A pre-compiled regex pattern (from `re:` prefix).
+    Regex(regex::Regex),
+}
+
+impl CompiledPattern {
+    /// Compile a pattern string. Patterns prefixed with `re:` are treated as
+    /// regular expressions; all others are treated as glob patterns.
+    fn compile(pattern: &str) -> Result<Self> {
+        if let Some(re_pat) = pattern.strip_prefix("re:") {
+            let re = regex::Regex::new(re_pat)
+                .with_context(|| format!("invalid regex in filter pattern: {pattern}"))?;
+            Ok(Self::Regex(re))
+        } else {
+            Ok(Self::Glob(pattern.to_string()))
+        }
+    }
+
+    /// Check if this pattern matches the given name.
+    fn matches(&self, name: &str) -> bool {
+        match self {
+            Self::Glob(pat) => glob_match::glob_match(pat, name),
+            Self::Regex(re) => re.is_match(name),
+        }
+    }
+}
+
 /// A name-based allow/deny filter.
+///
+/// Patterns support two syntaxes:
+/// - **Glob** (default): `*` matches any sequence, `?` matches one character.
+/// - **Regex** (`re:` prefix): e.g. `re:^list_.*$` uses the `regex` crate.
+///
+/// Regex patterns are compiled once at config parse time.
 #[derive(Debug, Clone)]
 pub enum NameFilter {
     /// No filtering -- everything passes.
     PassAll,
-    /// Only items in this set are allowed.
-    AllowList(HashSet<String>),
-    /// Items in this set are denied.
-    DenyList(HashSet<String>),
+    /// Only items matching at least one pattern are allowed.
+    AllowList(Vec<CompiledPattern>),
+    /// Items matching any pattern are denied.
+    DenyList(Vec<CompiledPattern>),
 }
 
 impl NameFilter {
+    /// Build an allow-list filter from raw pattern strings.
+    ///
+    /// Patterns prefixed with `re:` are compiled as regular expressions;
+    /// all others are treated as glob patterns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any `re:` pattern contains invalid regex syntax.
+    pub fn allow_list(patterns: impl IntoIterator<Item = String>) -> Result<Self> {
+        let compiled: Result<Vec<_>> = patterns
+            .into_iter()
+            .map(|p| CompiledPattern::compile(&p))
+            .collect();
+        Ok(Self::AllowList(compiled?))
+    }
+
+    /// Build a deny-list filter from raw pattern strings.
+    ///
+    /// Patterns prefixed with `re:` are compiled as regular expressions;
+    /// all others are treated as glob patterns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any `re:` pattern contains invalid regex syntax.
+    pub fn deny_list(patterns: impl IntoIterator<Item = String>) -> Result<Self> {
+        let compiled: Result<Vec<_>> = patterns
+            .into_iter()
+            .map(|p| CompiledPattern::compile(&p))
+            .collect();
+        Ok(Self::DenyList(compiled?))
+    }
+
     /// Check if a capability name is allowed by this filter.
     ///
-    /// Supports glob patterns: `*` matches any sequence of characters,
-    /// `?` matches a single character. Exact strings match themselves.
+    /// Supports glob patterns (`*`, `?`) and regex patterns (`re:` prefix).
+    /// Exact strings match themselves.
     ///
     /// # Examples
     ///
     /// ```
-    /// use std::collections::HashSet;
     /// use mcp_proxy::config::NameFilter;
     ///
-    /// let filter = NameFilter::DenyList(["delete".to_string()].into());
+    /// let filter = NameFilter::deny_list(["delete".to_string()]).unwrap();
     /// assert!(filter.allows("read"));
     /// assert!(!filter.allows("delete"));
     ///
-    /// let filter = NameFilter::AllowList(["read".to_string()].into());
+    /// let filter = NameFilter::allow_list(["read".to_string()]).unwrap();
     /// assert!(filter.allows("read"));
     /// assert!(!filter.allows("write"));
     ///
     /// assert!(NameFilter::PassAll.allows("anything"));
     ///
     /// // Glob patterns
-    /// let filter = NameFilter::AllowList(["*_file".to_string()].into());
+    /// let filter = NameFilter::allow_list(["*_file".to_string()]).unwrap();
     /// assert!(filter.allows("read_file"));
     /// assert!(filter.allows("write_file"));
     /// assert!(!filter.allows("query"));
+    ///
+    /// // Regex patterns
+    /// let filter = NameFilter::allow_list(["re:^list_.*$".to_string()]).unwrap();
+    /// assert!(filter.allows("list_files"));
+    /// assert!(!filter.allows("get_files"));
     /// ```
     pub fn allows(&self, name: &str) -> bool {
         match self {
             Self::PassAll => true,
-            Self::AllowList(set) => set.iter().any(|pat| glob_match::glob_match(pat, name)),
-            Self::DenyList(set) => !set.iter().any(|pat| glob_match::glob_match(pat, name)),
+            Self::AllowList(patterns) => patterns.iter().any(|p| p.matches(name)),
+            Self::DenyList(patterns) => !patterns.iter().any(|p| p.matches(name)),
         }
     }
 }
@@ -829,40 +905,40 @@ impl BackendConfig {
     /// Canary and failover backends automatically hide all capabilities so
     /// their tools don't appear in `ListTools` responses (traffic reaches
     /// them via routing middleware, not direct tool calls).
-    pub fn build_filter(&self, separator: &str) -> Option<BackendFilter> {
+    pub fn build_filter(&self, separator: &str) -> Result<Option<BackendFilter>> {
         // Canary and failover backends hide all capabilities -- tools are
         // accessed via routing middleware rewriting the primary namespace.
         if self.canary_of.is_some() || self.failover_for.is_some() {
-            return Some(BackendFilter {
+            return Ok(Some(BackendFilter {
                 namespace: format!("{}{}", self.name, separator),
-                tool_filter: NameFilter::AllowList(HashSet::new()),
-                resource_filter: NameFilter::AllowList(HashSet::new()),
-                prompt_filter: NameFilter::AllowList(HashSet::new()),
+                tool_filter: NameFilter::allow_list(std::iter::empty::<String>())?,
+                resource_filter: NameFilter::allow_list(std::iter::empty::<String>())?,
+                prompt_filter: NameFilter::allow_list(std::iter::empty::<String>())?,
                 hide_destructive: false,
                 read_only_only: false,
-            });
+            }));
         }
 
         let tool_filter = if !self.expose_tools.is_empty() {
-            NameFilter::AllowList(self.expose_tools.iter().cloned().collect())
+            NameFilter::allow_list(self.expose_tools.iter().cloned())?
         } else if !self.hide_tools.is_empty() {
-            NameFilter::DenyList(self.hide_tools.iter().cloned().collect())
+            NameFilter::deny_list(self.hide_tools.iter().cloned())?
         } else {
             NameFilter::PassAll
         };
 
         let resource_filter = if !self.expose_resources.is_empty() {
-            NameFilter::AllowList(self.expose_resources.iter().cloned().collect())
+            NameFilter::allow_list(self.expose_resources.iter().cloned())?
         } else if !self.hide_resources.is_empty() {
-            NameFilter::DenyList(self.hide_resources.iter().cloned().collect())
+            NameFilter::deny_list(self.hide_resources.iter().cloned())?
         } else {
             NameFilter::PassAll
         };
 
         let prompt_filter = if !self.expose_prompts.is_empty() {
-            NameFilter::AllowList(self.expose_prompts.iter().cloned().collect())
+            NameFilter::allow_list(self.expose_prompts.iter().cloned())?
         } else if !self.hide_prompts.is_empty() {
-            NameFilter::DenyList(self.hide_prompts.iter().cloned().collect())
+            NameFilter::deny_list(self.hide_prompts.iter().cloned())?
         } else {
             NameFilter::PassAll
         };
@@ -874,17 +950,17 @@ impl BackendConfig {
             && !self.hide_destructive
             && !self.read_only_only
         {
-            return None;
+            return Ok(None);
         }
 
-        Some(BackendFilter {
+        Ok(Some(BackendFilter {
             namespace: format!("{}{}", self.name, separator),
             tool_filter,
             resource_filter,
             prompt_filter,
             hide_destructive: self.hide_destructive,
             read_only_only: self.read_only_only,
-        })
+        }))
     }
 }
 
@@ -2137,6 +2213,7 @@ mod tests {
         let config = ProxyConfig::parse(toml).unwrap();
         let filter = config.backends[0]
             .build_filter(&config.proxy.separator)
+            .unwrap()
             .expect("should have filter");
         assert_eq!(filter.namespace, "svc/");
         assert!(filter.tool_filter.allows("read"));
@@ -2161,6 +2238,7 @@ mod tests {
         let config = ProxyConfig::parse(toml).unwrap();
         let filter = config.backends[0]
             .build_filter(&config.proxy.separator)
+            .unwrap()
             .expect("should have filter");
         assert!(filter.tool_filter.allows("read"));
         assert!(!filter.tool_filter.allows("delete"));
@@ -2222,6 +2300,7 @@ mod tests {
         assert!(
             config.backends[0]
                 .build_filter(&config.proxy.separator)
+                .unwrap()
                 .is_none()
         );
     }
@@ -2292,7 +2371,7 @@ mod tests {
 
     #[test]
     fn test_name_filter_glob_wildcard() {
-        let filter = NameFilter::AllowList(["*_file".to_string()].into());
+        let filter = NameFilter::allow_list(["*_file".to_string()]).unwrap();
         assert!(filter.allows("read_file"));
         assert!(filter.allows("write_file"));
         assert!(!filter.allows("query"));
@@ -2301,7 +2380,7 @@ mod tests {
 
     #[test]
     fn test_name_filter_glob_prefix() {
-        let filter = NameFilter::AllowList(["list_*".to_string()].into());
+        let filter = NameFilter::allow_list(["list_*".to_string()]).unwrap();
         assert!(filter.allows("list_files"));
         assert!(filter.allows("list_users"));
         assert!(!filter.allows("get_files"));
@@ -2309,7 +2388,7 @@ mod tests {
 
     #[test]
     fn test_name_filter_glob_question_mark() {
-        let filter = NameFilter::AllowList(["get_?".to_string()].into());
+        let filter = NameFilter::allow_list(["get_?".to_string()]).unwrap();
         assert!(filter.allows("get_a"));
         assert!(filter.allows("get_1"));
         assert!(!filter.allows("get_ab"));
@@ -2318,7 +2397,7 @@ mod tests {
 
     #[test]
     fn test_name_filter_glob_deny_list() {
-        let filter = NameFilter::DenyList(["*_delete*".to_string()].into());
+        let filter = NameFilter::deny_list(["*_delete*".to_string()]).unwrap();
         assert!(filter.allows("read_file"));
         assert!(filter.allows("create_issue"));
         assert!(!filter.allows("force_delete_all"));
@@ -2327,21 +2406,88 @@ mod tests {
 
     #[test]
     fn test_name_filter_glob_exact_match_still_works() {
-        let filter = NameFilter::AllowList(["read_file".to_string()].into());
+        let filter = NameFilter::allow_list(["read_file".to_string()]).unwrap();
         assert!(filter.allows("read_file"));
         assert!(!filter.allows("write_file"));
     }
 
     #[test]
     fn test_name_filter_glob_multiple_patterns() {
-        let filter = NameFilter::AllowList(
-            ["read_*".to_string(), "list_*".to_string()]
-                .into_iter()
-                .collect(),
-        );
+        let filter = NameFilter::allow_list(["read_*".to_string(), "list_*".to_string()]).unwrap();
         assert!(filter.allows("read_file"));
         assert!(filter.allows("list_users"));
         assert!(!filter.allows("delete_file"));
+    }
+
+    #[test]
+    fn test_name_filter_regex_allow_list() {
+        let filter =
+            NameFilter::allow_list(["re:^list_.*$".to_string(), "re:^get_\\w+$".to_string()])
+                .unwrap();
+        assert!(filter.allows("list_files"));
+        assert!(filter.allows("list_users"));
+        assert!(filter.allows("get_item"));
+        assert!(!filter.allows("delete_file"));
+        assert!(!filter.allows("create_issue"));
+    }
+
+    #[test]
+    fn test_name_filter_regex_deny_list() {
+        let filter = NameFilter::deny_list(["re:^delete_".to_string()]).unwrap();
+        assert!(filter.allows("read_file"));
+        assert!(filter.allows("list_users"));
+        assert!(!filter.allows("delete_file"));
+        assert!(!filter.allows("delete_all"));
+    }
+
+    #[test]
+    fn test_name_filter_mixed_glob_and_regex() {
+        let filter =
+            NameFilter::allow_list(["read_*".to_string(), "re:^list_\\w+$".to_string()]).unwrap();
+        assert!(filter.allows("read_file"));
+        assert!(filter.allows("read_dir"));
+        assert!(filter.allows("list_users"));
+        assert!(!filter.allows("delete_file"));
+    }
+
+    #[test]
+    fn test_name_filter_regex_invalid_pattern() {
+        let result = NameFilter::allow_list(["re:[invalid".to_string()]);
+        assert!(result.is_err(), "invalid regex should produce an error");
+    }
+
+    #[test]
+    fn test_name_filter_regex_partial_match() {
+        // Regex without anchors matches substrings
+        let filter = NameFilter::allow_list(["re:list".to_string()]).unwrap();
+        assert!(filter.allows("list_files"));
+        assert!(filter.allows("my_list_tool"));
+        assert!(!filter.allows("read_file"));
+    }
+
+    #[test]
+    fn test_config_parse_regex_filter() {
+        let toml = r#"
+        [proxy]
+        name = "regex-gw"
+        [proxy.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "stdio"
+        command = "echo"
+        expose_tools = ["*_issue", "re:^list_.*$"]
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        let filter = config.backends[0]
+            .build_filter(&config.proxy.separator)
+            .unwrap()
+            .expect("should have filter");
+        assert!(filter.tool_filter.allows("create_issue"));
+        assert!(filter.tool_filter.allows("list_files"));
+        assert!(filter.tool_filter.allows("list_users"));
+        assert!(!filter.tool_filter.allows("delete_file"));
     }
 
     #[test]

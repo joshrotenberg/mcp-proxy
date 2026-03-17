@@ -626,8 +626,8 @@ fn build_middleware_stack(
     let filters: Vec<_> = config
         .backends
         .iter()
-        .filter_map(|b| b.build_filter(&config.proxy.separator))
-        .collect();
+        .filter_map(|b| b.build_filter(&config.proxy.separator).transpose())
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     if !filters.is_empty() {
         for f in &filters {

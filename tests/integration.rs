@@ -167,7 +167,7 @@ async fn test_proxy_with_filter_hides_tools() {
     let proxy = build_proxy().await;
     let filters = vec![BackendFilter {
         namespace: "text/".to_string(),
-        tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
+        tool_filter: NameFilter::deny_list(["upper".to_string()]).unwrap(),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
         hide_destructive: false,
@@ -192,7 +192,7 @@ async fn test_proxy_with_filter_denies_call() {
     let proxy = build_proxy().await;
     let filters = vec![BackendFilter {
         namespace: "text/".to_string(),
-        tool_filter: NameFilter::AllowList(["echo".to_string()].into()),
+        tool_filter: NameFilter::allow_list(["echo".to_string()]).unwrap(),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
         hide_destructive: false,
@@ -455,7 +455,7 @@ async fn test_proxy_with_stacked_middleware() {
     };
     let filters = vec![BackendFilter {
         namespace: "text/".to_string(),
-        tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
+        tool_filter: NameFilter::deny_list(["upper".to_string()]).unwrap(),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
         hide_destructive: false,
@@ -838,9 +838,9 @@ async fn test_canary_with_filter_hides_canary_tools() {
     // Filter to hide canary tools (empty AllowList = hide everything)
     let filters = vec![BackendFilter {
         namespace: "api-canary/".to_string(),
-        tool_filter: NameFilter::AllowList(std::collections::HashSet::new()),
-        resource_filter: NameFilter::AllowList(std::collections::HashSet::new()),
-        prompt_filter: NameFilter::AllowList(std::collections::HashSet::new()),
+        tool_filter: NameFilter::allow_list(std::iter::empty::<String>()).unwrap(),
+        resource_filter: NameFilter::allow_list(std::iter::empty::<String>()).unwrap(),
+        prompt_filter: NameFilter::allow_list(std::iter::empty::<String>()).unwrap(),
         hide_destructive: false,
         read_only_only: false,
     }];
@@ -891,7 +891,7 @@ async fn test_full_middleware_stack() {
 
     let filters = vec![BackendFilter {
         namespace: "text/".to_string(),
-        tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
+        tool_filter: NameFilter::deny_list(["upper".to_string()]).unwrap(),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
         hide_destructive: false,
