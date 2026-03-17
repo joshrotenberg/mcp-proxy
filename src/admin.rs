@@ -1014,4 +1014,197 @@ mod tests {
         assert!(events[0]["healthy"].as_bool().unwrap());
         assert!(!events[1]["healthy"].as_bool().unwrap());
     }
+
+    #[tokio::test]
+    async fn test_sessions_endpoint() {
+        let state = make_state(vec![]);
+        let session_handle = make_session_handle();
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
+
+        let json = get_json(&router, "/sessions").await;
+        assert_eq!(json["active_sessions"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_sessions_detail_empty() {
+        let state = make_state(vec![]);
+        let session_handle = make_session_handle();
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
+
+        let json = get_json(&router, "/sessions/detail").await;
+        let sessions = json.as_array().unwrap();
+        assert!(sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_terminate_session_not_found() {
+        let state = make_state(vec![]);
+        let session_handle = make_session_handle();
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
+
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/sessions/nonexistent-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(!json["ok"].as_bool().unwrap());
+        assert!(json["message"].as_str().unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_sessions_detail_with_active_session() {
+        // Create an HTTP transport and send an initialize request to establish a session
+        let svc = tower::util::BoxCloneService::new(tower::service_fn(
+            |_req: tower_mcp::RouterRequest| async {
+                Ok::<_, std::convert::Infallible>(tower_mcp::RouterResponse {
+                    id: tower_mcp::protocol::RequestId::Number(1),
+                    inner: Ok(tower_mcp::protocol::McpResponse::Initialize(
+                        tower_mcp::protocol::InitializeResult {
+                            protocol_version: "2025-03-26".to_string(),
+                            server_info: tower_mcp::protocol::Implementation {
+                                name: "test".to_string(),
+                                version: "1.0.0".to_string(),
+                                ..Default::default()
+                            },
+                            capabilities: Default::default(),
+                            instructions: None,
+                            meta: None,
+                        },
+                    )),
+                })
+            },
+        ));
+
+        let (http_router, session_handle) =
+            tower_mcp::transport::http::HttpTransport::from_service(svc).into_router_with_handle();
+
+        // Send an initialize request to create a session
+        let init_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": { "name": "test", "version": "1.0.0" },
+                "capabilities": {}
+            }
+        });
+
+        let resp = http_router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_string(&init_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        // Extract session ID from response header
+        let session_id = resp
+            .headers()
+            .get("mcp-session-id")
+            .expect("initialize response should include mcp-session-id header")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // Verify sessions are visible via admin endpoint
+        let state = make_state(vec![]);
+        let admin = admin_router(
+            state,
+            None,
+            session_handle.clone(),
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
+
+        // Check session count
+        let json = get_json(&admin, "/sessions").await;
+        assert_eq!(json["active_sessions"], 1);
+
+        // Check session detail
+        let json = get_json(&admin, "/sessions/detail").await;
+        let sessions = json.as_array().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert!(!sessions[0]["id"].as_str().unwrap().is_empty());
+        assert!(sessions[0]["uptime_seconds"].is_number());
+        assert!(sessions[0]["idle_seconds"].is_number());
+
+        // Terminate the session
+        let resp = admin
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/sessions/{}", session_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["ok"].as_bool().unwrap());
+
+        // Verify session is gone
+        let json = get_json(&admin, "/sessions").await;
+        assert_eq!(json["active_sessions"], 0);
+
+        // Terminating again returns not found
+        let resp = admin
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/sessions/{}", session_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
 }
