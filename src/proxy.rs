@@ -527,21 +527,32 @@ fn build_middleware_stack(
     }
 
     // Failover routing (deterministic fallback on primary error)
-    let failover_mappings: std::collections::HashMap<String, String> = config
-        .backends
-        .iter()
-        .filter_map(|b| {
-            b.failover_for
-                .as_ref()
-                .map(|primary| (primary.clone(), b.name.clone()))
+    // Collect failover backends grouped by primary, sorted by priority (ascending).
+    let mut failover_groups: std::collections::HashMap<String, Vec<(u32, String)>> =
+        std::collections::HashMap::new();
+    for b in &config.backends {
+        if let Some(ref primary) = b.failover_for {
+            failover_groups
+                .entry(primary.clone())
+                .or_default()
+                .push((b.priority, b.name.clone()));
+        }
+    }
+    // Sort each group by priority (lower = preferred)
+    let failover_mappings: std::collections::HashMap<String, Vec<String>> = failover_groups
+        .into_iter()
+        .map(|(primary, mut backends)| {
+            backends.sort_by_key(|(priority, _)| *priority);
+            let names: Vec<String> = backends.into_iter().map(|(_, name)| name).collect();
+            (primary, names)
         })
         .collect();
 
     if !failover_mappings.is_empty() {
-        for (primary, failover) in &failover_mappings {
+        for (primary, failovers) in &failover_mappings {
             tracing::info!(
                 primary = %primary,
-                failover = %failover,
+                failovers = ?failovers,
                 "Enabling failover routing"
             );
         }

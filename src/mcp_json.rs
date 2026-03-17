@@ -126,6 +126,7 @@ fn server_to_backend(name: String, server: McpJsonServer) -> Result<BackendConfi
         hide_destructive: false,
         read_only_only: false,
         failover_for: None,
+        priority: 0,
         canary_of: None,
         weight: 100,
         aliases: Vec::new(),

@@ -212,6 +212,12 @@ pub struct BackendConfig {
     /// When set, this backend's tools are hidden and requests are only
     /// routed here when the primary returns an error.
     pub failover_for: Option<String>,
+    /// Failover priority for ordering multiple failover backends.
+    /// Lower values are preferred (tried first). Default is 0.
+    /// When multiple backends declare `failover_for` the same primary,
+    /// they are tried in ascending priority order until one succeeds.
+    #[serde(default)]
+    pub priority: u32,
     /// Canary routing: name of the primary backend this is a canary for.
     /// When set, this backend's tools are hidden and requests targeting
     /// the primary are probabilistically routed here based on weight.
@@ -3421,5 +3427,55 @@ backends:
         );
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_priority_defaults_to_zero() {
+        let toml = r#"
+        [proxy]
+        name = "test"
+        [proxy.listen]
+
+        [[backends]]
+        name = "api"
+        transport = "stdio"
+        command = "echo"
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        assert_eq!(config.backends[0].priority, 0);
+    }
+
+    #[test]
+    fn test_priority_parsed_from_config() {
+        let toml = r#"
+        [proxy]
+        name = "test"
+        [proxy.listen]
+
+        [[backends]]
+        name = "api"
+        transport = "stdio"
+        command = "echo"
+
+        [[backends]]
+        name = "api-backup-1"
+        transport = "stdio"
+        command = "echo"
+        failover_for = "api"
+        priority = 10
+
+        [[backends]]
+        name = "api-backup-2"
+        transport = "stdio"
+        command = "echo"
+        failover_for = "api"
+        priority = 5
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        assert_eq!(config.backends[0].priority, 0);
+        assert_eq!(config.backends[1].priority, 10);
+        assert_eq!(config.backends[2].priority, 5);
     }
 }
