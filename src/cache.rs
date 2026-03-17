@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use moka::future::Cache;
 use serde::Serialize;
-use tower::Service;
+use tower::{Layer, Service};
 use tower_mcp::router::{RouterRequest, RouterResponse};
 use tower_mcp_types::protocol::McpRequest;
 
@@ -131,6 +131,103 @@ impl CacheHandle {
     }
 }
 
+/// Build the shared cache state from per-backend configs.
+///
+/// Returns an `Arc<Vec<BackendCache>>` that can be shared between a
+/// [`CacheLayer`] (or [`CacheService`]) and its [`CacheHandle`].
+fn build_caches(configs: Vec<(String, &BackendCacheConfig)>) -> Arc<Vec<BackendCache>> {
+    let caches: Vec<BackendCache> = configs
+        .into_iter()
+        .map(|(namespace, cfg)| {
+            let resource_cache = if cfg.resource_ttl_seconds > 0 {
+                Some(
+                    Cache::builder()
+                        .max_capacity(cfg.max_entries)
+                        .time_to_live(Duration::from_secs(cfg.resource_ttl_seconds))
+                        .build(),
+                )
+            } else {
+                None
+            };
+            let tool_cache = if cfg.tool_ttl_seconds > 0 {
+                Some(
+                    Cache::builder()
+                        .max_capacity(cfg.max_entries)
+                        .time_to_live(Duration::from_secs(cfg.tool_ttl_seconds))
+                        .build(),
+                )
+            } else {
+                None
+            };
+            BackendCache {
+                namespace,
+                resource_cache,
+                tool_cache,
+                stats: Arc::new(CacheStats::new()),
+            }
+        })
+        .collect();
+    Arc::new(caches)
+}
+
+/// Tower [`Layer`] that produces [`CacheService`] instances sharing the same
+/// cache state and [`CacheHandle`].
+///
+/// Because `CacheService::new()` returns a `(CacheService, CacheHandle)` tuple,
+/// a standard `Layer` cannot propagate the side-channel handle. `CacheLayer`
+/// solves this by creating the shared cache state up-front and handing out an
+/// `Arc`-cloned handle to the caller while cloning the same `Arc` into every
+/// service produced by [`Layer::layer`].
+///
+/// # Example
+///
+/// ```rust
+/// use mcp_proxy::cache::{CacheLayer, CacheHandle};
+/// use mcp_proxy::config::BackendCacheConfig;
+///
+/// let cfg = BackendCacheConfig {
+///     resource_ttl_seconds: 300,
+///     tool_ttl_seconds: 60,
+///     max_entries: 1000,
+/// };
+///
+/// let (layer, handle) = CacheLayer::new(vec![("api/".to_string(), &cfg)]);
+///
+/// // `layer` implements `tower::Layer<S>` and can be used in a middleware stack.
+/// // `handle` can be used to query stats or clear the cache.
+/// let stats = handle.stats();
+/// ```
+#[derive(Clone)]
+pub struct CacheLayer {
+    caches: Arc<Vec<BackendCache>>,
+}
+
+impl CacheLayer {
+    /// Create a new cache layer and return it with a shareable [`CacheHandle`].
+    ///
+    /// The handle provides [`CacheHandle::stats()`] and [`CacheHandle::clear()`]
+    /// over the same underlying cache state used by every service the layer
+    /// produces.
+    pub fn new(configs: Vec<(String, &BackendCacheConfig)>) -> (Self, CacheHandle) {
+        let caches = build_caches(configs);
+        let handle = CacheHandle {
+            caches: Arc::clone(&caches),
+        };
+        (Self { caches }, handle)
+    }
+}
+
+impl<S> Layer<S> for CacheLayer {
+    type Service = CacheService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        CacheService {
+            inner,
+            caches: Arc::clone(&self.caches),
+        }
+    }
+}
+
 /// Tower service that caches resource reads and tool call results.
 #[derive(Clone)]
 pub struct CacheService<S> {
@@ -141,38 +238,7 @@ pub struct CacheService<S> {
 impl<S> CacheService<S> {
     /// Create a new cache service and return it with a shareable handle.
     pub fn new(inner: S, configs: Vec<(String, &BackendCacheConfig)>) -> (Self, CacheHandle) {
-        let caches: Vec<BackendCache> = configs
-            .into_iter()
-            .map(|(namespace, cfg)| {
-                let resource_cache = if cfg.resource_ttl_seconds > 0 {
-                    Some(
-                        Cache::builder()
-                            .max_capacity(cfg.max_entries)
-                            .time_to_live(Duration::from_secs(cfg.resource_ttl_seconds))
-                            .build(),
-                    )
-                } else {
-                    None
-                };
-                let tool_cache = if cfg.tool_ttl_seconds > 0 {
-                    Some(
-                        Cache::builder()
-                            .max_capacity(cfg.max_entries)
-                            .time_to_live(Duration::from_secs(cfg.tool_ttl_seconds))
-                            .build(),
-                    )
-                } else {
-                    None
-                };
-                BackendCache {
-                    namespace,
-                    resource_cache,
-                    tool_cache,
-                    stats: Arc::new(CacheStats::new()),
-                }
-            })
-            .collect();
-        let caches = Arc::new(caches);
+        let caches = build_caches(configs);
         let handle = CacheHandle {
             caches: Arc::clone(&caches),
         };
@@ -384,6 +450,88 @@ mod tests {
 
         let _ = call_service(&mut svc, tool_call("fs/read")).await;
         let _ = call_service(&mut svc, tool_call("fs/read")).await;
+
+        handle.clear();
+        let stats = handle.stats();
+        assert_eq!(stats[0].hits, 0);
+        assert_eq!(stats[0].misses, 0);
+    }
+
+    #[tokio::test]
+    async fn test_cache_layer_produces_working_service() {
+        use super::CacheLayer;
+        use tower::Layer;
+
+        let cfg = BackendCacheConfig {
+            resource_ttl_seconds: 60,
+            tool_ttl_seconds: 60,
+            max_entries: 100,
+        };
+        let (layer, handle) = CacheLayer::new(vec![("fs/".to_string(), &cfg)]);
+
+        let mock = MockService::with_tools(&["fs/read"]);
+        let mut svc = layer.layer(mock);
+
+        // First call = miss
+        let _ = call_service(&mut svc, tool_call("fs/read")).await;
+        let stats = handle.stats();
+        assert_eq!(stats[0].misses, 1);
+        assert_eq!(stats[0].hits, 0);
+
+        // Second call = hit (cached)
+        let _ = call_service(&mut svc, tool_call("fs/read")).await;
+        let stats = handle.stats();
+        assert_eq!(stats[0].hits, 1);
+        assert_eq!(stats[0].misses, 1);
+    }
+
+    #[tokio::test]
+    async fn test_cache_layer_shares_state_across_services() {
+        use super::CacheLayer;
+        use tower::Layer;
+
+        let cfg = BackendCacheConfig {
+            resource_ttl_seconds: 60,
+            tool_ttl_seconds: 60,
+            max_entries: 100,
+        };
+        let (layer, handle) = CacheLayer::new(vec![("fs/".to_string(), &cfg)]);
+
+        // Create two services from the same layer
+        let mock1 = MockService::with_tools(&["fs/read"]);
+        let mut svc1 = layer.layer(mock1);
+
+        let mock2 = MockService::with_tools(&["fs/read"]);
+        let mut svc2 = layer.layer(mock2);
+
+        // Miss on svc1
+        let _ = call_service(&mut svc1, tool_call("fs/read")).await;
+        assert_eq!(handle.stats()[0].misses, 1);
+
+        // Hit on svc2 (same underlying cache)
+        let _ = call_service(&mut svc2, tool_call("fs/read")).await;
+        assert_eq!(handle.stats()[0].hits, 1);
+        assert_eq!(handle.stats()[0].misses, 1);
+    }
+
+    #[tokio::test]
+    async fn test_cache_layer_handle_clear() {
+        use super::CacheLayer;
+        use tower::Layer;
+
+        let cfg = BackendCacheConfig {
+            resource_ttl_seconds: 60,
+            tool_ttl_seconds: 60,
+            max_entries: 100,
+        };
+        let (layer, handle) = CacheLayer::new(vec![("fs/".to_string(), &cfg)]);
+
+        let mock = MockService::with_tools(&["fs/read"]);
+        let mut svc = layer.layer(mock);
+
+        let _ = call_service(&mut svc, tool_call("fs/read")).await;
+        let _ = call_service(&mut svc, tool_call("fs/read")).await;
+        assert_eq!(handle.stats()[0].hits, 1);
 
         handle.clear();
         let stats = handle.stats();
