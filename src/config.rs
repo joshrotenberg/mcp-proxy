@@ -407,6 +407,57 @@ pub enum AuthConfig {
         /// Map JWT claims to roles
         role_mapping: Option<RoleMappingConfig>,
     },
+    /// OAuth 2.1 authentication with auto-discovery and token introspection.
+    ///
+    /// Discovers authorization server endpoints (JWKS URI, introspection endpoint)
+    /// from the issuer URL via RFC 8414 metadata. Supports JWT validation,
+    /// opaque token introspection, or both.
+    OAuth {
+        /// Authorization server issuer URL (e.g. `https://accounts.google.com`).
+        /// Used for RFC 8414 metadata discovery.
+        issuer: String,
+        /// Expected token audience (`aud` claim).
+        audience: String,
+        /// OAuth client ID (required for token introspection).
+        #[serde(default)]
+        client_id: Option<String>,
+        /// OAuth client secret (required for token introspection).
+        /// Supports `${ENV_VAR}` syntax.
+        #[serde(default)]
+        client_secret: Option<String>,
+        /// Token validation strategy.
+        #[serde(default)]
+        token_validation: TokenValidationStrategy,
+        /// Override the auto-discovered JWKS URI.
+        #[serde(default)]
+        jwks_uri: Option<String>,
+        /// Override the auto-discovered introspection endpoint.
+        #[serde(default)]
+        introspection_endpoint: Option<String>,
+        /// Required scopes for access (space-delimited).
+        #[serde(default)]
+        required_scopes: Vec<String>,
+        /// RBAC role definitions.
+        #[serde(default)]
+        roles: Vec<RoleConfig>,
+        /// Map JWT/token claims to roles.
+        role_mapping: Option<RoleMappingConfig>,
+    },
+}
+
+/// Token validation strategy for OAuth 2.1 auth.
+#[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TokenValidationStrategy {
+    /// Validate JWTs locally via JWKS (default). Fast, no network call per request.
+    #[default]
+    Jwt,
+    /// Validate tokens via the authorization server's introspection endpoint (RFC 7662).
+    /// Works with opaque tokens. Requires `client_id` and `client_secret`.
+    Introspection,
+    /// Try JWT validation first; fall back to introspection for non-JWT tokens.
+    /// Requires `client_id` and `client_secret`.
+    Both,
 }
 
 /// Per-token configuration for bearer auth with optional tool scoping.
@@ -967,6 +1018,22 @@ impl ProxyConfig {
             }
         }
 
+        // Validate OAuth config
+        if let Some(AuthConfig::OAuth {
+            token_validation,
+            client_id,
+            client_secret,
+            ..
+        }) = &self.auth
+            && matches!(
+                token_validation,
+                TokenValidationStrategy::Introspection | TokenValidationStrategy::Both
+            )
+            && (client_id.is_none() || client_secret.is_none())
+        {
+            anyhow::bail!("OAuth introspection requires both 'client_id' and 'client_secret'");
+        }
+
         // Check for duplicate backend names
         let mut seen_names = HashSet::new();
         for backend in &self.backends {
@@ -1218,6 +1285,15 @@ impl ProxyConfig {
                     st.token = env_val;
                 }
             }
+        }
+
+        // Resolve env vars in OAuth config
+        if let Some(AuthConfig::OAuth { client_secret, .. }) = &mut self.auth
+            && let Some(secret) = client_secret
+            && let Some(var_name) = secret.strip_prefix("${").and_then(|s| s.strip_suffix('}'))
+            && let Ok(env_val) = std::env::var(var_name)
+        {
+            *secret = env_val;
         }
     }
 }
@@ -2606,5 +2682,150 @@ mod tests {
 
         let config = ProxyConfig::parse(toml).unwrap();
         assert!(config.proxy.tool_discovery);
+    }
+
+    #[test]
+    fn test_parse_oauth_config() {
+        let toml = r#"
+        [proxy]
+        name = "oauth-proxy"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "oauth"
+        issuer = "https://accounts.google.com"
+        audience = "mcp-proxy"
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        match &config.auth {
+            Some(AuthConfig::OAuth {
+                issuer,
+                audience,
+                token_validation,
+                ..
+            }) => {
+                assert_eq!(issuer, "https://accounts.google.com");
+                assert_eq!(audience, "mcp-proxy");
+                assert_eq!(token_validation, &TokenValidationStrategy::Jwt);
+            }
+            other => panic!("expected OAuth auth, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_oauth_with_introspection() {
+        let toml = r#"
+        [proxy]
+        name = "oauth-proxy"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "oauth"
+        issuer = "https://auth.example.com"
+        audience = "mcp-proxy"
+        client_id = "my-client"
+        client_secret = "my-secret"
+        token_validation = "introspection"
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        match &config.auth {
+            Some(AuthConfig::OAuth {
+                token_validation,
+                client_id,
+                client_secret,
+                ..
+            }) => {
+                assert_eq!(token_validation, &TokenValidationStrategy::Introspection);
+                assert_eq!(client_id.as_deref(), Some("my-client"));
+                assert_eq!(client_secret.as_deref(), Some("my-secret"));
+            }
+            other => panic!("expected OAuth auth, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_oauth_introspection_requires_credentials() {
+        let toml = r#"
+        [proxy]
+        name = "oauth-proxy"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "oauth"
+        issuer = "https://auth.example.com"
+        audience = "mcp-proxy"
+        token_validation = "introspection"
+        "#;
+
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("client_id"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_oauth_with_overrides() {
+        let toml = r#"
+        [proxy]
+        name = "oauth-proxy"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "oauth"
+        issuer = "https://auth.example.com"
+        audience = "mcp-proxy"
+        jwks_uri = "https://auth.example.com/custom/jwks"
+        introspection_endpoint = "https://auth.example.com/custom/introspect"
+        client_id = "my-client"
+        client_secret = "my-secret"
+        token_validation = "both"
+        required_scopes = ["read", "write"]
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        match &config.auth {
+            Some(AuthConfig::OAuth {
+                jwks_uri,
+                introspection_endpoint,
+                token_validation,
+                required_scopes,
+                ..
+            }) => {
+                assert_eq!(
+                    jwks_uri.as_deref(),
+                    Some("https://auth.example.com/custom/jwks")
+                );
+                assert_eq!(
+                    introspection_endpoint.as_deref(),
+                    Some("https://auth.example.com/custom/introspect")
+                );
+                assert_eq!(token_validation, &TokenValidationStrategy::Both);
+                assert_eq!(required_scopes, &["read", "write"]);
+            }
+            other => panic!("expected OAuth auth, got: {other:?}"),
+        }
     }
 }

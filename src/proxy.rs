@@ -687,11 +687,18 @@ fn build_middleware_stack(
     #[cfg(feature = "oauth")]
     {
         let rbac_config = match &config.auth {
-            Some(AuthConfig::Jwt {
-                roles,
-                role_mapping: Some(mapping),
-                ..
-            }) if !roles.is_empty() => {
+            Some(
+                AuthConfig::Jwt {
+                    roles,
+                    role_mapping: Some(mapping),
+                    ..
+                }
+                | AuthConfig::OAuth {
+                    roles,
+                    role_mapping: Some(mapping),
+                    ..
+                },
+            ) if !roles.is_empty() => {
                 tracing::info!(
                     roles = roles.len(),
                     claim = %mapping.claim,
@@ -835,6 +842,113 @@ async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
             AuthConfig::Jwt { .. } => {
                 anyhow::bail!(
                     "JWT auth requires the 'oauth' feature. Rebuild with: cargo install mcp-proxy --features oauth"
+                );
+            }
+            #[cfg(feature = "oauth")]
+            AuthConfig::OAuth {
+                issuer,
+                audience,
+                token_validation,
+                jwks_uri,
+                introspection_endpoint,
+                client_id,
+                client_secret,
+                ..
+            } => {
+                use crate::config::TokenValidationStrategy;
+
+                tracing::info!(
+                    issuer = %issuer,
+                    audience = %audience,
+                    strategy = ?token_validation,
+                    "Enabling OAuth 2.1 auth"
+                );
+
+                // Auto-discover endpoints from issuer if not overridden
+                let discovered = crate::introspection::discover_auth_server(issuer)
+                    .await
+                    .context("discovering OAuth authorization server")?;
+
+                let effective_jwks_uri = jwks_uri
+                    .as_deref()
+                    .or(discovered.jwks_uri.as_deref())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "JWKS URI not found via discovery and not configured manually"
+                        )
+                    })?;
+
+                let effective_introspection = introspection_endpoint
+                    .as_deref()
+                    .or(discovered.introspection_endpoint.as_deref());
+
+                let addr = format!(
+                    "http://{}:{}",
+                    config.proxy.listen.host, config.proxy.listen.port
+                );
+                let metadata = tower_mcp::oauth::ProtectedResourceMetadata::new(&addr)
+                    .authorization_server(issuer);
+
+                match token_validation {
+                    TokenValidationStrategy::Jwt => {
+                        let validator =
+                            tower_mcp::oauth::JwksValidator::builder(effective_jwks_uri)
+                                .expected_audience(audience)
+                                .expected_issuer(issuer)
+                                .build()
+                                .await
+                                .context("building JWKS validator")?;
+                        let layer = tower_mcp::oauth::OAuthLayer::new(validator, metadata);
+                        router.layer(layer)
+                    }
+                    TokenValidationStrategy::Introspection => {
+                        let endpoint = effective_introspection.ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "introspection endpoint not found via discovery and not configured"
+                            )
+                        })?;
+                        let validator = crate::introspection::IntrospectionValidator::new(
+                            endpoint,
+                            client_id.as_deref().unwrap(),
+                            client_secret.as_deref().unwrap(),
+                        )
+                        .expected_audience(audience);
+                        let layer = tower_mcp::oauth::OAuthLayer::new(validator, metadata);
+                        router.layer(layer)
+                    }
+                    TokenValidationStrategy::Both => {
+                        let endpoint = effective_introspection.ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "introspection endpoint not found via discovery and not configured"
+                            )
+                        })?;
+                        let jwt_validator =
+                            tower_mcp::oauth::JwksValidator::builder(effective_jwks_uri)
+                                .expected_audience(audience)
+                                .expected_issuer(issuer)
+                                .build()
+                                .await
+                                .context("building JWKS validator")?;
+                        let introspection_validator =
+                            crate::introspection::IntrospectionValidator::new(
+                                endpoint,
+                                client_id.as_deref().unwrap(),
+                                client_secret.as_deref().unwrap(),
+                            )
+                            .expected_audience(audience);
+                        let fallback = crate::introspection::FallbackValidator::new(
+                            jwt_validator,
+                            introspection_validator,
+                        );
+                        let layer = tower_mcp::oauth::OAuthLayer::new(fallback, metadata);
+                        router.layer(layer)
+                    }
+                }
+            }
+            #[cfg(not(feature = "oauth"))]
+            AuthConfig::OAuth { .. } => {
+                anyhow::bail!(
+                    "OAuth auth requires the 'oauth' feature. Rebuild with: cargo install mcp-proxy --features oauth"
                 );
             }
         }

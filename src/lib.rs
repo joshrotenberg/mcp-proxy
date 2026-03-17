@@ -63,6 +63,8 @@ pub mod discovery;
 pub mod failover;
 pub mod filter;
 pub mod inject;
+#[cfg(feature = "oauth")]
+pub mod introspection;
 pub mod mcp_json;
 #[cfg(feature = "metrics")]
 pub mod metrics;

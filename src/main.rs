@@ -159,6 +159,14 @@ fn print_config_summary(config: &ProxyConfig) -> Result<()> {
         Some(mcp_proxy::config::AuthConfig::Jwt { .. }) => {
             "jwt/jwks (feature disabled)".to_string()
         }
+        #[cfg(feature = "oauth")]
+        Some(mcp_proxy::config::AuthConfig::OAuth {
+            token_validation, ..
+        }) => format!("oauth 2.1 ({token_validation:?})"),
+        #[cfg(not(feature = "oauth"))]
+        Some(mcp_proxy::config::AuthConfig::OAuth { .. }) => {
+            "oauth 2.1 (feature disabled)".to_string()
+        }
         None => "none".to_string(),
     };
     println!("  Auth:     {}", auth_str);

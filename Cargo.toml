@@ -19,7 +19,7 @@ path = "src/main.rs"
 default = ["otel", "metrics", "oauth", "openapi", "websocket", "discovery"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
-oauth = ["tower-mcp/oauth", "tower-mcp/jwks"]
+oauth = ["tower-mcp/oauth", "tower-mcp/jwks", "dep:reqwest"]
 openapi = ["dep:utoipa", "dep:utoipa-axum"]
 websocket = ["dep:tokio-tungstenite", "dep:async-trait", "dep:futures-util"]
 discovery = ["dep:jpx-engine"]
@@ -56,6 +56,7 @@ tokio-tungstenite = { version = "0.28", features = ["connect", "rustls-tls-webpk
 async-trait = { version = "0.1", optional = true }
 futures-util = { version = "0.3", optional = true }
 jpx-engine = { version = "0.3.5", optional = true }
+reqwest = { version = "0.13", features = ["json", "form"], optional = true }
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json"] }
