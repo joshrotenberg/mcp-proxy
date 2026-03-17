@@ -16,13 +16,14 @@ name = "mcp-proxy"
 path = "src/main.rs"
 
 [features]
-default = ["otel", "metrics", "oauth", "openapi", "websocket", "discovery"]
+default = ["otel", "metrics", "oauth", "openapi", "websocket", "discovery", "yaml"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
 oauth = ["tower-mcp/oauth", "tower-mcp/jwks", "dep:reqwest"]
 openapi = ["dep:utoipa", "dep:utoipa-axum"]
 websocket = ["dep:tokio-tungstenite", "dep:async-trait", "dep:futures-util"]
 discovery = ["dep:jpx-engine"]
+yaml = ["dep:serde_yaml"]
 
 [dependencies]
 tower-mcp = { version = "0.8.7", features = ["http", "http-client", "proxy"] }
@@ -57,6 +58,7 @@ async-trait = { version = "0.1", optional = true }
 futures-util = { version = "0.3", optional = true }
 jpx-engine = { version = "0.3.5", optional = true }
 reqwest = { version = "0.13", features = ["json", "form"], optional = true }
+serde_yaml = { version = "0.9", optional = true }
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json"] }
