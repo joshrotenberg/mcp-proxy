@@ -60,6 +60,7 @@ impl ProxyBuilder {
                     hot_reload: false,
                     import_backends: None,
                     rate_limit: None,
+                    tool_discovery: false,
                 },
                 backends: Vec::new(),
                 auth: None,

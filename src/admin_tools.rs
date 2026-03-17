@@ -63,6 +63,7 @@ pub async fn register_admin_tools(
     admin_state: AdminState,
     session_handle: SessionHandle,
     config: &ProxyConfig,
+    discovery_tools: Option<Vec<tower_mcp::Tool>>,
 ) -> Result<(), AddBackendError> {
     let config_toml =
         toml::to_string_pretty(config).unwrap_or_else(|e| format!("error serializing: {e}"));
@@ -74,13 +75,16 @@ pub async fn register_admin_tools(
         proxy: proxy.clone(),
     };
 
-    let router = build_admin_router(state);
+    let router = build_admin_router(state, discovery_tools);
     let transport = ChannelTransport::new(router);
 
     proxy.add_backend("proxy", transport).await
 }
 
-fn build_admin_router(state: AdminToolState) -> McpRouter {
+fn build_admin_router(
+    state: AdminToolState,
+    discovery_tools: Option<Vec<tower_mcp::Tool>>,
+) -> McpRouter {
     let state_for_backends = state.clone();
     let list_backends = ToolBuilder::new("list_backends")
         .description("List all proxy backends with health status")
@@ -199,13 +203,21 @@ fn build_admin_router(state: AdminToolState) -> McpRouter {
         })
         .build();
 
-    McpRouter::new()
+    let mut router = McpRouter::new()
         .server_info("mcp-proxy-admin", "0.1.0")
         .tool(list_backends)
         .tool(health_check)
         .tool(session_count)
         .tool(add_backend)
-        .tool(config_tool)
+        .tool(config_tool);
+
+    if let Some(tools) = discovery_tools {
+        for tool in tools {
+            router = router.tool(tool);
+        }
+    }
+
+    router
 }
 
 #[derive(Serialize)]

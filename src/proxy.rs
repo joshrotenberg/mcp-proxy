@@ -41,7 +41,7 @@ impl Proxy {
     pub async fn from_config(config: ProxyConfig) -> Result<Self> {
         let mcp_proxy = build_mcp_proxy(&config).await?;
         let proxy_for_admin = mcp_proxy.clone();
-        let proxy_for_caller = mcp_proxy.clone();
+        let mut proxy_for_caller = mcp_proxy.clone();
         let proxy_for_management = mcp_proxy.clone();
 
         // Install Prometheus metrics recorder (must happen before middleware)
@@ -103,12 +103,25 @@ impl Proxy {
         );
         tracing::info!("Admin API enabled at /admin/backends");
 
+        // Build discovery index if enabled
+        #[cfg(feature = "discovery")]
+        let discovery_tools = if config.proxy.tool_discovery {
+            let index =
+                crate::discovery::build_index(&mut proxy_for_caller, &config.proxy.separator).await;
+            Some(crate::discovery::build_discovery_tools(index))
+        } else {
+            None
+        };
+        #[cfg(not(feature = "discovery"))]
+        let discovery_tools: Option<Vec<tower_mcp::Tool>> = None;
+
         // MCP admin tools (proxy/ namespace)
         if let Err(e) = crate::admin_tools::register_admin_tools(
             &proxy_for_caller,
             admin_state,
             session_handle.clone(),
             &config,
+            discovery_tools,
         )
         .await
         {

@@ -58,6 +58,8 @@ pub mod canary;
 pub mod coalesce;
 pub mod composite;
 pub mod config;
+#[cfg(feature = "discovery")]
+pub mod discovery;
 pub mod failover;
 pub mod filter;
 pub mod inject;
