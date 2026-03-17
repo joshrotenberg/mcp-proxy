@@ -57,6 +57,38 @@ pub async fn build_index(proxy: &mut McpProxy, separator: &str) -> SharedDiscove
     Arc::new(RwLock::new(registry))
 }
 
+/// Re-index all tools into an existing shared discovery index.
+///
+/// Called after hot reload adds, removes, or replaces backends to keep
+/// the search index in sync with the proxy's current tool set.
+pub async fn reindex(index: &SharedDiscoveryIndex, proxy: &mut McpProxy, separator: &str) {
+    use tower::Service;
+    use tower_mcp::protocol::{ListToolsParams, McpRequest, McpResponse, RequestId};
+    use tower_mcp::router::{Extensions, RouterRequest};
+
+    let req = RouterRequest {
+        id: RequestId::Number(0),
+        inner: McpRequest::ListTools(ListToolsParams::default()),
+        extensions: Extensions::new(),
+    };
+
+    let tools = match proxy.call(req).await {
+        Ok(resp) => match resp.inner {
+            Ok(McpResponse::ListTools(result)) => result.tools,
+            _ => vec![],
+        },
+        Err(_) => vec![],
+    };
+
+    let mut registry = DiscoveryRegistry::new();
+    index_tools(&mut registry, &tools, separator);
+
+    let mut guard = index.write().await;
+    *guard = registry;
+
+    tracing::info!(tools_indexed = tools.len(), "Re-indexed tool discovery");
+}
+
 /// Index MCP tool definitions into the discovery registry.
 ///
 /// Groups tools by backend namespace (derived from the separator) and registers

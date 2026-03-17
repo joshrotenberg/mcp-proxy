@@ -18,17 +18,36 @@ use tower_mcp::{RouterRequest, RouterResponse};
 use crate::config::{BackendConfig, ProxyConfig, TransportType};
 
 /// Spawn a background task that watches the config file and adds new backends.
-pub fn spawn_config_watcher(config_path: PathBuf, proxy: McpProxy) {
+pub fn spawn_config_watcher(
+    config_path: PathBuf,
+    proxy: McpProxy,
+    #[cfg(feature = "discovery")] discovery_index: Option<(
+        crate::discovery::SharedDiscoveryIndex,
+        String,
+    )>,
+) {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("hot reload runtime");
-        rt.block_on(watch_loop(config_path, proxy));
+        rt.block_on(watch_loop(
+            config_path,
+            proxy,
+            #[cfg(feature = "discovery")]
+            discovery_index,
+        ));
     });
 }
 
-async fn watch_loop(config_path: PathBuf, proxy: McpProxy) {
+async fn watch_loop(
+    config_path: PathBuf,
+    proxy: McpProxy,
+    #[cfg(feature = "discovery")] discovery_index: Option<(
+        crate::discovery::SharedDiscoveryIndex,
+        String,
+    )>,
+) {
     let (tx, rx) = std_mpsc::channel();
 
     let mut debouncer = match new_debouncer(Duration::from_secs(2), tx) {
@@ -165,6 +184,13 @@ async fn watch_loop(config_path: PathBuf, proxy: McpProxy) {
 
         // Update fingerprints to reflect current state
         backend_fingerprints = new_fingerprints;
+
+        // Re-index discovery if enabled
+        #[cfg(feature = "discovery")]
+        if let Some((ref index, ref separator)) = discovery_index {
+            let mut proxy_clone = proxy.clone();
+            crate::discovery::reindex(index, &mut proxy_clone, separator).await;
+        }
     }
 }
 

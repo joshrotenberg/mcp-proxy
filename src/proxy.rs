@@ -30,6 +30,8 @@ pub struct Proxy {
     session_handle: SessionHandle,
     inner: McpProxy,
     config: ProxyConfig,
+    #[cfg(feature = "discovery")]
+    discovery_index: Option<crate::discovery::SharedDiscoveryIndex>,
 }
 
 impl Proxy {
@@ -105,12 +107,13 @@ impl Proxy {
 
         // Build discovery index if enabled
         #[cfg(feature = "discovery")]
-        let discovery_tools = if config.proxy.tool_discovery {
+        let (discovery_index, discovery_tools) = if config.proxy.tool_discovery {
             let index =
                 crate::discovery::build_index(&mut proxy_for_caller, &config.proxy.separator).await;
-            Some(crate::discovery::build_discovery_tools(index))
+            let tools = crate::discovery::build_discovery_tools(index.clone());
+            (Some(index), Some(tools))
         } else {
-            None
+            (None, None)
         };
         #[cfg(not(feature = "discovery"))]
         let discovery_tools: Option<Vec<tower_mcp::Tool>> = None;
@@ -135,6 +138,8 @@ impl Proxy {
             session_handle,
             inner: proxy_for_caller,
             config,
+            #[cfg(feature = "discovery")]
+            discovery_index,
         })
     }
 
@@ -156,7 +161,14 @@ impl Proxy {
     /// without restarting the proxy.
     pub fn enable_hot_reload(&self, config_path: std::path::PathBuf) {
         tracing::info!("Hot reload enabled, watching config file for changes");
-        crate::reload::spawn_config_watcher(config_path, self.inner.clone());
+        crate::reload::spawn_config_watcher(
+            config_path,
+            self.inner.clone(),
+            #[cfg(feature = "discovery")]
+            self.discovery_index
+                .as_ref()
+                .map(|idx| (idx.clone(), self.config.proxy.separator.clone())),
+        );
     }
 
     /// Consume the proxy and return the axum Router and SessionHandle.
