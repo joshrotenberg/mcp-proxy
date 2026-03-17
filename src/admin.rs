@@ -409,6 +409,53 @@ struct AggregateStats {
     active_sessions: usize,
 }
 
+async fn handle_list_sessions_detail(
+    Extension(session_handle): Extension<SessionHandle>,
+) -> Json<Vec<SessionInfoResponse>> {
+    let sessions = session_handle.list_sessions().await;
+    Json(
+        sessions
+            .into_iter()
+            .map(|s| SessionInfoResponse {
+                id: s.id,
+                uptime_seconds: s.created_at.as_secs(),
+                idle_seconds: s.last_activity.as_secs(),
+            })
+            .collect(),
+    )
+}
+
+#[derive(Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+struct SessionInfoResponse {
+    id: String,
+    uptime_seconds: u64,
+    idle_seconds: u64,
+}
+
+async fn handle_terminate_session(
+    Extension(session_handle): Extension<SessionHandle>,
+    Path(id): Path<String>,
+) -> (StatusCode, Json<BackendOpResponse>) {
+    if session_handle.terminate_session(&id).await {
+        (
+            StatusCode::OK,
+            Json(BackendOpResponse {
+                ok: true,
+                message: format!("Session '{id}' terminated"),
+            }),
+        )
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(BackendOpResponse {
+                ok: false,
+                message: format!("Session '{id}' not found"),
+            }),
+        )
+    }
+}
+
 /// OpenAPI spec for the admin API.
 ///
 /// Available at `GET /admin/openapi.json` when the `openapi` feature is enabled.
@@ -457,6 +504,8 @@ pub fn admin_router(
         .route("/cache/clear", axum::routing::post(handle_cache_clear))
         .route("/metrics", get(handle_metrics))
         .route("/sessions", get(handle_list_sessions))
+        .route("/sessions/detail", get(handle_list_sessions_detail))
+        .route("/sessions/{id}", delete(handle_terminate_session))
         .route("/stats", get(handle_aggregate_stats))
         .route("/config", get(handle_get_config))
         .route("/config/validate", post(handle_validate_config))
