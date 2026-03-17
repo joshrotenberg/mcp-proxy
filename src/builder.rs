@@ -271,6 +271,202 @@ impl ProxyBuilder {
         self
     }
 
+    /// Set the timeout for the last added backend.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no backends have been added.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mcp_proxy::builder::ProxyBuilder;
+    ///
+    /// let config = ProxyBuilder::new("my-proxy")
+    ///     .http_backend("api", "http://api:8080")
+    ///     .timeout(30)
+    ///     .into_config();
+    ///
+    /// assert_eq!(config.backends[0].timeout.as_ref().unwrap().seconds, 30);
+    /// ```
+    pub fn timeout(mut self, seconds: u64) -> Self {
+        let backend = self
+            .config
+            .backends
+            .last_mut()
+            .expect("timeout called with no backends");
+        backend.timeout = Some(TimeoutConfig { seconds });
+        self
+    }
+
+    /// Set the rate limit for the last added backend.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no backends have been added.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mcp_proxy::builder::ProxyBuilder;
+    ///
+    /// let config = ProxyBuilder::new("my-proxy")
+    ///     .http_backend("api", "http://api:8080")
+    ///     .rate_limit(100, 1)
+    ///     .into_config();
+    ///
+    /// let rl = config.backends[0].rate_limit.as_ref().unwrap();
+    /// assert_eq!(rl.requests, 100);
+    /// assert_eq!(rl.period_seconds, 1);
+    /// ```
+    pub fn rate_limit(mut self, requests: usize, period_seconds: u64) -> Self {
+        let backend = self
+            .config
+            .backends
+            .last_mut()
+            .expect("rate_limit called with no backends");
+        backend.rate_limit = Some(RateLimitConfig {
+            requests,
+            period_seconds,
+        });
+        self
+    }
+
+    /// Set the circuit breaker for the last added backend.
+    ///
+    /// Uses sensible defaults for other fields: minimum 5 calls,
+    /// 30-second wait duration, and 3 half-open calls.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no backends have been added.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mcp_proxy::builder::ProxyBuilder;
+    ///
+    /// let config = ProxyBuilder::new("my-proxy")
+    ///     .http_backend("api", "http://api:8080")
+    ///     .circuit_breaker(0.5)
+    ///     .into_config();
+    ///
+    /// let cb = config.backends[0].circuit_breaker.as_ref().unwrap();
+    /// assert!((cb.failure_rate_threshold - 0.5).abs() < f64::EPSILON);
+    /// ```
+    pub fn circuit_breaker(mut self, failure_rate: f64) -> Self {
+        let backend = self
+            .config
+            .backends
+            .last_mut()
+            .expect("circuit_breaker called with no backends");
+        backend.circuit_breaker = Some(CircuitBreakerConfig {
+            failure_rate_threshold: failure_rate,
+            minimum_calls: 5,
+            wait_duration_seconds: 30,
+            permitted_calls_in_half_open: 3,
+        });
+        self
+    }
+
+    /// Set the tool allowlist for the last added backend.
+    ///
+    /// Only the listed tools will be exposed through the proxy.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no backends have been added.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mcp_proxy::builder::ProxyBuilder;
+    ///
+    /// let config = ProxyBuilder::new("my-proxy")
+    ///     .http_backend("api", "http://api:8080")
+    ///     .expose_tools(&["read_file", "list_dir"])
+    ///     .into_config();
+    ///
+    /// assert_eq!(config.backends[0].expose_tools, vec!["read_file", "list_dir"]);
+    /// ```
+    pub fn expose_tools(mut self, tools: &[&str]) -> Self {
+        let backend = self
+            .config
+            .backends
+            .last_mut()
+            .expect("expose_tools called with no backends");
+        backend.expose_tools = tools.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
+    /// Set the tool denylist for the last added backend.
+    ///
+    /// The listed tools will be hidden from clients.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no backends have been added.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mcp_proxy::builder::ProxyBuilder;
+    ///
+    /// let config = ProxyBuilder::new("my-proxy")
+    ///     .http_backend("api", "http://api:8080")
+    ///     .hide_tools(&["dangerous_op"])
+    ///     .into_config();
+    ///
+    /// assert_eq!(config.backends[0].hide_tools, vec!["dangerous_op"]);
+    /// ```
+    pub fn hide_tools(mut self, tools: &[&str]) -> Self {
+        let backend = self
+            .config
+            .backends
+            .last_mut()
+            .expect("hide_tools called with no backends");
+        backend.hide_tools = tools.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
+    /// Set the retry policy for the last added backend.
+    ///
+    /// Uses sensible defaults: 100ms initial backoff, 5000ms max backoff,
+    /// no budget limit.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no backends have been added.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mcp_proxy::builder::ProxyBuilder;
+    ///
+    /// let config = ProxyBuilder::new("my-proxy")
+    ///     .http_backend("api", "http://api:8080")
+    ///     .retry(3)
+    ///     .into_config();
+    ///
+    /// let retry = config.backends[0].retry.as_ref().unwrap();
+    /// assert_eq!(retry.max_retries, 3);
+    /// ```
+    pub fn retry(mut self, max_retries: u32) -> Self {
+        let backend = self
+            .config
+            .backends
+            .last_mut()
+            .expect("retry called with no backends");
+        backend.retry = Some(RetryConfig {
+            max_retries,
+            initial_backoff_ms: 100,
+            max_backoff_ms: 5000,
+            budget_percent: None,
+            min_retries_per_sec: 10,
+        });
+        self
+    }
+
     /// Extract the built [`ProxyConfig`] without connecting to backends.
     ///
     /// Useful for inspection, serialization, or passing to
@@ -441,6 +637,46 @@ mod tests {
             .into_config();
 
         assert_eq!(config.backends[0].bearer_token.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn test_builder_ergonomic_backend_methods() {
+        let config = ProxyBuilder::new("test")
+            .http_backend("api", "http://api:8080")
+            .timeout(30)
+            .rate_limit(100, 1)
+            .circuit_breaker(0.7)
+            .expose_tools(&["read_file", "list_dir"])
+            .retry(5)
+            .stdio_backend("files", "npx", &["-y", "@mcp/server-files"])
+            .hide_tools(&["dangerous_op"])
+            .timeout(60)
+            .into_config();
+
+        // First backend: api
+        let api = &config.backends[0];
+        assert_eq!(api.timeout.as_ref().unwrap().seconds, 30);
+        let rl = api.rate_limit.as_ref().unwrap();
+        assert_eq!(rl.requests, 100);
+        assert_eq!(rl.period_seconds, 1);
+        let cb = api.circuit_breaker.as_ref().unwrap();
+        assert!((cb.failure_rate_threshold - 0.7).abs() < f64::EPSILON);
+        assert_eq!(cb.minimum_calls, 5);
+        assert_eq!(cb.wait_duration_seconds, 30);
+        assert_eq!(cb.permitted_calls_in_half_open, 3);
+        assert_eq!(api.expose_tools, vec!["read_file", "list_dir"]);
+        let retry = api.retry.as_ref().unwrap();
+        assert_eq!(retry.max_retries, 5);
+        assert_eq!(retry.initial_backoff_ms, 100);
+        assert_eq!(retry.max_backoff_ms, 5000);
+        assert!(retry.budget_percent.is_none());
+
+        // Second backend: files
+        let files = &config.backends[1];
+        assert_eq!(files.hide_tools, vec!["dangerous_op"]);
+        assert_eq!(files.timeout.as_ref().unwrap().seconds, 60);
+        assert!(files.circuit_breaker.is_none());
+        assert!(files.rate_limit.is_none());
     }
 
     #[test]
