@@ -1,64 +1,119 @@
-# mcp-proxy configuration
+# mcp-proxy configuration reference
+#
+# All options shown. Uncommented options are commonly used defaults;
+# commented options show available settings with their default values.
+
+# =============================================================================
+# Proxy Settings
+# =============================================================================
 
 [proxy]
 name = "my-proxy"
-version = "0.1.0"
-# Separator between namespace and tool/resource/prompt names
-separator = "/"
-# Graceful shutdown timeout (seconds, default: 30)
-# shutdown_timeout_seconds = 30
-# Watch config file for new backends and add them without restart
+# version = "0.1.0"
+
+# Namespace separator between backend name and tool/resource/prompt names
+# separator = "/"
+
+# Watch config file for backend changes and apply without restart
 # hot_reload = true
 
+# Graceful shutdown timeout (seconds)
+# shutdown_timeout_seconds = 30
+
+# Import backends from a Claude/Cursor .mcp.json file
+# Backends defined here take precedence over imported ones with the same name
+# import_backends = ".mcp.json"
+
+# BM25-based tool discovery (adds proxy/search_tools, proxy/similar_tools,
+# proxy/tool_categories). Useful when aggregating many backends.
+# tool_discovery = true
+
+# Optional instructions text sent to MCP clients on initialize
+# instructions = "This proxy aggregates multiple MCP backends."
+
+# Global rate limit applied to all requests before per-backend dispatch
+# [proxy.rate_limit]
+# requests = 100
+# period_seconds = 1
+
 [proxy.listen]
-# HTTP transport binding
 host = "127.0.0.1"
 port = 8080
 
-# Optional: custom instructions sent to clients on initialize
-# instructions = "This proxy aggregates multiple MCP backends."
-
-# --- Backends ---
+# =============================================================================
+# Backends
+# =============================================================================
 # Each backend is an MCP server the proxy routes to.
 # The name becomes the namespace prefix for all tools/resources/prompts.
 
+# --- Stdio backend (subprocess) ---
+
 [[backends]]
 name = "files"
-# Subprocess backend -- spawns a child process
 transport = "stdio"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 
-# Per-backend timeout (seconds)
+# Per-backend timeout
 [backends.timeout]
 seconds = 30
 
-# Per-backend concurrency limit
-[backends.concurrency]
-max_concurrent = 10
+# --- HTTP backend (remote server) ---
 
-# Per-backend response caching
-# [backends.cache]
-# resource_ttl_seconds = 300   # cache resource reads for 5 minutes
-# tool_ttl_seconds = 60        # cache tool call results for 1 minute
-# max_entries = 1000            # max cached entries (default: 1000)
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://mcp-server:8080"
+# Static bearer token for authenticating TO this backend
+# bearer_token = "${BACKEND_TOKEN}"
+# Forward the client's inbound auth token to this backend
+# forward_auth = true
 
-# --- Tool Aliasing ---
-# Rename tools exposed by this backend
-# [[backends.aliases]]
-# from = "read_file"        # backend's original tool name
-# to = "read"               # exposed as files/read
+# --- WebSocket backend ---
+
+# [[backends]]
+# name = "ws-backend"
+# transport = "websocket"
+# url = "ws://localhost:9090/ws"
+# # Or secure WebSocket:
+# # url = "wss://mcp.example.com/ws"
+# # bearer_token = "${WS_TOKEN}"
+
+# =============================================================================
+# Per-Backend Middleware
+# =============================================================================
+# These options can be added to any backend above.
 
 # --- Capability Filtering ---
 # Only expose specific tools (allowlist -- mutually exclusive with hide_tools)
-# expose_tools = ["read_file", "list_directory", "search_files"]
-# Or hide specific tools (denylist)
+# expose_tools = ["read_file", "list_directory"]
+# Or hide specific tools (denylist). Supports glob patterns: "write_*"
 # hide_tools = ["write_file", "delete_file"]
-# Same for resources and prompts
+# Same for resources and prompts:
 # expose_resources = ["file:///public"]
 # hide_resources = ["file:///etc/shadow"]
 # expose_prompts = ["help"]
 # hide_prompts = ["admin_prompt"]
+
+# Annotation-based filtering
+# hide_destructive = true     # Hide tools with destructive_hint annotation
+# read_only_only = true       # Only expose tools with read_only_hint annotation
+
+# --- Tool Aliasing ---
+# Rename tools exposed by this backend
+# [[backends.aliases]]
+# from = "read_file"          # backend's original tool name
+# to = "read"                 # exposed as files/read
+
+# --- Parameter Overrides ---
+# Hide or rename tool parameters
+# [[backends.param_overrides]]
+# tool = "query"
+# hide = ["internal_flag"]              # hide these params from clients
+# [backends.param_overrides.rename]
+# old_param = "new_param"               # rename for clarity
+# [backends.param_overrides.defaults]
+# hidden_param = "default_value"        # inject default for hidden params
 
 # --- Argument Injection ---
 # Default args merged into all tool calls for this backend (does not overwrite)
@@ -69,96 +124,124 @@ max_concurrent = 10
 # [[backends.inject_args]]
 # tool = "query"
 # args = { read_only = true, max_rows = 1000 }
+# # Force overwrite existing arguments:
+# # overwrite = true
 
-# Force overwrite existing arguments
-# [[backends.inject_args]]
-# tool = "dangerous_op"
-# args = { dry_run = true }
-# overwrite = true
+# --- Concurrency ---
+# [backends.concurrency]
+# max_concurrent = 10
 
-[[backends]]
-name = "github"
-transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-github"]
+# --- Response Caching ---
+# [backends.cache]
+# resource_ttl_seconds = 300   # cache resource reads for 5 minutes
+# tool_ttl_seconds = 60        # cache tool call results for 1 minute
+# max_entries = 1000            # max cached entries
 
-[backends.timeout]
-seconds = 60
+# --- Circuit Breaker ---
+# [backends.circuit_breaker]
+# failure_rate_threshold = 0.5     # 0.0-1.0
+# minimum_calls = 5                # min calls before evaluating
+# wait_duration_seconds = 30       # seconds in open before half-open
+# permitted_calls_in_half_open = 3
 
-# Environment variables passed to the subprocess
-[backends.env]
-GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}"
+# --- Rate Limit ---
+# [backends.rate_limit]
+# requests = 30
+# period_seconds = 1
 
-# Circuit breaker -- trips open after 50% failure rate
-[backends.circuit_breaker]
-failure_rate_threshold = 0.5     # 0.0-1.0
-minimum_calls = 5                # min calls before evaluating
-wait_duration_seconds = 30       # seconds in open before half-open
-permitted_calls_in_half_open = 3
-
-# Rate limit -- max requests per period
-[backends.rate_limit]
-requests = 30
-period_seconds = 1
-
-# Retry with exponential backoff
+# --- Retry ---
 # [backends.retry]
-# max_retries = 3              # max retry attempts (default: 3)
-# initial_backoff_ms = 100     # initial backoff (default: 100)
-# max_backoff_ms = 5000        # max backoff (default: 5000)
+# max_retries = 3              # max retry attempts
+# initial_backoff_ms = 100     # initial backoff
+# max_backoff_ms = 5000        # max backoff cap
 # budget_percent = 20.0        # max % of requests that can be retries
 # min_retries_per_sec = 10     # min retries/sec regardless of budget
 
-# Request hedging -- fire parallel requests to reduce tail latency
+# --- Request Hedging ---
+# Fire parallel requests to reduce tail latency
 # [backends.hedging]
-# delay_ms = 200     # wait before sending hedge (default: 200, 0 = immediate)
-# max_hedges = 1     # max additional hedge requests (default: 1)
+# delay_ms = 200     # wait before sending hedge (0 = immediate)
+# max_hedges = 1     # max additional hedge requests
 
-# Outlier detection -- passive health checks that eject unhealthy backends
+# --- Outlier Detection ---
+# Passive health checks that eject unhealthy backends
 # [backends.outlier_detection]
-# consecutive_errors = 5          # errors before ejection (default: 5)
-# interval_seconds = 10           # evaluation interval (default: 10)
-# base_ejection_seconds = 30      # ejection duration (default: 30)
-# max_ejection_percent = 50       # max % of backends ejectable (default: 50)
+# consecutive_errors = 5          # errors before ejection
+# interval_seconds = 10           # evaluation interval
+# base_ejection_seconds = 30      # ejection duration
+# max_ejection_percent = 50       # max % of backends ejectable
 
-# HTTP backend -- connects to a remote MCP server
+# =============================================================================
+# Traffic Routing
+# =============================================================================
+
+# --- Failover ---
+# Automatically route to a fallback backend when the primary fails
 # [[backends]]
-# name = "remote"
+# name = "api-fallback"
 # transport = "http"
-# url = "http://mcp-server:8080"
-# # Static bearer token for authenticating to this backend
-# bearer_token = "${BACKEND_TOKEN}"
-# # Forward the client's inbound auth token to this backend
-# forward_auth = true
-# [backends.timeout]
-# seconds = 60
+# url = "http://api-fallback:8080"
+# failover_for = "api"          # name of the primary backend
 
-# --- Traffic Mirroring ---
-# Shadow traffic to a canary backend (fire-and-forget).
-# The mirror receives a copy of matching requests; responses are discarded.
+# --- Canary Routing ---
+# Split traffic between primary and canary by weight
 # [[backends]]
-# name = "api-v2"
+# name = "api-canary"
 # transport = "http"
 # url = "http://api-v2:8080"
-# mirror_of = "api"          # name of the source backend to mirror
-# mirror_percent = 10        # percentage of requests to mirror (default: 100)
+# canary_of = "api"             # name of the primary backend
+# weight = 10                   # percentage of traffic to canary (1-100)
 
-# --- Auth (optional) ---
-# Uncomment ONE of the following auth blocks.
+# --- Traffic Mirroring ---
+# Shadow traffic to a mirror backend (fire-and-forget, responses discarded)
+# [[backends]]
+# name = "api-mirror"
+# transport = "http"
+# url = "http://api-v2:8080"
+# mirror_of = "api"             # name of the source backend
+# mirror_percent = 10           # percentage of requests to mirror
 
-# Bearer token auth:
+# =============================================================================
+# Composite Tools
+# =============================================================================
+# Fan-out a single tool call to multiple backend tools in parallel
+
+# [[composite_tools]]
+# name = "search_all"
+# description = "Search across all backends"
+# strategy = "parallel"
+# tools = ["files/search_files", "api/search"]
+
+# =============================================================================
+# Authentication
+# =============================================================================
+# Uncomment ONE auth block.
+
+# --- Bearer token auth ---
 # [auth]
 # type = "bearer"
-# tokens = ["my-secret-token"]
+# tokens = ["${API_TOKEN}"]
 
-# JWT/JWKS auth with RBAC:
+# --- Bearer tokens with per-token tool scoping ---
+# [auth]
+# type = "bearer"
+# tokens = ["${ADMIN_TOKEN}"]       # unrestricted tokens
+#
+# [[auth.scoped_tokens]]
+# token = "${FRONTEND_TOKEN}"
+# allow_tools = ["files/read_file", "files/list_directory"]
+#
+# [[auth.scoped_tokens]]
+# token = "${READONLY_TOKEN}"
+# deny_tools = ["files/write_file", "files/delete_file"]
+
+# --- JWT/JWKS auth with RBAC ---
 # [auth]
 # type = "jwt"
 # issuer = "https://auth.example.com"
 # audience = "mcp-proxy"
 # jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 #
-# # Define roles with tool access control
 # [[auth.roles]]
 # name = "reader"
 # allow_tools = ["files/read_file", "files/list_directory"]
@@ -167,20 +250,70 @@ period_seconds = 1
 # name = "admin"
 # # Empty allow_tools = all tools allowed
 #
-# # Map JWT claims to roles
 # [auth.role_mapping]
 # claim = "scope"
 # mapping = { "mcp:read" = "reader", "mcp:admin" = "admin" }
 
-# --- Performance ---
+# --- OAuth 2.1 with auto-discovery ---
+# [auth]
+# type = "oauth"
+# issuer = "https://accounts.google.com"   # or any OIDC/OAuth 2.1 provider
+# audience = "mcp-proxy"
+#
+# # Token validation strategy: "jwt" (default), "introspection", or "both"
+# # token_validation = "jwt"
+#
+# # For introspection or "both" mode, provide client credentials:
+# # client_id = "my-client-id"
+# # client_secret = "${OAUTH_CLIENT_SECRET}"
+#
+# # Override auto-discovered endpoints:
+# # jwks_uri = "https://auth.example.com/custom/jwks"
+# # introspection_endpoint = "https://auth.example.com/custom/introspect"
+#
+# # Required scopes for access:
+# # required_scopes = ["mcp:read"]
+#
+# # RBAC roles (same as JWT auth):
+# # [[auth.roles]]
+# # name = "admin"
+# # [auth.role_mapping]
+# # claim = "scope"
+# # mapping = { "mcp:admin" = "admin" }
+
+# =============================================================================
+# Cache Backend
+# =============================================================================
+# Global cache backend for per-backend response caching.
+# Default: in-memory (moka). External backends share state across instances.
+
+# [cache]
+# backend = "memory"             # "memory" (default), "redis", or "sqlite"
+# # For redis:
+# # backend = "redis"
+# # url = "redis://localhost:6379"
+# # prefix = "mcp-proxy:"        # key prefix
+# # For sqlite:
+# # backend = "sqlite"
+# # url = "cache.db"
+
+# =============================================================================
+# Performance
+# =============================================================================
+
 # [performance]
-# coalesce_requests = true   # deduplicate identical concurrent tool calls
+# coalesce_requests = true       # deduplicate identical concurrent tool calls
 
-# --- Security ---
+# =============================================================================
+# Security
+# =============================================================================
+
 # [security]
-# max_argument_size = 1048576  # 1MB limit on tool call arguments
+# max_argument_size = 1048576    # 1MB limit on tool call arguments
 
-# --- Observability ---
+# =============================================================================
+# Observability
+# =============================================================================
 
 [observability]
 # Structured audit logging (target: mcp::audit)
