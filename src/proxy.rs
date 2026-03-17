@@ -30,6 +30,8 @@ pub struct Proxy {
     session_handle: SessionHandle,
     inner: McpProxy,
     config: ProxyConfig,
+    #[cfg(feature = "discovery")]
+    discovery_index: Option<crate::discovery::SharedDiscoveryIndex>,
 }
 
 impl Proxy {
@@ -41,7 +43,7 @@ impl Proxy {
     pub async fn from_config(config: ProxyConfig) -> Result<Self> {
         let mcp_proxy = build_mcp_proxy(&config).await?;
         let proxy_for_admin = mcp_proxy.clone();
-        let proxy_for_caller = mcp_proxy.clone();
+        let mut proxy_for_caller = mcp_proxy.clone();
         let proxy_for_management = mcp_proxy.clone();
 
         // Install Prometheus metrics recorder (must happen before middleware)
@@ -103,12 +105,26 @@ impl Proxy {
         );
         tracing::info!("Admin API enabled at /admin/backends");
 
+        // Build discovery index if enabled
+        #[cfg(feature = "discovery")]
+        let (discovery_index, discovery_tools) = if config.proxy.tool_discovery {
+            let index =
+                crate::discovery::build_index(&mut proxy_for_caller, &config.proxy.separator).await;
+            let tools = crate::discovery::build_discovery_tools(index.clone());
+            (Some(index), Some(tools))
+        } else {
+            (None, None)
+        };
+        #[cfg(not(feature = "discovery"))]
+        let discovery_tools: Option<Vec<tower_mcp::Tool>> = None;
+
         // MCP admin tools (proxy/ namespace)
         if let Err(e) = crate::admin_tools::register_admin_tools(
             &proxy_for_caller,
             admin_state,
             session_handle.clone(),
             &config,
+            discovery_tools,
         )
         .await
         {
@@ -122,6 +138,8 @@ impl Proxy {
             session_handle,
             inner: proxy_for_caller,
             config,
+            #[cfg(feature = "discovery")]
+            discovery_index,
         })
     }
 
@@ -143,7 +161,14 @@ impl Proxy {
     /// without restarting the proxy.
     pub fn enable_hot_reload(&self, config_path: std::path::PathBuf) {
         tracing::info!("Hot reload enabled, watching config file for changes");
-        crate::reload::spawn_config_watcher(config_path, self.inner.clone());
+        crate::reload::spawn_config_watcher(
+            config_path,
+            self.inner.clone(),
+            #[cfg(feature = "discovery")]
+            self.discovery_index
+                .as_ref()
+                .map(|idx| (idx.clone(), self.config.proxy.separator.clone())),
+        );
     }
 
     /// Consume the proxy and return the axum Router and SessionHandle.

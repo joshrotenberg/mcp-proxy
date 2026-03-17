@@ -97,6 +97,11 @@ pub struct ProxySettings {
     pub import_backends: Option<String>,
     /// Global rate limit applied to all requests before per-backend dispatch.
     pub rate_limit: Option<GlobalRateLimitConfig>,
+    /// Enable BM25-based tool discovery and search (default: false).
+    /// Adds `proxy/search_tools`, `proxy/similar_tools`, and
+    /// `proxy/tool_categories` tools for finding tools across backends.
+    #[serde(default)]
+    pub tool_discovery: bool,
 }
 
 /// Global rate limit configuration applied across all backends.
@@ -2577,5 +2582,29 @@ mod tests {
             config.backends[0].bearer_token.as_deref(),
             Some("my-secret")
         );
+    }
+
+    #[test]
+    fn test_tool_discovery_defaults_false() {
+        let config = ProxyConfig::parse(minimal_config()).unwrap();
+        assert!(!config.proxy.tool_discovery);
+    }
+
+    #[test]
+    fn test_tool_discovery_enabled() {
+        let toml = r#"
+        [proxy]
+        name = "discovery"
+        tool_discovery = true
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        assert!(config.proxy.tool_discovery);
     }
 }

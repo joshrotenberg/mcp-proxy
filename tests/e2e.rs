@@ -1637,3 +1637,140 @@ mod websocket_transport {
         server_handle.abort();
     }
 }
+
+// ===========================================================================
+// Tier 13: BM25 tool discovery
+// ===========================================================================
+
+#[cfg(feature = "discovery")]
+mod tool_discovery {
+    use tower::Service;
+    use tower_mcp::protocol::{CallToolParams, ListToolsParams, McpRequest, RequestId};
+    use tower_mcp::router::{Extensions, RouterRequest, RouterResponse};
+
+    use super::{build_proxy, get_tool_names, get_tool_result_text};
+    use std::convert::Infallible;
+
+    async fn call<S>(svc: &mut S, request: McpRequest) -> RouterResponse
+    where
+        S: Service<RouterRequest, Response = RouterResponse, Error = Infallible>,
+    {
+        let req = RouterRequest {
+            id: RequestId::Number(1),
+            inner: request,
+            extensions: Extensions::new(),
+        };
+        svc.call(req).await.expect("infallible")
+    }
+
+    #[tokio::test]
+    async fn e2e_discovery_index_and_search() {
+        let mut proxy = build_proxy().await;
+
+        // Build the discovery index
+        let index = mcp_proxy::discovery::build_index(&mut proxy, "/").await;
+        let discovery_tools = mcp_proxy::discovery::build_discovery_tools(index);
+
+        // Register discovery tools as a backend
+        let router = tower_mcp::McpRouter::new().server_info("discovery", "1.0.0");
+        let mut router = router;
+        for tool in discovery_tools {
+            router = router.tool(tool);
+        }
+        let transport = tower_mcp::client::ChannelTransport::new(router);
+        proxy
+            .add_backend("discovery", transport)
+            .await
+            .expect("should add discovery backend");
+
+        // List tools should include discovery tools
+        let resp = call(
+            &mut proxy,
+            McpRequest::ListTools(ListToolsParams::default()),
+        )
+        .await;
+        let names = get_tool_names(&resp);
+        assert!(
+            names.contains(&"discovery/search_tools".to_string()),
+            "missing search_tools: {names:?}"
+        );
+        assert!(
+            names.contains(&"discovery/similar_tools".to_string()),
+            "missing similar_tools: {names:?}"
+        );
+        assert!(
+            names.contains(&"discovery/tool_categories".to_string()),
+            "missing tool_categories: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn e2e_discovery_search_finds_tools() {
+        let mut proxy = build_proxy().await;
+
+        let index = mcp_proxy::discovery::build_index(&mut proxy, "/").await;
+        let discovery_tools = mcp_proxy::discovery::build_discovery_tools(index);
+
+        let router = tower_mcp::McpRouter::new().server_info("discovery", "1.0.0");
+        let mut router = router;
+        for tool in discovery_tools {
+            router = router.tool(tool);
+        }
+        let transport = tower_mcp::client::ChannelTransport::new(router);
+        proxy
+            .add_backend("discovery", transport)
+            .await
+            .expect("should add discovery backend");
+
+        // Search for "add" should find math/add
+        let resp = call(
+            &mut proxy,
+            McpRequest::CallTool(CallToolParams {
+                name: "discovery/search_tools".to_string(),
+                arguments: serde_json::json!({"query": "add numbers"}),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await;
+        let text = get_tool_result_text(&resp);
+        assert!(
+            text.contains("add"),
+            "search should find 'add' tool: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn e2e_discovery_categories() {
+        let mut proxy = build_proxy().await;
+
+        let index = mcp_proxy::discovery::build_index(&mut proxy, "/").await;
+        let discovery_tools = mcp_proxy::discovery::build_discovery_tools(index);
+
+        let router = tower_mcp::McpRouter::new().server_info("discovery", "1.0.0");
+        let mut router = router;
+        for tool in discovery_tools {
+            router = router.tool(tool);
+        }
+        let transport = tower_mcp::client::ChannelTransport::new(router);
+        proxy
+            .add_backend("discovery", transport)
+            .await
+            .expect("should add discovery backend");
+
+        // Categories should include math and text backends
+        let resp = call(
+            &mut proxy,
+            McpRequest::CallTool(CallToolParams {
+                name: "discovery/tool_categories".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await;
+        let text = get_tool_result_text(&resp);
+        assert!(text.contains("math"), "should have math category: {text}");
+        assert!(text.contains("text"), "should have text category: {text}");
+    }
+}
