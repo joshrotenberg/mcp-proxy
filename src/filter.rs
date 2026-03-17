@@ -246,7 +246,7 @@ mod tests {
     fn allow_filter(namespace: &str, tools: &[&str]) -> BackendFilter {
         BackendFilter {
             namespace: namespace.to_string(),
-            tool_filter: NameFilter::AllowList(tools.iter().map(|s| s.to_string()).collect()),
+            tool_filter: NameFilter::allow_list(tools.iter().map(|s| s.to_string())).unwrap(),
             resource_filter: NameFilter::PassAll,
             prompt_filter: NameFilter::PassAll,
             hide_destructive: false,
@@ -257,7 +257,7 @@ mod tests {
     fn deny_filter(namespace: &str, tools: &[&str]) -> BackendFilter {
         BackendFilter {
             namespace: namespace.to_string(),
-            tool_filter: NameFilter::DenyList(tools.iter().map(|s| s.to_string()).collect()),
+            tool_filter: NameFilter::deny_list(tools.iter().map(|s| s.to_string())).unwrap(),
             resource_filter: NameFilter::PassAll,
             prompt_filter: NameFilter::PassAll,
             hide_destructive: false,

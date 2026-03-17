@@ -302,7 +302,7 @@ async fn e2e_filter_hides_tools_from_listing() {
     let proxy = build_proxy().await;
     let filters = vec![BackendFilter {
         namespace: "text/".to_string(),
-        tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
+        tool_filter: NameFilter::deny_list(["upper".to_string()]).unwrap(),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
         hide_destructive: false,
@@ -323,7 +323,7 @@ async fn e2e_filter_blocks_call_to_hidden_tool() {
     let proxy = build_proxy().await;
     let filters = vec![BackendFilter {
         namespace: "text/".to_string(),
-        tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
+        tool_filter: NameFilter::deny_list(["upper".to_string()]).unwrap(),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
         hide_destructive: false,
@@ -346,7 +346,7 @@ async fn e2e_filter_allowlist_only_permits_listed_tools() {
     let proxy = build_proxy().await;
     let filters = vec![BackendFilter {
         namespace: "math/".to_string(),
-        tool_filter: NameFilter::AllowList(["add".to_string()].into()),
+        tool_filter: NameFilter::allow_list(["add".to_string()]).unwrap(),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
         hide_destructive: false,
@@ -519,7 +519,7 @@ async fn e2e_full_stack_filter_alias_inject_validate() {
     // Filter out text/upper
     let filters = vec![BackendFilter {
         namespace: "text/".to_string(),
-        tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
+        tool_filter: NameFilter::deny_list(["upper".to_string()]).unwrap(),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
         hide_destructive: false,
@@ -1204,7 +1204,7 @@ async fn e2e_filter_then_cache_filters_before_caching() {
     // Filter out text/upper, then cache math/
     let filters = vec![BackendFilter {
         namespace: "text/".to_string(),
-        tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
+        tool_filter: NameFilter::deny_list(["upper".to_string()]).unwrap(),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
         hide_destructive: false,
@@ -1243,7 +1243,7 @@ async fn e2e_alias_then_filter_uses_original_names_for_filter() {
     // Filter denies "upper" (original name)
     let filters = vec![BackendFilter {
         namespace: "text/".to_string(),
-        tool_filter: NameFilter::DenyList(["upper".to_string()].into()),
+        tool_filter: NameFilter::deny_list(["upper".to_string()]).unwrap(),
         resource_filter: NameFilter::PassAll,
         prompt_filter: NameFilter::PassAll,
         hide_destructive: false,
@@ -1319,7 +1319,7 @@ async fn e2e_multiple_filters_on_different_namespaces() {
     let filters = vec![
         BackendFilter {
             namespace: "math/".to_string(),
-            tool_filter: NameFilter::AllowList(["add".to_string()].into()),
+            tool_filter: NameFilter::allow_list(["add".to_string()]).unwrap(),
             resource_filter: NameFilter::PassAll,
             prompt_filter: NameFilter::PassAll,
             hide_destructive: false,
@@ -1327,7 +1327,7 @@ async fn e2e_multiple_filters_on_different_namespaces() {
         },
         BackendFilter {
             namespace: "text/".to_string(),
-            tool_filter: NameFilter::AllowList(["echo".to_string()].into()),
+            tool_filter: NameFilter::allow_list(["echo".to_string()]).unwrap(),
             resource_filter: NameFilter::PassAll,
             prompt_filter: NameFilter::PassAll,
             hide_destructive: false,
