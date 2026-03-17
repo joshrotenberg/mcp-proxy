@@ -742,7 +742,10 @@ fn build_middleware_stack(
     // Structured access logging
     if config.observability.access_log.enabled {
         tracing::info!("Access logging enabled (target: mcp::access)");
-        service = BoxCloneService::new(crate::access_log::AccessLogService::new(service));
+        service = BoxCloneService::new(crate::access_log::AccessLogService::new(
+            service,
+            &config.proxy.separator,
+        ));
     }
 
     // Audit logging
