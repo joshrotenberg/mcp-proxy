@@ -19,7 +19,9 @@ use tower_mcp::{CallToolResult, McpRouter, ToolBuilder};
 
 use mcp_proxy::alias::{AliasMap, AliasService};
 use mcp_proxy::cache::CacheService;
-use mcp_proxy::config::{BackendCacheConfig, BackendFilter, InjectArgsConfig, NameFilter};
+use mcp_proxy::config::{
+    BackendCacheConfig, BackendFilter, CacheBackendConfig, InjectArgsConfig, NameFilter,
+};
 use mcp_proxy::filter::CapabilityFilterService;
 use mcp_proxy::inject::{InjectArgsService, InjectionRules};
 use mcp_proxy::validation::{ValidationConfig, ValidationService};
@@ -602,7 +604,11 @@ async fn e2e_cache_hit_returns_same_result() {
         tool_ttl_seconds: 60,
         max_entries: 100,
     };
-    let (mut svc, handle) = CacheService::new(proxy, vec![("math/".to_string(), &cfg)]);
+    let (mut svc, handle) = CacheService::new(
+        proxy,
+        vec![("math/".to_string(), &cfg)],
+        &CacheBackendConfig::default(),
+    );
 
     let req = tool_call("math/add", serde_json::json!({"a": 5, "b": 5}));
 
@@ -614,7 +620,7 @@ async fn e2e_cache_hit_returns_same_result() {
     assert_eq!(get_tool_result_text(&resp1), "10");
     assert_eq!(get_tool_result_text(&resp2), "10");
 
-    let stats = handle.stats();
+    let stats = handle.stats().await;
     assert_eq!(stats[0].hits, 1);
     assert_eq!(stats[0].misses, 1);
 }
@@ -627,7 +633,11 @@ async fn e2e_cache_different_args_are_separate_entries() {
         tool_ttl_seconds: 60,
         max_entries: 100,
     };
-    let (mut svc, handle) = CacheService::new(proxy, vec![("math/".to_string(), &cfg)]);
+    let (mut svc, handle) = CacheService::new(
+        proxy,
+        vec![("math/".to_string(), &cfg)],
+        &CacheBackendConfig::default(),
+    );
 
     let _ = call(
         &mut svc,
@@ -640,7 +650,7 @@ async fn e2e_cache_different_args_are_separate_entries() {
     )
     .await;
 
-    let stats = handle.stats();
+    let stats = handle.stats().await;
     assert_eq!(
         stats[0].misses, 2,
         "different args = different cache entries"
@@ -656,17 +666,21 @@ async fn e2e_cache_clear_resets_stats() {
         tool_ttl_seconds: 60,
         max_entries: 100,
     };
-    let (mut svc, handle) = CacheService::new(proxy, vec![("math/".to_string(), &cfg)]);
+    let (mut svc, handle) = CacheService::new(
+        proxy,
+        vec![("math/".to_string(), &cfg)],
+        &CacheBackendConfig::default(),
+    );
 
     let req = tool_call("math/add", serde_json::json!({"a": 1, "b": 1}));
     let _ = call(&mut svc, req.clone()).await;
     let _ = call(&mut svc, req).await;
 
-    assert_eq!(handle.stats()[0].hits, 1);
+    assert_eq!(handle.stats().await[0].hits, 1);
 
-    handle.clear();
+    handle.clear().await;
 
-    let stats = handle.stats();
+    let stats = handle.stats().await;
     assert_eq!(stats[0].hits, 0);
     assert_eq!(stats[0].misses, 0);
 }
@@ -680,7 +694,11 @@ async fn e2e_cache_uncached_namespace_is_not_cached() {
         max_entries: 100,
     };
     // Only cache math/ namespace
-    let (mut svc, handle) = CacheService::new(proxy, vec![("math/".to_string(), &cfg)]);
+    let (mut svc, handle) = CacheService::new(
+        proxy,
+        vec![("math/".to_string(), &cfg)],
+        &CacheBackendConfig::default(),
+    );
 
     // Call text/ twice -- should not be cached
     let _ = call(
@@ -695,7 +713,7 @@ async fn e2e_cache_uncached_namespace_is_not_cached() {
     .await;
 
     // Only math/ namespace should have stats
-    let stats = handle.stats();
+    let stats = handle.stats().await;
     assert_eq!(stats.len(), 1);
     assert_eq!(stats[0].namespace, "math/");
     assert_eq!(stats[0].hits, 0);
@@ -1266,7 +1284,11 @@ async fn e2e_filter_then_cache_filters_before_caching() {
         tool_ttl_seconds: 60,
         max_entries: 100,
     };
-    let (mut svc, _) = CacheService::new(filtered, vec![("math/".to_string(), &cfg)]);
+    let (mut svc, _) = CacheService::new(
+        filtered,
+        vec![("math/".to_string(), &cfg)],
+        &CacheBackendConfig::default(),
+    );
 
     // Filtered tool is still denied
     let resp = call(
@@ -1404,6 +1426,7 @@ async fn e2e_cache_with_multiple_backends() {
     let (mut svc, handle) = CacheService::new(
         proxy,
         vec![("math/".to_string(), &cfg), ("text/".to_string(), &cfg)],
+        &CacheBackendConfig::default(),
     );
 
     // Cache math
@@ -1430,7 +1453,7 @@ async fn e2e_cache_with_multiple_backends() {
     )
     .await;
 
-    let stats = handle.stats();
+    let stats = handle.stats().await;
     assert_eq!(stats.len(), 2);
 
     let math_stats = stats.iter().find(|s| s.namespace == "math/").unwrap();

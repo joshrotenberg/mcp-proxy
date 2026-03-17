@@ -24,10 +24,12 @@ openapi = ["dep:utoipa", "dep:utoipa-axum"]
 websocket = ["dep:tokio-tungstenite", "dep:async-trait", "dep:futures-util"]
 discovery = ["dep:jpx-engine"]
 yaml = ["dep:serde_yaml"]
+redis-cache = ["dep:redis"]
+sqlite-cache = ["dep:rusqlite"]
 
 [dependencies]
-tower-mcp = { version = "0.8.7", features = ["http", "http-client", "proxy"] }
-tower-mcp-types = "0.8.7"
+tower-mcp = { version = "0.8.8", features = ["http", "http-client", "proxy"] }
+tower-mcp-types = "0.8.8"
 axum = "0.8"
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 tower-resilience = { version = "0.9.1", default-features = false, features = ["circuitbreaker", "ratelimiter", "hedge", "retry"] }
@@ -60,12 +62,14 @@ futures-util = { version = "0.3", optional = true }
 jpx-engine = { version = "0.3.5", optional = true }
 reqwest = { version = "0.13", features = ["json", "form"], optional = true }
 serde_yaml = { version = "0.9", optional = true }
+redis = { version = "0.27", features = ["tokio-comp"], optional = true }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json"] }
 tokio-stream = "0.1"
 tower-resilience-chaos = "0.9"
-tower-mcp = { version = "0.8.7", features = ["http", "http-client", "proxy", "websocket"] }
+tower-mcp = { version = "0.8.8", features = ["http", "http-client", "proxy", "websocket"] }
 futures-util = "0.3"
 
 # The profile that 'dist' will build with

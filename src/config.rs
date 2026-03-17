@@ -592,7 +592,7 @@ pub struct BackendCacheConfig {
 /// - `"memory"` (default): In-process cache using moka. Fast, no external deps,
 ///   but not shared across proxy instances.
 /// - `"redis"`: External Redis cache. Shared across instances. Requires the
-///   `redis-cache` feature and upstream RouterResponse serialization support.
+///   `redis-cache` feature.
 /// - `"sqlite"`: Local SQLite cache. Persistent across restarts. Requires the
 ///   `sqlite-cache` feature.
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1175,13 +1175,31 @@ impl ProxyConfig {
         // Validate cache backend
         match self.cache.backend.as_str() {
             "memory" => {}
-            "redis" | "sqlite" => {
+            "redis" => {
                 if self.cache.url.is_none() {
                     anyhow::bail!(
                         "cache.url is required when cache.backend = \"{}\"",
                         self.cache.backend
                     );
                 }
+                #[cfg(not(feature = "redis-cache"))]
+                anyhow::bail!(
+                    "cache.backend = \"redis\" requires the 'redis-cache' feature. \
+                     Rebuild with: cargo install mcp-proxy --features redis-cache"
+                );
+            }
+            "sqlite" => {
+                if self.cache.url.is_none() {
+                    anyhow::bail!(
+                        "cache.url is required when cache.backend = \"{}\"",
+                        self.cache.backend
+                    );
+                }
+                #[cfg(not(feature = "sqlite-cache"))]
+                anyhow::bail!(
+                    "cache.backend = \"sqlite\" requires the 'sqlite-cache' feature. \
+                     Rebuild with: cargo install mcp-proxy --features sqlite-cache"
+                );
             }
             other => {
                 anyhow::bail!(
