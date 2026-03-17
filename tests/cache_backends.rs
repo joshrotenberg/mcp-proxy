@@ -2,6 +2,11 @@
 //!
 //! Redis tests require Docker. SQLite tests use a temp file.
 //! Both require tower-mcp 0.8.8+ for RouterResponse serialization.
+//!
+//! These tests only compile when the corresponding feature is enabled:
+//! `cargo test --test cache_backends --features sqlite-cache,redis-cache`
+
+#![cfg(any(feature = "redis-cache", feature = "sqlite-cache"))]
 
 use std::convert::Infallible;
 
