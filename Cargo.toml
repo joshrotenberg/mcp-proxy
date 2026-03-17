@@ -71,6 +71,9 @@ tokio-stream = "0.1"
 tower-resilience-chaos = "0.9"
 tower-mcp = { version = "0.8.8", features = ["http", "http-client", "proxy", "websocket"] }
 futures-util = "0.3"
+docker-wrapper = { version = "0.11.1", features = ["testing", "templates"] }
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
 
 # The profile that 'dist' will build with
 [profile.dist]
