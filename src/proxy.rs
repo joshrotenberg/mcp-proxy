@@ -614,7 +614,7 @@ fn build_middleware_stack(
                 "Applying response cache"
             );
         }
-        let (cache_svc, handle) = cache::CacheService::new(service, cache_configs);
+        let (cache_svc, handle) = cache::CacheService::new(service, cache_configs, &config.cache);
         service = BoxCloneService::new(cache_svc);
         cache_handle = Some(handle);
     }

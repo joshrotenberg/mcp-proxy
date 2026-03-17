@@ -19,7 +19,7 @@ use mcp_proxy::alias::{AliasMap, AliasService};
 use mcp_proxy::cache::CacheService;
 use mcp_proxy::canary::CanaryService;
 use mcp_proxy::coalesce::CoalesceService;
-use mcp_proxy::config::BackendCacheConfig;
+use mcp_proxy::config::{BackendCacheConfig, CacheBackendConfig};
 use mcp_proxy::config::{BackendFilter, InjectArgsConfig, NameFilter};
 use mcp_proxy::filter::CapabilityFilterService;
 use mcp_proxy::inject::{InjectArgsService, InjectionRules};
@@ -287,7 +287,11 @@ async fn test_proxy_with_cache_returns_cached_result() {
         tool_ttl_seconds: 60,
         max_entries: 100,
     };
-    let (mut svc, _handle) = CacheService::new(proxy, vec![("math/".to_string(), &cfg)]);
+    let (mut svc, _handle) = CacheService::new(
+        proxy,
+        vec![("math/".to_string(), &cfg)],
+        &CacheBackendConfig::default(),
+    );
 
     let req = tool_call("math/add", serde_json::json!({"a": 5, "b": 5}));
 
@@ -409,7 +413,11 @@ async fn test_cache_stats_through_proxy() {
         tool_ttl_seconds: 60,
         max_entries: 100,
     };
-    let (mut svc, handle) = CacheService::new(proxy, vec![("math/".to_string(), &cfg)]);
+    let (mut svc, handle) = CacheService::new(
+        proxy,
+        vec![("math/".to_string(), &cfg)],
+        &CacheBackendConfig::default(),
+    );
 
     // Miss
     let _ = call(
@@ -430,15 +438,15 @@ async fn test_cache_stats_through_proxy() {
     )
     .await;
 
-    let stats = handle.stats();
+    let stats = handle.stats().await;
     assert_eq!(stats.len(), 1);
     assert_eq!(stats[0].namespace, "math/");
     assert_eq!(stats[0].hits, 1);
     assert_eq!(stats[0].misses, 2);
 
     // Clear and verify counters reset
-    handle.clear();
-    let stats = handle.stats();
+    handle.clear().await;
+    let stats = handle.stats().await;
     assert_eq!(stats[0].hits, 0);
     assert_eq!(stats[0].misses, 0);
 }

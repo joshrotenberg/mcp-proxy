@@ -257,7 +257,7 @@ async fn handle_cache_stats(
     Extension(cache_handle): Extension<Option<crate::cache::CacheHandle>>,
 ) -> Json<Vec<crate::cache::CacheStatsSnapshot>> {
     match cache_handle {
-        Some(h) => Json(h.stats()),
+        Some(h) => Json(h.stats().await),
         None => Json(vec![]),
     }
 }
@@ -266,7 +266,7 @@ async fn handle_cache_clear(
     Extension(cache_handle): Extension<Option<crate::cache::CacheHandle>>,
 ) -> &'static str {
     if let Some(h) = cache_handle {
-        h.clear();
+        h.clear().await;
         "caches cleared"
     } else {
         "no caches configured"

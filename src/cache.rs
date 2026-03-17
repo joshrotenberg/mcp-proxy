@@ -8,8 +8,10 @@
 //! The cache backend is configurable via `[cache]` in the proxy config:
 //!
 //! - `"memory"` (default): In-process moka cache. Fast, no external deps.
-//! - `"redis"` and `"sqlite"`: Planned external backends (require upstream
-//!   RouterResponse serialization support, see tower-mcp#732).
+//! - `"redis"`: External Redis cache. Shared across instances. Requires the
+//!   `redis-cache` feature flag.
+//! - `"sqlite"`: Local SQLite cache. Persistent across restarts. Requires the
+//!   `sqlite-cache` feature flag.
 //!
 //! # Per-Backend Configuration
 //!
@@ -39,14 +41,237 @@ use tower::{Layer, Service};
 use tower_mcp::router::{RouterRequest, RouterResponse};
 use tower_mcp_types::protocol::McpRequest;
 
-use crate::config::BackendCacheConfig;
+use crate::config::{BackendCacheConfig, CacheBackendConfig};
+
+/// Pluggable cache storage backend.
+///
+/// Each variant provides the same logical operations (get, insert, invalidate,
+/// count) but differs in where entries are stored:
+///
+/// - [`Memory`](CacheStore::Memory): in-process moka cache (default)
+/// - [`Redis`](CacheStore::Redis): external Redis server (requires `redis-cache` feature)
+/// - [`Sqlite`](CacheStore::Sqlite): local SQLite database (requires `sqlite-cache` feature)
+#[derive(Clone)]
+pub(crate) enum CacheStore {
+    /// In-process moka cache.
+    Memory(Cache<String, RouterResponse>),
+    /// Redis-backed cache.
+    #[cfg(feature = "redis-cache")]
+    Redis {
+        client: redis::Client,
+        prefix: String,
+        ttl: Duration,
+    },
+    /// SQLite-backed cache.
+    #[cfg(feature = "sqlite-cache")]
+    Sqlite {
+        conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
+        ttl: Duration,
+    },
+}
+
+impl CacheStore {
+    /// Retrieve a cached response by key.
+    async fn get(&self, key: &str) -> Option<RouterResponse> {
+        match self {
+            CacheStore::Memory(cache) => cache.get(key).await,
+            #[cfg(feature = "redis-cache")]
+            CacheStore::Redis {
+                client,
+                prefix,
+                ttl: _,
+            } => {
+                let full_key = format!("{prefix}{key}");
+                let mut conn = client.get_multiplexed_async_connection().await.ok()?;
+                let data: Option<String> =
+                    redis::AsyncCommands::get(&mut conn, &full_key).await.ok()?;
+                data.and_then(|s| serde_json::from_str(&s).ok())
+            }
+            #[cfg(feature = "sqlite-cache")]
+            CacheStore::Sqlite { conn, ttl: _ } => {
+                let key = key.to_string();
+                let conn = conn.lock().ok()?;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let result: Option<String> = conn
+                    .query_row(
+                        "SELECT value FROM cache_entries WHERE key = ?1 AND expires_at > ?2",
+                        rusqlite::params![key, now],
+                        |row| row.get(0),
+                    )
+                    .ok();
+                result.and_then(|s| serde_json::from_str(&s).ok())
+            }
+        }
+    }
+
+    /// Insert a response into the cache.
+    async fn insert(&self, key: String, value: RouterResponse) {
+        match self {
+            CacheStore::Memory(cache) => {
+                cache.insert(key, value).await;
+            }
+            #[cfg(feature = "redis-cache")]
+            CacheStore::Redis {
+                client,
+                prefix,
+                ttl,
+            } => {
+                let full_key = format!("{prefix}{key}");
+                if let Ok(json) = serde_json::to_string(&value)
+                    && let Ok(mut conn) = client.get_multiplexed_async_connection().await
+                {
+                    let _: Result<(), _> =
+                        redis::AsyncCommands::set_ex(&mut conn, &full_key, &json, ttl.as_secs())
+                            .await;
+                }
+            }
+            #[cfg(feature = "sqlite-cache")]
+            CacheStore::Sqlite { conn, ttl } => {
+                if let Ok(json) = serde_json::to_string(&value) {
+                    let expires_at = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64
+                        + ttl.as_secs() as i64;
+                    if let Ok(conn) = conn.lock() {
+                        let _ = conn.execute(
+                            "INSERT OR REPLACE INTO cache_entries (key, value, expires_at) VALUES (?1, ?2, ?3)",
+                            rusqlite::params![key, json, expires_at],
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Remove all entries from the cache.
+    async fn invalidate_all(&self) {
+        match self {
+            CacheStore::Memory(cache) => {
+                cache.invalidate_all();
+            }
+            #[cfg(feature = "redis-cache")]
+            CacheStore::Redis {
+                client,
+                prefix,
+                ttl: _,
+            } => {
+                if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
+                    let pattern = format!("{prefix}*");
+                    let keys: Vec<String> = redis::AsyncCommands::keys(&mut conn, &pattern)
+                        .await
+                        .unwrap_or_default();
+                    if !keys.is_empty() {
+                        let _: Result<(), _> = redis::AsyncCommands::del(&mut conn, &keys).await;
+                    }
+                }
+            }
+            #[cfg(feature = "sqlite-cache")]
+            CacheStore::Sqlite { conn, ttl: _ } => {
+                if let Ok(conn) = conn.lock() {
+                    let _ = conn.execute("DELETE FROM cache_entries", []);
+                }
+            }
+        }
+    }
+
+    /// Return the approximate number of entries in the cache.
+    async fn entry_count(&self) -> u64 {
+        match self {
+            CacheStore::Memory(cache) => cache.entry_count(),
+            #[cfg(feature = "redis-cache")]
+            CacheStore::Redis {
+                client,
+                prefix,
+                ttl: _,
+            } => {
+                if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
+                    let pattern = format!("{prefix}*");
+                    let keys: Vec<String> = redis::AsyncCommands::keys(&mut conn, &pattern)
+                        .await
+                        .unwrap_or_default();
+                    keys.len() as u64
+                } else {
+                    0
+                }
+            }
+            #[cfg(feature = "sqlite-cache")]
+            CacheStore::Sqlite { conn, ttl: _ } => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                if let Ok(conn) = conn.lock() {
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM cache_entries WHERE expires_at > ?1",
+                        rusqlite::params![now],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap_or(0) as u64
+                } else {
+                    0
+                }
+            }
+        }
+    }
+}
+
+/// Build a [`CacheStore`] from the global cache backend configuration and
+/// a per-backend TTL.
+fn build_cache_store(
+    backend_config: &CacheBackendConfig,
+    ttl: Duration,
+    max_entries: u64,
+) -> CacheStore {
+    match backend_config.backend.as_str() {
+        #[cfg(feature = "redis-cache")]
+        "redis" => {
+            let url = backend_config.url.as_deref().unwrap_or("redis://127.0.0.1");
+            let client =
+                redis::Client::open(url).expect("invalid Redis URL in cache configuration");
+            CacheStore::Redis {
+                client,
+                prefix: backend_config.prefix.clone(),
+                ttl,
+            }
+        }
+        #[cfg(feature = "sqlite-cache")]
+        "sqlite" => {
+            let path = backend_config.url.as_deref().unwrap_or("cache.db");
+            let conn =
+                rusqlite::Connection::open(path).expect("failed to open SQLite cache database");
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS cache_entries (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL
+                )",
+            )
+            .expect("failed to create SQLite cache table");
+            CacheStore::Sqlite {
+                conn: Arc::new(std::sync::Mutex::new(conn)),
+                ttl,
+            }
+        }
+        // Default: memory backend (also handles "memory" explicitly)
+        _ => CacheStore::Memory(
+            Cache::builder()
+                .max_capacity(max_entries)
+                .time_to_live(ttl)
+                .build(),
+        ),
+    }
+}
 
 /// Per-backend cache with separate resource and tool caches (different TTLs).
 #[derive(Clone)]
 struct BackendCache {
     namespace: String,
-    resource_cache: Option<Cache<String, RouterResponse>>,
-    tool_cache: Option<Cache<String, RouterResponse>>,
+    resource_cache: Option<CacheStore>,
+    tool_cache: Option<CacheStore>,
     stats: Arc<CacheStats>,
 }
 
@@ -92,38 +317,43 @@ pub struct CacheHandle {
 
 impl CacheHandle {
     /// Get a snapshot of cache statistics for all backends.
-    pub fn stats(&self) -> Vec<CacheStatsSnapshot> {
-        self.caches
-            .iter()
-            .map(|bc| {
-                let hits = bc.stats.hits.load(Ordering::Relaxed);
-                let misses = bc.stats.misses.load(Ordering::Relaxed);
-                let total = hits + misses;
-                let entry_count = bc.resource_cache.as_ref().map_or(0, |c| c.entry_count())
-                    + bc.tool_cache.as_ref().map_or(0, |c| c.entry_count());
-                CacheStatsSnapshot {
-                    namespace: bc.namespace.clone(),
-                    hits,
-                    misses,
-                    hit_rate: if total > 0 {
-                        hits as f64 / total as f64
-                    } else {
-                        0.0
-                    },
-                    entry_count,
-                }
-            })
-            .collect()
+    pub async fn stats(&self) -> Vec<CacheStatsSnapshot> {
+        let mut snapshots = Vec::with_capacity(self.caches.len());
+        for bc in self.caches.iter() {
+            let hits = bc.stats.hits.load(Ordering::Relaxed);
+            let misses = bc.stats.misses.load(Ordering::Relaxed);
+            let total = hits + misses;
+            let resource_count = match &bc.resource_cache {
+                Some(store) => store.entry_count().await,
+                None => 0,
+            };
+            let tool_count = match &bc.tool_cache {
+                Some(store) => store.entry_count().await,
+                None => 0,
+            };
+            snapshots.push(CacheStatsSnapshot {
+                namespace: bc.namespace.clone(),
+                hits,
+                misses,
+                hit_rate: if total > 0 {
+                    hits as f64 / total as f64
+                } else {
+                    0.0
+                },
+                entry_count: resource_count + tool_count,
+            });
+        }
+        snapshots
     }
 
     /// Clear all cache entries and reset stats.
-    pub fn clear(&self) {
+    pub async fn clear(&self) {
         for bc in self.caches.iter() {
-            if let Some(c) = &bc.resource_cache {
-                c.invalidate_all();
+            if let Some(store) = &bc.resource_cache {
+                store.invalidate_all().await;
             }
-            if let Some(c) = &bc.tool_cache {
-                c.invalidate_all();
+            if let Some(store) = &bc.tool_cache {
+                store.invalidate_all().await;
             }
             bc.stats.hits.store(0, Ordering::Relaxed);
             bc.stats.misses.store(0, Ordering::Relaxed);
@@ -135,27 +365,28 @@ impl CacheHandle {
 ///
 /// Returns an `Arc<Vec<BackendCache>>` that can be shared between a
 /// [`CacheLayer`] (or [`CacheService`]) and its [`CacheHandle`].
-fn build_caches(configs: Vec<(String, &BackendCacheConfig)>) -> Arc<Vec<BackendCache>> {
+fn build_caches(
+    configs: Vec<(String, &BackendCacheConfig)>,
+    backend_config: &CacheBackendConfig,
+) -> Arc<Vec<BackendCache>> {
     let caches: Vec<BackendCache> = configs
         .into_iter()
         .map(|(namespace, cfg)| {
             let resource_cache = if cfg.resource_ttl_seconds > 0 {
-                Some(
-                    Cache::builder()
-                        .max_capacity(cfg.max_entries)
-                        .time_to_live(Duration::from_secs(cfg.resource_ttl_seconds))
-                        .build(),
-                )
+                Some(build_cache_store(
+                    backend_config,
+                    Duration::from_secs(cfg.resource_ttl_seconds),
+                    cfg.max_entries,
+                ))
             } else {
                 None
             };
             let tool_cache = if cfg.tool_ttl_seconds > 0 {
-                Some(
-                    Cache::builder()
-                        .max_capacity(cfg.max_entries)
-                        .time_to_live(Duration::from_secs(cfg.tool_ttl_seconds))
-                        .build(),
-                )
+                Some(build_cache_store(
+                    backend_config,
+                    Duration::from_secs(cfg.tool_ttl_seconds),
+                    cfg.max_entries,
+                ))
             } else {
                 None
             };
@@ -183,19 +414,22 @@ fn build_caches(configs: Vec<(String, &BackendCacheConfig)>) -> Arc<Vec<BackendC
 ///
 /// ```rust
 /// use mcp_proxy::cache::{CacheLayer, CacheHandle};
-/// use mcp_proxy::config::BackendCacheConfig;
+/// use mcp_proxy::config::{BackendCacheConfig, CacheBackendConfig};
 ///
 /// let cfg = BackendCacheConfig {
 ///     resource_ttl_seconds: 300,
 ///     tool_ttl_seconds: 60,
 ///     max_entries: 1000,
 /// };
+/// let backend_cfg = CacheBackendConfig::default();
 ///
-/// let (layer, handle) = CacheLayer::new(vec![("api/".to_string(), &cfg)]);
+/// let (layer, handle) = CacheLayer::new(
+///     vec![("api/".to_string(), &cfg)],
+///     &backend_cfg,
+/// );
 ///
 /// // `layer` implements `tower::Layer<S>` and can be used in a middleware stack.
 /// // `handle` can be used to query stats or clear the cache.
-/// let stats = handle.stats();
 /// ```
 #[derive(Clone)]
 pub struct CacheLayer {
@@ -208,8 +442,11 @@ impl CacheLayer {
     /// The handle provides [`CacheHandle::stats()`] and [`CacheHandle::clear()`]
     /// over the same underlying cache state used by every service the layer
     /// produces.
-    pub fn new(configs: Vec<(String, &BackendCacheConfig)>) -> (Self, CacheHandle) {
-        let caches = build_caches(configs);
+    pub fn new(
+        configs: Vec<(String, &BackendCacheConfig)>,
+        backend_config: &CacheBackendConfig,
+    ) -> (Self, CacheHandle) {
+        let caches = build_caches(configs, backend_config);
         let handle = CacheHandle {
             caches: Arc::clone(&caches),
         };
@@ -237,8 +474,12 @@ pub struct CacheService<S> {
 
 impl<S> CacheService<S> {
     /// Create a new cache service and return it with a shareable handle.
-    pub fn new(inner: S, configs: Vec<(String, &BackendCacheConfig)>) -> (Self, CacheHandle) {
-        let caches = build_caches(configs);
+    pub fn new(
+        inner: S,
+        configs: Vec<(String, &BackendCacheConfig)>,
+        backend_config: &CacheBackendConfig,
+    ) -> (Self, CacheHandle) {
+        let caches = build_caches(configs, backend_config);
         let handle = CacheHandle {
             caches: Arc::clone(&caches),
         };
@@ -250,11 +491,7 @@ impl<S> CacheService<S> {
 fn resolve_cache<'a>(
     caches: &'a [BackendCache],
     req: &McpRequest,
-) -> Option<(
-    &'a Cache<String, RouterResponse>,
-    String,
-    &'a Arc<CacheStats>,
-)> {
+) -> Option<(&'a CacheStore, String, &'a Arc<CacheStats>)> {
     match req {
         McpRequest::ReadResource(params) => {
             let key = format!("res:{}", params.uri);
@@ -298,14 +535,14 @@ where
     fn call(&mut self, req: RouterRequest) -> Self::Future {
         let caches = Arc::clone(&self.caches);
 
-        if let Some((cache, key, stats)) = resolve_cache(&caches, &req.inner) {
-            let cache = cache.clone();
+        if let Some((store, key, stats)) = resolve_cache(&caches, &req.inner) {
+            let store = store.clone();
             let stats = Arc::clone(stats);
             let mut inner = self.inner.clone();
 
             return Box::pin(async move {
                 // Cache hit -- return with current request ID
-                if let Some(cached) = cache.get(&key).await {
+                if let Some(cached) = store.get(&key).await {
                     stats.hits.fetch_add(1, Ordering::Relaxed);
                     return Ok(RouterResponse {
                         id: req.id,
@@ -319,7 +556,7 @@ where
                 // Only cache successful MCP responses
                 let Ok(ref resp) = result;
                 if resp.inner.is_ok() {
-                    cache.insert(key, resp.clone()).await;
+                    store.insert(key, resp.clone()).await;
                 }
 
                 result
@@ -337,7 +574,7 @@ mod tests {
     use tower_mcp::protocol::{McpRequest, McpResponse};
 
     use super::CacheService;
-    use crate::config::BackendCacheConfig;
+    use crate::config::{BackendCacheConfig, CacheBackendConfig};
     use crate::test_util::{MockService, call_service};
 
     fn tool_call(name: &str) -> McpRequest {
@@ -349,6 +586,10 @@ mod tests {
         })
     }
 
+    fn default_backend_config() -> CacheBackendConfig {
+        CacheBackendConfig::default()
+    }
+
     #[tokio::test]
     async fn test_cache_hit_returns_same_result() {
         let mock = MockService::with_tools(&["fs/read"]);
@@ -357,7 +598,11 @@ mod tests {
             tool_ttl_seconds: 60,
             max_entries: 100,
         };
-        let (mut svc, _handle) = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+        let (mut svc, _handle) = CacheService::new(
+            mock,
+            vec![("fs/".to_string(), &cfg)],
+            &default_backend_config(),
+        );
 
         let resp1 = call_service(&mut svc, tool_call("fs/read")).await;
         let resp2 = call_service(&mut svc, tool_call("fs/read")).await;
@@ -379,7 +624,11 @@ mod tests {
             tool_ttl_seconds: 0,
             max_entries: 100,
         };
-        let (mut svc, _handle) = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+        let (mut svc, _handle) = CacheService::new(
+            mock,
+            vec![("fs/".to_string(), &cfg)],
+            &default_backend_config(),
+        );
 
         let resp = call_service(&mut svc, tool_call("fs/read")).await;
         assert!(resp.inner.is_ok());
@@ -393,7 +642,11 @@ mod tests {
             tool_ttl_seconds: 60,
             max_entries: 100,
         };
-        let (mut svc, _handle) = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+        let (mut svc, _handle) = CacheService::new(
+            mock,
+            vec![("fs/".to_string(), &cfg)],
+            &default_backend_config(),
+        );
 
         let resp = call_service(&mut svc, tool_call("db/query")).await;
         assert!(resp.inner.is_ok());
@@ -407,7 +660,11 @@ mod tests {
             tool_ttl_seconds: 60,
             max_entries: 100,
         };
-        let (mut svc, _handle) = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+        let (mut svc, _handle) = CacheService::new(
+            mock,
+            vec![("fs/".to_string(), &cfg)],
+            &default_backend_config(),
+        );
 
         let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
         assert!(resp.inner.is_ok(), "list_tools should pass through");
@@ -421,18 +678,22 @@ mod tests {
             tool_ttl_seconds: 60,
             max_entries: 100,
         };
-        let (mut svc, handle) = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+        let (mut svc, handle) = CacheService::new(
+            mock,
+            vec![("fs/".to_string(), &cfg)],
+            &default_backend_config(),
+        );
 
         // First call = miss
         let _ = call_service(&mut svc, tool_call("fs/read")).await;
-        let stats = handle.stats();
+        let stats = handle.stats().await;
         assert_eq!(stats.len(), 1);
         assert_eq!(stats[0].hits, 0);
         assert_eq!(stats[0].misses, 1);
 
         // Second call = hit
         let _ = call_service(&mut svc, tool_call("fs/read")).await;
-        let stats = handle.stats();
+        let stats = handle.stats().await;
         assert_eq!(stats[0].hits, 1);
         assert_eq!(stats[0].misses, 1);
         assert!((stats[0].hit_rate - 0.5).abs() < f64::EPSILON);
@@ -446,13 +707,17 @@ mod tests {
             tool_ttl_seconds: 60,
             max_entries: 100,
         };
-        let (mut svc, handle) = CacheService::new(mock, vec![("fs/".to_string(), &cfg)]);
+        let (mut svc, handle) = CacheService::new(
+            mock,
+            vec![("fs/".to_string(), &cfg)],
+            &default_backend_config(),
+        );
 
         let _ = call_service(&mut svc, tool_call("fs/read")).await;
         let _ = call_service(&mut svc, tool_call("fs/read")).await;
 
-        handle.clear();
-        let stats = handle.stats();
+        handle.clear().await;
+        let stats = handle.stats().await;
         assert_eq!(stats[0].hits, 0);
         assert_eq!(stats[0].misses, 0);
     }
@@ -467,20 +732,21 @@ mod tests {
             tool_ttl_seconds: 60,
             max_entries: 100,
         };
-        let (layer, handle) = CacheLayer::new(vec![("fs/".to_string(), &cfg)]);
+        let (layer, handle) =
+            CacheLayer::new(vec![("fs/".to_string(), &cfg)], &default_backend_config());
 
         let mock = MockService::with_tools(&["fs/read"]);
         let mut svc = layer.layer(mock);
 
         // First call = miss
         let _ = call_service(&mut svc, tool_call("fs/read")).await;
-        let stats = handle.stats();
+        let stats = handle.stats().await;
         assert_eq!(stats[0].misses, 1);
         assert_eq!(stats[0].hits, 0);
 
         // Second call = hit (cached)
         let _ = call_service(&mut svc, tool_call("fs/read")).await;
-        let stats = handle.stats();
+        let stats = handle.stats().await;
         assert_eq!(stats[0].hits, 1);
         assert_eq!(stats[0].misses, 1);
     }
@@ -495,7 +761,8 @@ mod tests {
             tool_ttl_seconds: 60,
             max_entries: 100,
         };
-        let (layer, handle) = CacheLayer::new(vec![("fs/".to_string(), &cfg)]);
+        let (layer, handle) =
+            CacheLayer::new(vec![("fs/".to_string(), &cfg)], &default_backend_config());
 
         // Create two services from the same layer
         let mock1 = MockService::with_tools(&["fs/read"]);
@@ -506,12 +773,12 @@ mod tests {
 
         // Miss on svc1
         let _ = call_service(&mut svc1, tool_call("fs/read")).await;
-        assert_eq!(handle.stats()[0].misses, 1);
+        assert_eq!(handle.stats().await[0].misses, 1);
 
         // Hit on svc2 (same underlying cache)
         let _ = call_service(&mut svc2, tool_call("fs/read")).await;
-        assert_eq!(handle.stats()[0].hits, 1);
-        assert_eq!(handle.stats()[0].misses, 1);
+        assert_eq!(handle.stats().await[0].hits, 1);
+        assert_eq!(handle.stats().await[0].misses, 1);
     }
 
     #[tokio::test]
@@ -524,18 +791,69 @@ mod tests {
             tool_ttl_seconds: 60,
             max_entries: 100,
         };
-        let (layer, handle) = CacheLayer::new(vec![("fs/".to_string(), &cfg)]);
+        let (layer, handle) =
+            CacheLayer::new(vec![("fs/".to_string(), &cfg)], &default_backend_config());
 
         let mock = MockService::with_tools(&["fs/read"]);
         let mut svc = layer.layer(mock);
 
         let _ = call_service(&mut svc, tool_call("fs/read")).await;
         let _ = call_service(&mut svc, tool_call("fs/read")).await;
-        assert_eq!(handle.stats()[0].hits, 1);
+        assert_eq!(handle.stats().await[0].hits, 1);
 
-        handle.clear();
-        let stats = handle.stats();
+        handle.clear().await;
+        let stats = handle.stats().await;
         assert_eq!(stats[0].hits, 0);
         assert_eq!(stats[0].misses, 0);
     }
+
+    #[tokio::test]
+    async fn test_cache_store_memory_get_insert() {
+        use super::{CacheStore, build_cache_store};
+
+        let store = build_cache_store(&default_backend_config(), Duration::from_secs(60), 100);
+        assert!(matches!(store, CacheStore::Memory(_)));
+
+        // Initially empty
+        assert!(store.get("key1").await.is_none());
+        assert_eq!(store.entry_count().await, 0);
+    }
+
+    #[cfg(feature = "redis-cache")]
+    #[test]
+    fn test_cache_store_redis_construction() {
+        use super::build_cache_store;
+
+        let cfg = CacheBackendConfig {
+            backend: "redis".to_string(),
+            url: Some("redis://127.0.0.1:6379".to_string()),
+            prefix: "test:".to_string(),
+        };
+        let store = build_cache_store(&cfg, Duration::from_secs(60), 100);
+        assert!(matches!(store, super::CacheStore::Redis { .. }));
+    }
+
+    #[cfg(feature = "sqlite-cache")]
+    #[tokio::test]
+    async fn test_cache_store_sqlite_construction() {
+        use super::build_cache_store;
+
+        let dir = std::env::temp_dir().join(format!("mcp-proxy-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("test_cache.db");
+
+        let cfg = CacheBackendConfig {
+            backend: "sqlite".to_string(),
+            url: Some(db_path.to_string_lossy().to_string()),
+            prefix: "test:".to_string(),
+        };
+        let store = build_cache_store(&cfg, Duration::from_secs(60), 100);
+        assert!(matches!(store, super::CacheStore::Sqlite { .. }));
+        assert_eq!(store.entry_count().await, 0);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    use std::time::Duration;
 }
