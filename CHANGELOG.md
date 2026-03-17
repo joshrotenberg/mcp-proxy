@@ -2,6 +2,62 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-03-17
+
+### Bug Fixes
+
+- Access log includes backend name in structured output ([#144](https://github.com/joshrotenberg/mcp-proxy/pull/144))
+- --check warns about unset environment variables ([#145](https://github.com/joshrotenberg/mcp-proxy/pull/145))
+- Add missing REST API endpoints ([#150](https://github.com/joshrotenberg/mcp-proxy/pull/150))
+- Failover supports priority field for backend ordering ([#153](https://github.com/joshrotenberg/mcp-proxy/pull/153))
+- Add remaining REST API endpoints ([#155](https://github.com/joshrotenberg/mcp-proxy/pull/155))
+
+### Documentation
+
+- Add runnable examples for library embedding ([#127](https://github.com/joshrotenberg/mcp-proxy/pull/127))
+- Comprehensive config.example.toml with all options documented ([#142](https://github.com/joshrotenberg/mcp-proxy/pull/142))
+
+### Features
+
+- Add --check config validation flag ([#89](https://github.com/joshrotenberg/mcp-proxy/pull/89))
+- Add structured access logging middleware ([#91](https://github.com/joshrotenberg/mcp-proxy/pull/91))
+- Add glob pattern support for tool filtering ([#90](https://github.com/joshrotenberg/mcp-proxy/pull/90))
+- Expose middleware as composable tower::Layer implementations ([#98](https://github.com/joshrotenberg/mcp-proxy/pull/98))
+- Add backend failover routing ([#99](https://github.com/joshrotenberg/mcp-proxy/pull/99))
+- Add global rate limiting across all backends ([#108](https://github.com/joshrotenberg/mcp-proxy/pull/108))
+- Support .mcp.json as a backend config source ([#109](https://github.com/joshrotenberg/mcp-proxy/pull/109))
+- Complete hot reload with backend removal and modification ([#110](https://github.com/joshrotenberg/mcp-proxy/pull/110))
+- Add ProxyBuilder for programmatic proxy construction ([#111](https://github.com/joshrotenberg/mcp-proxy/pull/111))
+- Add REST management API for backend lifecycle ([#112](https://github.com/joshrotenberg/mcp-proxy/pull/112))
+- Integrate utoipa for OpenAPI spec generation ([#128](https://github.com/joshrotenberg/mcp-proxy/pull/128))
+- Add cache backend config and validation ([#133](https://github.com/joshrotenberg/mcp-proxy/pull/133))
+- Add composite/parallel tool fan-out middleware ([#135](https://github.com/joshrotenberg/mcp-proxy/pull/135))
+- Add parameter hiding and renaming for tool customization ([#134](https://github.com/joshrotenberg/mcp-proxy/pull/134))
+- Annotation-aware tool filtering ([#137](https://github.com/joshrotenberg/mcp-proxy/pull/137))
+- Add per-token tool scoping for bearer auth ([#138](https://github.com/joshrotenberg/mcp-proxy/pull/138))
+- Add WebSocket backend transport support ([#139](https://github.com/joshrotenberg/mcp-proxy/pull/139))
+- BM25-based tool discovery and search ([#140](https://github.com/joshrotenberg/mcp-proxy/pull/140))
+- Add OAuth 2.1 authorization flow support ([#141](https://github.com/joshrotenberg/mcp-proxy/pull/141))
+- Support YAML config format ([#146](https://github.com/joshrotenberg/mcp-proxy/pull/146))
+- Ergonomic per-backend builder methods for ProxyBuilder ([#147](https://github.com/joshrotenberg/mcp-proxy/pull/147))
+- Regex support for tool filtering (re: prefix) ([#149](https://github.com/joshrotenberg/mcp-proxy/pull/149))
+- Pure .mcp.json mode (no TOML config needed) ([#148](https://github.com/joshrotenberg/mcp-proxy/pull/148))
+- CacheLayer tower::Layer implementation ([#151](https://github.com/joshrotenberg/mcp-proxy/pull/151))
+- Search-mode tool exposure for large tool sets ([#154](https://github.com/joshrotenberg/mcp-proxy/pull/154))
+- Bump tower-mcp 0.8.8, add session and circuit breaker admin endpoints ([#156](https://github.com/joshrotenberg/mcp-proxy/pull/156))
+- Implement Redis and SQLite cache backends ([#157](https://github.com/joshrotenberg/mcp-proxy/pull/157))
+
+### Miscellaneous Tasks
+
+- Move scratch config files to examples/ ([#143](https://github.com/joshrotenberg/mcp-proxy/pull/143))
+
+### Testing
+
+- Add comprehensive end-to-end integration test suite ([#94](https://github.com/joshrotenberg/mcp-proxy/pull/94))
+- HTTP transport-level E2E tests ([#152](https://github.com/joshrotenberg/mcp-proxy/pull/152))
+
+
+
 ## [0.1.1] - 2026-03-08
 
 ### Documentation
