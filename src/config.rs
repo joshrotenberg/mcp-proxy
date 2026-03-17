@@ -936,6 +936,63 @@ impl ProxyConfig {
         Ok(config)
     }
 
+    /// Build a minimal `ProxyConfig` from a `.mcp.json` file.
+    ///
+    /// This is a convenience mode for quick local development. The proxy name
+    /// is derived from the file's parent directory (or the filename itself),
+    /// and the server listens on `127.0.0.1:8080` with no middleware or auth.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use mcp_proxy::ProxyConfig;
+    ///
+    /// let config = ProxyConfig::from_mcp_json(Path::new(".mcp.json")).unwrap();
+    /// assert_eq!(config.proxy.listen.host, "127.0.0.1");
+    /// assert_eq!(config.proxy.listen.port, 8080);
+    /// ```
+    pub fn from_mcp_json(path: &Path) -> Result<Self> {
+        let mcp_json = crate::mcp_json::McpJsonConfig::load(path)?;
+        let backends = mcp_json.into_backends()?;
+
+        // Derive a proxy name from the parent directory or filename
+        let name = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .or_else(|| path.file_stem())
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "mcp-proxy".to_string());
+
+        let config = Self {
+            proxy: ProxySettings {
+                name,
+                version: default_version(),
+                separator: default_separator(),
+                listen: ListenConfig {
+                    host: default_host(),
+                    port: default_port(),
+                },
+                instructions: None,
+                shutdown_timeout_seconds: default_shutdown_timeout(),
+                hot_reload: false,
+                import_backends: None,
+                rate_limit: None,
+                tool_discovery: false,
+            },
+            backends,
+            auth: None,
+            performance: PerformanceConfig::default(),
+            security: SecurityConfig::default(),
+            cache: CacheBackendConfig::default(),
+            observability: ObservabilityConfig::default(),
+            composite_tools: Vec::new(),
+        };
+
+        config.validate()?;
+        Ok(config)
+    }
+
     /// Parse and validate a config from a TOML string.
     ///
     /// # Examples
@@ -3158,5 +3215,65 @@ backends:
             config.backends[0].expose_tools,
             vec!["read_file", "list_directory"]
         );
+    }
+
+    #[test]
+    fn test_from_mcp_json() {
+        let dir = std::env::temp_dir().join("mcp_proxy_test_from_mcp_json");
+        let project_dir = dir.join("my-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let mcp_json_path = project_dir.join(".mcp.json");
+        std::fs::write(
+            &mcp_json_path,
+            r#"{
+                "mcpServers": {
+                    "github": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-github"]
+                    },
+                    "api": {
+                        "url": "http://localhost:9000"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let config = ProxyConfig::from_mcp_json(&mcp_json_path).unwrap();
+
+        // Name derived from parent directory
+        assert_eq!(config.proxy.name, "my-project");
+        // Sensible defaults
+        assert_eq!(config.proxy.listen.host, "127.0.0.1");
+        assert_eq!(config.proxy.listen.port, 8080);
+        assert_eq!(config.proxy.version, "0.1.0");
+        assert_eq!(config.proxy.separator, "/");
+        // No auth or middleware
+        assert!(config.auth.is_none());
+        assert!(config.composite_tools.is_empty());
+        // Backends imported
+        assert_eq!(config.backends.len(), 2);
+        assert_eq!(config.backends[0].name, "api");
+        assert_eq!(config.backends[1].name, "github");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_from_mcp_json_empty_rejects() {
+        let dir = std::env::temp_dir().join("mcp_proxy_test_from_mcp_json_empty");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mcp_json_path = dir.join(".mcp.json");
+        std::fs::write(&mcp_json_path, r#"{ "mcpServers": {} }"#).unwrap();
+
+        let err = ProxyConfig::from_mcp_json(&mcp_json_path).unwrap_err();
+        assert!(
+            err.to_string().contains("at least one backend"),
+            "unexpected error: {err}"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

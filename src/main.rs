@@ -9,45 +9,62 @@ use mcp_proxy::config::ProxyConfig;
 #[derive(Parser)]
 #[command(name = "mcp-proxy", about = "Standalone MCP proxy")]
 struct Cli {
-    /// Path to config file
-    #[arg(short, long, default_value = "proxy.toml")]
+    /// Path to TOML config file (default: proxy.toml).
+    /// Mutually exclusive with --from-mcp-json.
+    #[arg(
+        short,
+        long,
+        default_value = "proxy.toml",
+        conflicts_with = "from_mcp_json"
+    )]
     config: PathBuf,
-    /// Validate the config file and exit without starting the server
+    /// Validate the config and exit without starting the server
     #[arg(long)]
     check: bool,
     /// Import backends from a .mcp.json file (merges with config file backends)
     #[arg(long, value_name = "PATH")]
     import_mcp_json: Option<PathBuf>,
+    /// Run with just a .mcp.json file (no TOML config needed).
+    /// Generates a minimal config with sensible defaults.
+    #[arg(long, value_name = "PATH")]
+    from_mcp_json: Option<PathBuf>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let mut config = ProxyConfig::load(&cli.config)?;
+    let mut config = if let Some(ref mcp_json_path) = cli.from_mcp_json {
+        // Pure .mcp.json mode: no TOML config needed
+        ProxyConfig::from_mcp_json(mcp_json_path)?
+    } else {
+        let mut config = ProxyConfig::load(&cli.config)?;
 
-    // Import backends from .mcp.json if specified
-    if let Some(ref mcp_json_path) = cli.import_mcp_json {
-        let mcp_json = mcp_proxy::mcp_json::McpJsonConfig::load(mcp_json_path)?;
-        let imported = mcp_json.into_backends()?;
-        let count = imported.len();
-        for backend in imported {
-            // Skip if a backend with this name already exists in the TOML config
-            if config.backends.iter().any(|b| b.name == backend.name) {
-                eprintln!(
-                    "  Skipping '{}' from .mcp.json (already defined in config)",
-                    backend.name
-                );
-                continue;
+        // Import backends from .mcp.json if specified
+        if let Some(ref mcp_json_path) = cli.import_mcp_json {
+            let mcp_json = mcp_proxy::mcp_json::McpJsonConfig::load(mcp_json_path)?;
+            let imported = mcp_json.into_backends()?;
+            let count = imported.len();
+            for backend in imported {
+                // Skip if a backend with this name already exists in the TOML config
+                if config.backends.iter().any(|b| b.name == backend.name) {
+                    eprintln!(
+                        "  Skipping '{}' from .mcp.json (already defined in config)",
+                        backend.name
+                    );
+                    continue;
+                }
+                config.backends.push(backend);
             }
-            config.backends.push(backend);
+            eprintln!(
+                "Imported {} backends from {}",
+                count,
+                mcp_json_path.display()
+            );
         }
-        eprintln!(
-            "Imported {} backends from {}",
-            count,
-            mcp_json_path.display()
-        );
-    }
+
+        config
+    };
 
     if cli.check {
         // Check for unset env vars before resolving them
