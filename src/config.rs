@@ -1296,6 +1296,104 @@ impl ProxyConfig {
             *secret = env_val;
         }
     }
+
+    /// Check for `${VAR}` references where the environment variable is not set.
+    ///
+    /// Returns a list of human-readable warning strings. This method does not
+    /// modify the config or fail -- it only reports potential issues.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mcp_proxy::config::ProxyConfig;
+    ///
+    /// let toml = r#"
+    /// [proxy]
+    /// name = "test"
+    /// [proxy.listen]
+    ///
+    /// [[backends]]
+    /// name = "svc"
+    /// transport = "stdio"
+    /// command = "echo"
+    /// bearer_token = "${UNSET_VAR}"
+    /// "#;
+    ///
+    /// let config = ProxyConfig::parse(toml).unwrap();
+    /// let warnings = config.check_env_vars();
+    /// assert!(!warnings.is_empty());
+    /// ```
+    pub fn check_env_vars(&self) -> Vec<String> {
+        fn is_unset_env_ref(value: &str) -> Option<&str> {
+            let var_name = value.strip_prefix("${").and_then(|s| s.strip_suffix('}'))?;
+            if std::env::var(var_name).is_err() {
+                Some(var_name)
+            } else {
+                None
+            }
+        }
+
+        let mut warnings = Vec::new();
+
+        for backend in &self.backends {
+            // backend.bearer_token
+            if let Some(ref token) = backend.bearer_token
+                && let Some(var) = is_unset_env_ref(token)
+            {
+                warnings.push(format!(
+                    "backend '{}': bearer_token references unset env var '{}'",
+                    backend.name, var
+                ));
+            }
+            // backend.env values
+            for (key, value) in &backend.env {
+                if let Some(var) = is_unset_env_ref(value) {
+                    warnings.push(format!(
+                        "backend '{}': env.{} references unset env var '{}'",
+                        backend.name, key, var
+                    ));
+                }
+            }
+        }
+
+        match &self.auth {
+            Some(AuthConfig::Bearer {
+                tokens,
+                scoped_tokens,
+            }) => {
+                for (i, token) in tokens.iter().enumerate() {
+                    if let Some(var) = is_unset_env_ref(token) {
+                        warnings.push(format!(
+                            "auth.bearer: tokens[{}] references unset env var '{}'",
+                            i, var
+                        ));
+                    }
+                }
+                for (i, st) in scoped_tokens.iter().enumerate() {
+                    if let Some(var) = is_unset_env_ref(&st.token) {
+                        warnings.push(format!(
+                            "auth.bearer: scoped_tokens[{}] references unset env var '{}'",
+                            i, var
+                        ));
+                    }
+                }
+            }
+            Some(AuthConfig::OAuth {
+                client_secret: Some(secret),
+                ..
+            }) => {
+                if let Some(var) = is_unset_env_ref(secret) {
+                    warnings.push(format!(
+                        "auth.oauth: client_secret references unset env var '{}'",
+                        var
+                    ));
+                }
+            }
+            _ => {}
+        }
+
+        warnings
+    }
 }
 
 #[cfg(test)]
@@ -2827,5 +2925,117 @@ mod tests {
             }
             other => panic!("expected OAuth auth, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_check_env_vars_warns_on_unset() {
+        let toml = r#"
+        [proxy]
+        name = "env-check"
+        [proxy.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "stdio"
+        command = "echo"
+        bearer_token = "${TOTALLY_UNSET_VAR_1}"
+
+        [backends.env]
+        API_KEY = "${TOTALLY_UNSET_VAR_2}"
+        STATIC = "plain-value"
+
+        [auth]
+        type = "bearer"
+        tokens = ["${TOTALLY_UNSET_VAR_3}", "literal-token"]
+
+        [[auth.scoped_tokens]]
+        token = "${TOTALLY_UNSET_VAR_4}"
+        allow_tools = ["svc/echo"]
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        let warnings = config.check_env_vars();
+
+        assert_eq!(warnings.len(), 4, "warnings: {warnings:?}");
+        assert!(warnings[0].contains("TOTALLY_UNSET_VAR_1"));
+        assert!(warnings[0].contains("bearer_token"));
+        assert!(warnings[1].contains("TOTALLY_UNSET_VAR_2"));
+        assert!(warnings[1].contains("env.API_KEY"));
+        assert!(warnings[2].contains("TOTALLY_UNSET_VAR_3"));
+        assert!(warnings[2].contains("tokens[0]"));
+        assert!(warnings[3].contains("TOTALLY_UNSET_VAR_4"));
+        assert!(warnings[3].contains("scoped_tokens[0]"));
+    }
+
+    #[test]
+    fn test_check_env_vars_no_warnings_when_set() {
+        // SAFETY: test runs single-threaded
+        unsafe { std::env::set_var("MCP_CHECK_TEST_VAR", "value") };
+
+        let toml = r#"
+        [proxy]
+        name = "env-check"
+        [proxy.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "stdio"
+        command = "echo"
+        bearer_token = "${MCP_CHECK_TEST_VAR}"
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        let warnings = config.check_env_vars();
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+
+        // SAFETY: same as above
+        unsafe { std::env::remove_var("MCP_CHECK_TEST_VAR") };
+    }
+
+    #[test]
+    fn test_check_env_vars_no_warnings_for_literals() {
+        let toml = r#"
+        [proxy]
+        name = "env-check"
+        [proxy.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "stdio"
+        command = "echo"
+        bearer_token = "literal-token"
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        let warnings = config.check_env_vars();
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    }
+
+    #[test]
+    fn test_check_env_vars_oauth_client_secret() {
+        let toml = r#"
+        [proxy]
+        name = "oauth-check"
+        [proxy.listen]
+
+        [[backends]]
+        name = "svc"
+        transport = "http"
+        url = "http://localhost:3000"
+
+        [auth]
+        type = "oauth"
+        issuer = "https://auth.example.com"
+        audience = "mcp-proxy"
+        client_id = "my-client"
+        client_secret = "${TOTALLY_UNSET_OAUTH_SECRET}"
+        token_validation = "introspection"
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        let warnings = config.check_env_vars();
+        assert_eq!(warnings.len(), 1, "warnings: {warnings:?}");
+        assert!(warnings[0].contains("TOTALLY_UNSET_OAUTH_SECRET"));
+        assert!(warnings[0].contains("client_secret"));
     }
 }

@@ -25,7 +25,6 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let mut config = ProxyConfig::load(&cli.config)?;
-    config.resolve_env_vars();
 
     // Import backends from .mcp.json if specified
     if let Some(ref mcp_json_path) = cli.import_mcp_json {
@@ -51,8 +50,21 @@ async fn main() -> Result<()> {
     }
 
     if cli.check {
-        return print_config_summary(&config);
+        // Check for unset env vars before resolving them
+        let env_warnings = config.check_env_vars();
+        config.resolve_env_vars();
+        let result = print_config_summary(&config);
+        if !env_warnings.is_empty() {
+            println!();
+            println!("  Warnings:");
+            for warning in &env_warnings {
+                println!("    - {}", warning);
+            }
+        }
+        return result;
     }
+
+    config.resolve_env_vars();
 
     init_logging(&config);
 
