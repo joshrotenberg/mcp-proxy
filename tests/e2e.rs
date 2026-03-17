@@ -1076,6 +1076,55 @@ mod config_tests {
             std::env::remove_var("TEST_MCP_TOKEN");
         }
     }
+
+    #[test]
+    fn config_tool_exposure_defaults_to_direct() {
+        let config = ProxyConfig::parse(valid_config()).unwrap();
+        assert_eq!(
+            config.proxy.tool_exposure,
+            mcp_proxy::config::ToolExposure::Direct
+        );
+    }
+
+    #[test]
+    fn config_tool_exposure_search_parses() {
+        let toml = r#"
+        [proxy]
+        name = "test"
+        tool_exposure = "search"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+        "#;
+        let config = ProxyConfig::parse(toml).unwrap();
+        assert_eq!(
+            config.proxy.tool_exposure,
+            mcp_proxy::config::ToolExposure::Search
+        );
+    }
+
+    #[test]
+    fn config_tool_exposure_direct_parses() {
+        let toml = r#"
+        [proxy]
+        name = "test"
+        tool_exposure = "direct"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+        "#;
+        let config = ProxyConfig::parse(toml).unwrap();
+        assert_eq!(
+            config.proxy.tool_exposure,
+            mcp_proxy::config::ToolExposure::Direct
+        );
+    }
 }
 
 // ===========================================================================
@@ -1772,5 +1821,149 @@ mod tool_discovery {
         let text = get_tool_result_text(&resp);
         assert!(text.contains("math"), "should have math category: {text}");
         assert!(text.contains("text"), "should have text category: {text}");
+    }
+}
+
+// ===========================================================================
+// Tier 14: Search-mode tool exposure
+// ===========================================================================
+
+#[cfg(feature = "discovery")]
+mod search_mode {
+    use tower::Service;
+    use tower_mcp::protocol::{CallToolParams, ListToolsParams, McpRequest, RequestId};
+    use tower_mcp::router::{Extensions, RouterRequest, RouterResponse};
+
+    use super::{build_proxy, get_tool_names, get_tool_result_text};
+    use mcp_proxy::filter::SearchModeFilterService;
+    use std::convert::Infallible;
+    use tower::util::BoxCloneService;
+
+    async fn call<S>(svc: &mut S, request: McpRequest) -> RouterResponse
+    where
+        S: Service<RouterRequest, Response = RouterResponse, Error = Infallible>,
+    {
+        let req = RouterRequest {
+            id: RequestId::Number(1),
+            inner: request,
+            extensions: Extensions::new(),
+        };
+        svc.call(req).await.expect("infallible")
+    }
+
+    #[tokio::test]
+    async fn e2e_search_mode_hides_backend_tools() {
+        let mut proxy = build_proxy().await;
+
+        // Build discovery index and register proxy/ namespace tools
+        let index = mcp_proxy::discovery::build_index(&mut proxy, "/").await;
+        let discovery_tools = mcp_proxy::discovery::build_discovery_tools(index);
+
+        let mut router = tower_mcp::McpRouter::new().server_info("proxy-admin", "1.0.0");
+        for tool in discovery_tools {
+            router = router.tool(tool);
+        }
+        // Add a call_tool stub to verify it appears
+        let call_tool = tower_mcp::ToolBuilder::new("call_tool")
+            .description("Invoke any backend tool")
+            .handler(
+                |_: tower_mcp::NoParams| async move { Ok(tower_mcp::CallToolResult::text("stub")) },
+            )
+            .build();
+        router = router.tool(call_tool);
+
+        let transport = tower_mcp::client::ChannelTransport::new(router);
+        proxy
+            .add_backend("proxy", transport)
+            .await
+            .expect("should add proxy backend");
+
+        // Wrap with search mode filter
+        let mut svc: BoxCloneService<RouterRequest, RouterResponse, Infallible> =
+            BoxCloneService::new(SearchModeFilterService::new(proxy, "proxy/"));
+
+        // ListTools should only return proxy/ tools
+        let resp = call(&mut svc, McpRequest::ListTools(ListToolsParams::default())).await;
+        let names = get_tool_names(&resp);
+
+        assert!(
+            names.iter().all(|n| n.starts_with("proxy/")),
+            "all listed tools should be in proxy/ namespace: {names:?}"
+        );
+        assert!(
+            names.contains(&"proxy/search_tools".to_string()),
+            "search_tools should be listed: {names:?}"
+        );
+        assert!(
+            names.contains(&"proxy/call_tool".to_string()),
+            "call_tool should be listed: {names:?}"
+        );
+        assert!(
+            !names.contains(&"math/add".to_string()),
+            "backend tools should be hidden: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn e2e_search_mode_call_tool_still_works() {
+        let proxy = build_proxy().await;
+
+        // Wrap with search mode filter
+        let mut svc: BoxCloneService<RouterRequest, RouterResponse, Infallible> =
+            BoxCloneService::new(SearchModeFilterService::new(proxy, "proxy/"));
+
+        // Direct CallTool to backend tools should still work
+        let resp = call(
+            &mut svc,
+            McpRequest::CallTool(CallToolParams {
+                name: "math/add".to_string(),
+                arguments: serde_json::json!({"a": 3, "b": 7}),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await;
+        let text = get_tool_result_text(&resp);
+        assert_eq!(text, "10", "backend tool should still be callable: {text}");
+    }
+
+    #[tokio::test]
+    async fn e2e_search_mode_search_finds_hidden_tools() {
+        let mut proxy = build_proxy().await;
+
+        // Build discovery index (indexes math/add, text/echo, etc.)
+        let index = mcp_proxy::discovery::build_index(&mut proxy, "/").await;
+        let discovery_tools = mcp_proxy::discovery::build_discovery_tools(index);
+
+        let mut router = tower_mcp::McpRouter::new().server_info("proxy-admin", "1.0.0");
+        for tool in discovery_tools {
+            router = router.tool(tool);
+        }
+        let transport = tower_mcp::client::ChannelTransport::new(router);
+        proxy
+            .add_backend("proxy", transport)
+            .await
+            .expect("should add proxy backend");
+
+        // Wrap with search mode filter
+        let mut svc: BoxCloneService<RouterRequest, RouterResponse, Infallible> =
+            BoxCloneService::new(SearchModeFilterService::new(proxy, "proxy/"));
+
+        // Search should still find backend tools even though they're hidden
+        let resp = call(
+            &mut svc,
+            McpRequest::CallTool(CallToolParams {
+                name: "proxy/search_tools".to_string(),
+                arguments: serde_json::json!({"query": "add numbers"}),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await;
+        let text = get_tool_result_text(&resp);
+        assert!(
+            text.contains("add"),
+            "search should find hidden 'add' tool: {text}"
+        );
     }
 }

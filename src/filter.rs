@@ -235,6 +235,90 @@ fn check_prompt_denied(filters: &[BackendFilter], namespaced_name: &str) -> Opti
     None
 }
 
+/// Tower layer that produces a [`SearchModeFilterService`].
+///
+/// When search mode is enabled, `ListTools` responses are filtered to only
+/// include tools under the given namespace prefix (typically `"proxy/"`).
+/// All other requests pass through unchanged -- `CallTool` requests for
+/// backend tools still work, allowing `proxy/call_tool` to forward them.
+#[derive(Clone)]
+pub struct SearchModeFilterLayer {
+    prefix: String,
+}
+
+impl SearchModeFilterLayer {
+    /// Create a new search mode filter that only lists tools matching `prefix`.
+    pub fn new(prefix: impl Into<String>) -> Self {
+        Self {
+            prefix: prefix.into(),
+        }
+    }
+}
+
+impl<S> Layer<S> for SearchModeFilterLayer {
+    type Service = SearchModeFilterService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        SearchModeFilterService {
+            inner,
+            prefix: self.prefix.clone(),
+        }
+    }
+}
+
+/// Middleware that filters `ListTools` responses to only show tools under
+/// a specific namespace prefix.
+///
+/// Used by search mode to hide individual backend tools from tool listings
+/// while keeping them callable through `proxy/call_tool`.
+#[derive(Clone)]
+pub struct SearchModeFilterService<S> {
+    inner: S,
+    prefix: String,
+}
+
+impl<S> SearchModeFilterService<S> {
+    /// Create a new search mode filter service.
+    pub fn new(inner: S, prefix: impl Into<String>) -> Self {
+        Self {
+            inner,
+            prefix: prefix.into(),
+        }
+    }
+}
+
+impl<S> Service<RouterRequest> for SearchModeFilterService<S>
+where
+    S: Service<RouterRequest, Response = RouterResponse, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send,
+{
+    type Response = RouterResponse;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<RouterResponse, Infallible>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: RouterRequest) -> Self::Future {
+        let prefix = self.prefix.clone();
+        let fut = self.inner.call(req);
+
+        Box::pin(async move {
+            let mut resp = fut.await?;
+
+            if let Ok(McpResponse::ListTools(ref mut result)) = resp.inner {
+                result.tools.retain(|tool| tool.name.starts_with(&prefix));
+            }
+
+            Ok(resp)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tower_mcp::protocol::{McpRequest, McpResponse};
@@ -495,6 +579,72 @@ mod tests {
                 assert!(names.contains(&"fs/read_file"), "read-only tool visible");
                 assert!(!names.contains(&"fs/delete_file"), "non-read-only hidden");
                 assert!(!names.contains(&"fs/write_file"), "non-read-only hidden");
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+
+    // --- Search mode filtering ---
+
+    #[tokio::test]
+    async fn test_search_mode_only_shows_prefix_tools() {
+        let mock = MockService::with_tools(&[
+            "proxy/search_tools",
+            "proxy/call_tool",
+            "proxy/tool_categories",
+            "fs/read",
+            "fs/write",
+            "db/query",
+        ]);
+        let mut svc = super::SearchModeFilterService::new(mock, "proxy/");
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+                assert_eq!(names.len(), 3, "only proxy/ tools should be listed");
+                assert!(names.contains(&"proxy/search_tools"));
+                assert!(names.contains(&"proxy/call_tool"));
+                assert!(names.contains(&"proxy/tool_categories"));
+                assert!(!names.contains(&"fs/read"));
+                assert!(!names.contains(&"db/query"));
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_mode_allows_call_tool_for_backend() {
+        let mock = MockService::with_tools(&["proxy/call_tool", "fs/read"]);
+        let mut svc = super::SearchModeFilterService::new(mock, "proxy/");
+
+        // CallTool requests should pass through regardless of namespace
+        let resp = call_service(
+            &mut svc,
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/read".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await;
+
+        assert!(
+            resp.inner.is_ok(),
+            "search mode should not block CallTool requests"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_mode_no_proxy_tools_returns_empty() {
+        let mock = MockService::with_tools(&["fs/read", "db/query"]);
+        let mut svc = super::SearchModeFilterService::new(mock, "proxy/");
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                assert!(result.tools.is_empty(), "no proxy/ tools means empty list");
             }
             other => panic!("expected ListTools, got: {:?}", other),
         }

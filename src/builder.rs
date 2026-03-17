@@ -61,6 +61,7 @@ impl ProxyBuilder {
                     import_backends: None,
                     rate_limit: None,
                     tool_discovery: false,
+                    tool_exposure: crate::config::ToolExposure::default(),
                 },
                 backends: Vec::new(),
                 auth: None,

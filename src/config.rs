@@ -102,6 +102,42 @@ pub struct ProxySettings {
     /// `proxy/tool_categories` tools for finding tools across backends.
     #[serde(default)]
     pub tool_discovery: bool,
+    /// How backend tools are exposed to MCP clients (default: "direct").
+    ///
+    /// - `direct` -- all tools appear in `ListTools` responses (default behavior).
+    /// - `search` -- only `proxy/` meta-tools are listed; backend tools are
+    ///   discoverable via `proxy/search_tools` and invokable via `proxy/call_tool`.
+    ///   Useful when aggregating 100+ tools that would overwhelm LLM context.
+    ///   Implies `tool_discovery = true`.
+    #[serde(default)]
+    pub tool_exposure: ToolExposure,
+}
+
+/// How backend tools are exposed to MCP clients.
+///
+/// Controls whether individual backend tools appear in `ListTools` responses
+/// or are hidden behind discovery meta-tools.
+///
+/// # Examples
+///
+/// ```
+/// use mcp_proxy::config::ToolExposure;
+///
+/// let direct: ToolExposure = serde_json::from_str("\"direct\"").unwrap();
+/// assert_eq!(direct, ToolExposure::Direct);
+///
+/// let search: ToolExposure = serde_json::from_str("\"search\"").unwrap();
+/// assert_eq!(search, ToolExposure::Search);
+/// ```
+#[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolExposure {
+    /// All backend tools appear in `ListTools` responses.
+    #[default]
+    Direct,
+    /// Only `proxy/` namespace meta-tools appear. Backend tools are hidden
+    /// from listings but remain invokable via `proxy/call_tool`.
+    Search,
 }
 
 /// Global rate limit configuration applied across all backends.
@@ -1055,6 +1091,7 @@ impl ProxyConfig {
                 import_backends: None,
                 rate_limit: None,
                 tool_discovery: false,
+                tool_exposure: ToolExposure::default(),
             },
             backends,
             auth: None,
@@ -1364,6 +1401,15 @@ impl ProxyConfig {
                     anyhow::bail!("backend '{}': weight must be > 0", backend.name);
                 }
             }
+        }
+
+        // Validate tool_exposure = "search" requires the discovery feature
+        #[cfg(not(feature = "discovery"))]
+        if self.proxy.tool_exposure == ToolExposure::Search {
+            anyhow::bail!(
+                "tool_exposure = \"search\" requires the 'discovery' feature. \
+                 Rebuild with: cargo install mcp-proxy --features discovery"
+            );
         }
 
         // Validate param_overrides
