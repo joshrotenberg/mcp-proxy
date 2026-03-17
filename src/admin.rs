@@ -366,6 +366,49 @@ struct SessionsResponse {
     active_sessions: usize,
 }
 
+async fn handle_single_backend_health(
+    Extension(state): Extension<AdminState>,
+    Path(name): Path<String>,
+) -> Result<Json<BackendStatus>, StatusCode> {
+    let backends = state.health.read().await;
+    // Match by namespace (with or without trailing separator)
+    backends
+        .iter()
+        .find(|b| {
+            b.namespace == name
+                || b.namespace == format!("{name}/")
+                || b.namespace.trim_end_matches('/') == name
+        })
+        .cloned()
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+async fn handle_aggregate_stats(
+    Extension(state): Extension<AdminState>,
+    Extension(session_handle): Extension<SessionHandle>,
+) -> Json<AggregateStats> {
+    let backends = state.health.read().await;
+    let total = backends.len();
+    let healthy = backends.iter().filter(|b| b.healthy).count();
+    let active_sessions = session_handle.session_count().await;
+    Json(AggregateStats {
+        total_backends: total,
+        healthy_backends: healthy,
+        unhealthy_backends: total - healthy,
+        active_sessions,
+    })
+}
+
+#[derive(Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+struct AggregateStats {
+    total_backends: usize,
+    healthy_backends: usize,
+    unhealthy_backends: usize,
+    active_sessions: usize,
+}
+
 /// OpenAPI spec for the admin API.
 ///
 /// Available at `GET /admin/openapi.json` when the `openapi` feature is enabled.
@@ -414,8 +457,11 @@ pub fn admin_router(
         .route("/cache/clear", axum::routing::post(handle_cache_clear))
         .route("/metrics", get(handle_metrics))
         .route("/sessions", get(handle_list_sessions))
+        .route("/stats", get(handle_aggregate_stats))
         .route("/config", get(handle_get_config))
         .route("/config/validate", post(handle_validate_config))
+        // Per-backend endpoints
+        .route("/backends/{name}/health", get(handle_single_backend_health))
         // Management endpoints
         .route("/backends/add", post(handle_add_backend))
         .route("/backends/{name}", delete(handle_remove_backend))
@@ -680,5 +726,68 @@ mod tests {
             .await
             .unwrap();
         assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_single_backend_health() {
+        let state = make_state(vec![healthy_backend("db/"), unhealthy_backend("flaky/")]);
+        let session_handle = make_session_handle();
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
+
+        let json = get_json(&router, "/backends/db/health").await;
+        assert_eq!(json["namespace"], "db/");
+        assert!(json["healthy"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_single_backend_health_not_found() {
+        let state = make_state(vec![healthy_backend("db/")]);
+        let session_handle = make_session_handle();
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
+
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/backends/nonexistent/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_aggregate_stats() {
+        let state = make_state(vec![healthy_backend("db/"), unhealthy_backend("flaky/")]);
+        let session_handle = make_session_handle();
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
+
+        let json = get_json(&router, "/stats").await;
+        assert_eq!(json["total_backends"], 2);
+        assert_eq!(json["healthy_backends"], 1);
+        assert_eq!(json["unhealthy_backends"], 1);
     }
 }
