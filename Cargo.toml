@@ -16,7 +16,7 @@ name = "mcp-proxy"
 path = "src/main.rs"
 
 [features]
-default = ["otel", "metrics", "oauth", "openapi", "websocket", "discovery", "yaml"]
+default = ["otel", "metrics", "oauth", "openapi", "websocket", "discovery", "yaml", "skills"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
 oauth = ["tower-mcp/oauth", "tower-mcp/jwks", "dep:reqwest"]
@@ -24,6 +24,7 @@ openapi = ["dep:utoipa", "dep:utoipa-axum"]
 websocket = ["dep:tokio-tungstenite", "dep:async-trait", "dep:futures-util"]
 discovery = ["dep:jpx-engine"]
 yaml = ["dep:serde_yaml"]
+skills = []
 redis-cache = ["dep:redis"]
 sqlite-cache = ["dep:rusqlite"]
 

@@ -78,7 +78,13 @@ pub async fn register_admin_tools(
         proxy: proxy.clone(),
     };
 
-    let router = build_admin_router(state, discovery_tools, search_mode);
+    // Build agentskills.io prompts
+    #[cfg(feature = "skills")]
+    let skills = crate::skills::build_skills(state.config_snapshot.clone());
+    #[cfg(not(feature = "skills"))]
+    let skills: Vec<tower_mcp::Prompt> = vec![];
+
+    let router = build_admin_router(state, discovery_tools, search_mode, skills);
     let transport = ChannelTransport::new(router);
 
     proxy.add_backend("proxy", transport).await
@@ -88,6 +94,7 @@ fn build_admin_router(
     state: AdminToolState,
     discovery_tools: Option<Vec<tower_mcp::Tool>>,
     search_mode: bool,
+    skills: Vec<tower_mcp::Prompt>,
 ) -> McpRouter {
     let state_for_backends = state.clone();
     let list_backends = ToolBuilder::new("list_backends")
@@ -268,6 +275,11 @@ fn build_admin_router(
         for tool in tools {
             router = router.tool(tool);
         }
+    }
+
+    // agentskills.io prompts
+    for skill in skills {
+        router = router.prompt(skill);
     }
 
     router

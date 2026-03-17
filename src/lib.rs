@@ -75,6 +75,8 @@ pub mod param_override;
 pub mod rbac;
 pub mod reload;
 pub mod retry;
+#[cfg(feature = "skills")]
+pub mod skills;
 #[cfg(feature = "oauth")]
 pub mod token;
 pub mod validation;
