@@ -896,8 +896,19 @@ impl ProxyConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let content =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let mut config: Self =
-            toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+
+        let mut config: Self = match path.extension().and_then(|e| e.to_str()) {
+            #[cfg(feature = "yaml")]
+            Some("yaml" | "yml") => serde_yaml::from_str(&content)
+                .with_context(|| format!("parsing YAML {}", path.display()))?,
+            #[cfg(not(feature = "yaml"))]
+            Some("yaml" | "yml") => {
+                anyhow::bail!(
+                    "YAML config requires the 'yaml' feature. Rebuild with: cargo install mcp-proxy --features yaml"
+                );
+            }
+            _ => toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?,
+        };
 
         // Import backends from .mcp.json if configured
         if let Some(ref mcp_json_path) = config.proxy.import_backends {
@@ -948,6 +959,34 @@ impl ProxyConfig {
     /// ```
     pub fn parse(toml: &str) -> Result<Self> {
         let config: Self = toml::from_str(toml).context("parsing config")?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Parse and validate a config from a YAML string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mcp_proxy::ProxyConfig;
+    ///
+    /// let config = ProxyConfig::parse_yaml(r#"
+    /// proxy:
+    ///   name: my-proxy
+    ///   listen:
+    ///     host: "127.0.0.1"
+    ///     port: 8080
+    /// backends:
+    ///   - name: echo
+    ///     transport: stdio
+    ///     command: echo
+    /// "#).unwrap();
+    ///
+    /// assert_eq!(config.proxy.name, "my-proxy");
+    /// ```
+    #[cfg(feature = "yaml")]
+    pub fn parse_yaml(yaml: &str) -> Result<Self> {
+        let config: Self = serde_yaml::from_str(yaml).context("parsing YAML config")?;
         config.validate()?;
         Ok(config)
     }
@@ -3037,5 +3076,87 @@ mod tests {
         assert_eq!(warnings.len(), 1, "warnings: {warnings:?}");
         assert!(warnings[0].contains("TOTALLY_UNSET_OAUTH_SECRET"));
         assert!(warnings[0].contains("client_secret"));
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn test_parse_yaml_config() {
+        let yaml = r#"
+proxy:
+  name: yaml-proxy
+  listen:
+    host: "127.0.0.1"
+    port: 8080
+backends:
+  - name: echo
+    transport: stdio
+    command: echo
+"#;
+        let config = ProxyConfig::parse_yaml(yaml).unwrap();
+        assert_eq!(config.proxy.name, "yaml-proxy");
+        assert_eq!(config.backends.len(), 1);
+        assert_eq!(config.backends[0].name, "echo");
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn test_parse_yaml_with_auth() {
+        let yaml = r#"
+proxy:
+  name: auth-proxy
+  listen:
+    host: "127.0.0.1"
+    port: 9090
+backends:
+  - name: api
+    transport: stdio
+    command: echo
+auth:
+  type: bearer
+  tokens:
+    - token-1
+    - token-2
+"#;
+        let config = ProxyConfig::parse_yaml(yaml).unwrap();
+        match &config.auth {
+            Some(AuthConfig::Bearer { tokens, .. }) => {
+                assert_eq!(tokens, &["token-1", "token-2"]);
+            }
+            other => panic!("expected Bearer auth, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn test_parse_yaml_with_middleware() {
+        let yaml = r#"
+proxy:
+  name: mw-proxy
+  listen:
+    host: "127.0.0.1"
+    port: 8080
+backends:
+  - name: api
+    transport: stdio
+    command: echo
+    timeout:
+      seconds: 30
+    rate_limit:
+      requests: 100
+      period_seconds: 1
+    expose_tools:
+      - read_file
+      - list_directory
+"#;
+        let config = ProxyConfig::parse_yaml(yaml).unwrap();
+        assert_eq!(config.backends[0].timeout.as_ref().unwrap().seconds, 30);
+        assert_eq!(
+            config.backends[0].rate_limit.as_ref().unwrap().requests,
+            100
+        );
+        assert_eq!(
+            config.backends[0].expose_tools,
+            vec!["read_file", "list_directory"]
+        );
     }
 }
