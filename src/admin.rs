@@ -21,10 +21,26 @@ use tower_mcp::proxy::McpProxy;
 #[derive(Clone)]
 pub struct AdminState {
     health: Arc<RwLock<Vec<BackendStatus>>>,
+    health_history: Arc<RwLock<Vec<HealthEvent>>>,
     proxy_name: String,
     proxy_version: String,
     backend_count: usize,
 }
+
+/// A health state transition event.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct HealthEvent {
+    /// Backend namespace.
+    pub namespace: String,
+    /// New health state.
+    pub healthy: bool,
+    /// When the transition occurred.
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Maximum health history events to retain.
+const MAX_HEALTH_HISTORY: usize = 100;
 
 impl AdminState {
     /// Get a snapshot of backend health status.
@@ -100,24 +116,25 @@ pub fn spawn_health_checker(
 ) -> AdminState {
     let health: Arc<RwLock<Vec<BackendStatus>>> = Arc::new(RwLock::new(Vec::new()));
     let health_writer = Arc::clone(&health);
+    let health_history: Arc<RwLock<Vec<HealthEvent>>> = Arc::new(RwLock::new(Vec::new()));
+    let history_writer = Arc::clone(&health_history);
 
-    // McpProxy is Send+Clone but not Sync, so &McpProxy is not Send.
-    // health_check(&self) borrows across .await, making futures !Send.
-    // Workaround: run health checks on a dedicated single-threaded runtime
-    // where Send is not required.
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("admin health check runtime");
 
-        // Track consecutive failure counts across check cycles.
         let mut failure_counts: HashMap<String, u32> = HashMap::new();
+        // Track previous health state for transition detection
+        let mut prev_healthy: HashMap<String, bool> = HashMap::new();
 
         rt.block_on(async move {
             loop {
                 let results = proxy.health_check().await;
                 let now = Utc::now();
+                let mut transitions = Vec::new();
+
                 let statuses: Vec<BackendStatus> = results
                     .into_iter()
                     .map(|h| {
@@ -127,6 +144,18 @@ pub fn spawn_health_checker(
                         } else {
                             *count += 1;
                         }
+
+                        // Detect health state transitions
+                        let prev = prev_healthy.get(&h.namespace).copied();
+                        if prev != Some(h.healthy) {
+                            transitions.push(HealthEvent {
+                                namespace: h.namespace.clone(),
+                                healthy: h.healthy,
+                                timestamp: now,
+                            });
+                            prev_healthy.insert(h.namespace.clone(), h.healthy);
+                        }
+
                         let meta = backend_meta.get(&h.namespace);
                         BackendStatus {
                             namespace: h.namespace,
@@ -142,7 +171,20 @@ pub fn spawn_health_checker(
                         }
                     })
                     .collect();
+
                 *health_writer.write().await = statuses;
+
+                // Record transitions to history
+                if !transitions.is_empty() {
+                    let mut history = history_writer.write().await;
+                    history.extend(transitions);
+                    // Trim to max size
+                    if history.len() > MAX_HEALTH_HISTORY {
+                        let excess = history.len() - MAX_HEALTH_HISTORY;
+                        history.drain(..excess);
+                    }
+                }
+
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
         });
@@ -150,6 +192,7 @@ pub fn spawn_health_checker(
 
     AdminState {
         health,
+        health_history,
         proxy_name,
         proxy_version,
         backend_count,
@@ -240,6 +283,7 @@ fn test_admin_state(
 ) -> AdminState {
     AdminState {
         health: Arc::new(RwLock::new(statuses)),
+        health_history: Arc::new(RwLock::new(Vec::new())),
         proxy_name: proxy_name.to_string(),
         proxy_version: proxy_version.to_string(),
         backend_count,
@@ -366,6 +410,72 @@ struct SessionsResponse {
     active_sessions: usize,
 }
 
+async fn handle_backend_health_history(
+    Extension(state): Extension<AdminState>,
+    Path(name): Path<String>,
+) -> Json<Vec<HealthEvent>> {
+    let history = state.health_history.read().await;
+    let filtered: Vec<HealthEvent> = history
+        .iter()
+        .filter(|e| {
+            e.namespace == name
+                || e.namespace == format!("{name}/")
+                || e.namespace.trim_end_matches('/') == name
+        })
+        .cloned()
+        .collect();
+    Json(filtered)
+}
+
+async fn handle_update_backend(
+    Extension(proxy): Extension<McpProxy>,
+    Path(name): Path<String>,
+    Json(req): Json<UpdateBackendRequest>,
+) -> (StatusCode, Json<BackendOpResponse>) {
+    // Remove existing backend
+    if !proxy.remove_backend(&name).await {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(BackendOpResponse {
+                ok: false,
+                message: format!("Backend '{name}' not found"),
+            }),
+        );
+    }
+
+    // Re-add with new config
+    let mut transport = tower_mcp::client::HttpClientTransport::new(&req.url);
+    if let Some(token) = &req.bearer_token {
+        transport = transport.bearer_token(token);
+    }
+
+    match proxy.add_backend(&name, transport).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(BackendOpResponse {
+                ok: true,
+                message: format!("Backend '{name}' updated"),
+            }),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(BackendOpResponse {
+                ok: false,
+                message: format!("Failed to re-add backend after removal: {e}"),
+            }),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+struct UpdateBackendRequest {
+    /// New backend URL.
+    url: String,
+    /// Optional bearer token for the backend.
+    bearer_token: Option<String>,
+}
+
 async fn handle_single_backend_health(
     Extension(state): Extension<AdminState>,
     Path(name): Path<String>,
@@ -462,9 +572,16 @@ pub fn admin_router(
         .route("/config/validate", post(handle_validate_config))
         // Per-backend endpoints
         .route("/backends/{name}/health", get(handle_single_backend_health))
+        .route(
+            "/backends/{name}/health/history",
+            get(handle_backend_health_history),
+        )
         // Management endpoints
         .route("/backends/add", post(handle_add_backend))
-        .route("/backends/{name}", delete(handle_remove_backend))
+        .route(
+            "/backends/{name}",
+            delete(handle_remove_backend).put(handle_update_backend),
+        )
         .layer(Extension(state))
         .layer(Extension(session_handle))
         .layer(Extension(cache_handle))
@@ -789,5 +906,63 @@ mod tests {
         assert_eq!(json["total_backends"], 2);
         assert_eq!(json["healthy_backends"], 1);
         assert_eq!(json["unhealthy_backends"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_health_history_empty() {
+        let state = make_state(vec![healthy_backend("db/")]);
+        let session_handle = make_session_handle();
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
+
+        let json = get_json(&router, "/backends/db/health/history").await;
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_health_history_with_events() {
+        let state = make_state(vec![healthy_backend("db/")]);
+        // Manually insert history events
+        {
+            let mut history = state.health_history.write().await;
+            history.push(HealthEvent {
+                namespace: "db/".to_string(),
+                healthy: true,
+                timestamp: Utc::now(),
+            });
+            history.push(HealthEvent {
+                namespace: "db/".to_string(),
+                healthy: false,
+                timestamp: Utc::now(),
+            });
+            history.push(HealthEvent {
+                namespace: "other/".to_string(),
+                healthy: false,
+                timestamp: Utc::now(),
+            });
+        }
+
+        let session_handle = make_session_handle();
+        let router = admin_router(
+            state,
+            None,
+            session_handle,
+            None,
+            make_test_proxy().await,
+            &make_test_config(),
+        );
+
+        // Should only return events for "db"
+        let json = get_json(&router, "/backends/db/health/history").await;
+        let events = json.as_array().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events[0]["healthy"].as_bool().unwrap());
+        assert!(!events[1]["healthy"].as_bool().unwrap());
     }
 }
