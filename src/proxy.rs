@@ -105,9 +105,12 @@ impl Proxy {
         );
         tracing::info!("Admin API enabled at /admin/backends");
 
-        // Build discovery index if enabled
+        // Build discovery index if enabled (search mode implies discovery)
         #[cfg(feature = "discovery")]
-        let (discovery_index, discovery_tools) = if config.proxy.tool_discovery {
+        let discovery_enabled = config.proxy.tool_discovery
+            || config.proxy.tool_exposure == crate::config::ToolExposure::Search;
+        #[cfg(feature = "discovery")]
+        let (discovery_index, discovery_tools) = if discovery_enabled {
             let index =
                 crate::discovery::build_index(&mut proxy_for_caller, &config.proxy.separator).await;
             let tools = crate::discovery::build_discovery_tools(index.clone());
@@ -651,6 +654,17 @@ fn build_middleware_stack(
             );
         }
         service = BoxCloneService::new(CapabilityFilterService::new(service, filters));
+    }
+
+    // Search-mode filtering: hide all tools except proxy/ namespace
+    if config.proxy.tool_exposure == crate::config::ToolExposure::Search {
+        let prefix = format!("proxy{}", config.proxy.separator);
+        tracing::info!(
+            prefix = %prefix,
+            "Search mode: ListTools will only show proxy/ namespace tools"
+        );
+        service =
+            BoxCloneService::new(crate::filter::SearchModeFilterService::new(service, prefix));
     }
 
     // Tool aliasing

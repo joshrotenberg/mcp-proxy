@@ -58,6 +58,7 @@ struct SessionResult {
 /// - `proxy/session_count` -- active session count
 /// - `proxy/add_backend` -- dynamically add an HTTP backend
 /// - `proxy/config` -- dump current config (TOML)
+/// - `proxy/call_tool` -- (search mode only) invoke any backend tool by name
 pub async fn register_admin_tools(
     proxy: &McpProxy,
     admin_state: AdminState,
@@ -68,6 +69,8 @@ pub async fn register_admin_tools(
     let config_toml =
         toml::to_string_pretty(config).unwrap_or_else(|e| format!("error serializing: {e}"));
 
+    let search_mode = config.proxy.tool_exposure == crate::config::ToolExposure::Search;
+
     let state = AdminToolState {
         admin_state,
         session_handle,
@@ -75,7 +78,7 @@ pub async fn register_admin_tools(
         proxy: proxy.clone(),
     };
 
-    let router = build_admin_router(state, discovery_tools);
+    let router = build_admin_router(state, discovery_tools, search_mode);
     let transport = ChannelTransport::new(router);
 
     proxy.add_backend("proxy", transport).await
@@ -84,6 +87,7 @@ pub async fn register_admin_tools(
 fn build_admin_router(
     state: AdminToolState,
     discovery_tools: Option<Vec<tower_mcp::Tool>>,
+    search_mode: bool,
 ) -> McpRouter {
     let state_for_backends = state.clone();
     let list_backends = ToolBuilder::new("list_backends")
@@ -211,6 +215,55 @@ fn build_admin_router(
         .tool(add_backend)
         .tool(config_tool);
 
+    if search_mode {
+        let state_for_call = state.clone();
+        let call_tool = ToolBuilder::new("call_tool")
+            .description(
+                "Invoke any backend tool by its fully-qualified name. Use proxy/search_tools \
+                 to discover available tools, then call them through this tool.",
+            )
+            .handler(move |input: CallToolInput| {
+                let s = state_for_call.clone();
+                async move {
+                    use tower::Service;
+                    use tower_mcp::protocol::{CallToolParams, McpRequest, McpResponse, RequestId};
+                    use tower_mcp::router::{Extensions, RouterRequest};
+
+                    let req = RouterRequest {
+                        id: RequestId::Number(0),
+                        inner: McpRequest::CallTool(CallToolParams {
+                            name: input.name.clone(),
+                            arguments: input.arguments.unwrap_or_default().into(),
+                            meta: None,
+                            task: None,
+                        }),
+                        extensions: Extensions::new(),
+                    };
+
+                    let mut proxy = s.proxy.clone();
+                    match proxy.call(req).await {
+                        Ok(resp) => match resp.inner {
+                            Ok(McpResponse::CallTool(result)) => Ok(result),
+                            Ok(_) => Ok(CallToolResult::text(format!(
+                                "Unexpected response type for tool '{}'",
+                                input.name
+                            ))),
+                            Err(e) => Ok(CallToolResult::text(format!(
+                                "Error calling '{}': {}",
+                                input.name, e.message
+                            ))),
+                        },
+                        Err(_) => Ok(CallToolResult::text(format!(
+                            "Internal error calling '{}'",
+                            input.name
+                        ))),
+                    }
+                }
+            })
+            .build();
+        router = router.tool(call_tool);
+    }
+
     if let Some(tools) = discovery_tools {
         for tool in tools {
             router = router.tool(tool);
@@ -234,4 +287,13 @@ struct AddBackendInput {
     name: String,
     /// URL of the HTTP MCP server
     url: String,
+}
+
+/// Input for the `proxy/call_tool` meta-tool (search mode only).
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CallToolInput {
+    /// Fully-qualified tool name (e.g. "math/add", "files/read_file")
+    name: String,
+    /// Arguments to pass to the tool
+    arguments: Option<serde_json::Map<String, serde_json::Value>>,
 }
