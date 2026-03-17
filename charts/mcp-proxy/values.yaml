@@ -1,0 +1,101 @@
+# Default values for mcp-proxy Helm chart
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/joshrotenberg/mcp-proxy
+  tag: ""  # Defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Proxy configuration (rendered as proxy.toml in a ConfigMap)
+# This is the full mcp-proxy TOML config. See config.example.toml for all options.
+config: |
+  [proxy]
+  name = "mcp-proxy"
+  [proxy.listen]
+  host = "0.0.0.0"
+  port = 8080
+
+  [observability]
+  log_level = "info"
+  json_logs = true
+  [observability.metrics]
+  enabled = true
+
+# Extra environment variables (for ${VAR} references in config)
+env: []
+  # - name: GITHUB_TOKEN
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: mcp-proxy-secrets
+  #       key: github-token
+
+# Create a Secret with token values (alternative to external secrets)
+secrets: {}
+  # github-token: "ghp_..."
+  # backend-token: "sk-..."
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt
+  hosts:
+    - host: mcp-proxy.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+    # - secretName: mcp-proxy-tls
+    #   hosts:
+    #     - mcp-proxy.example.com
+
+resources: {}
+  # limits:
+  #   cpu: 500m
+  #   memory: 256Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Liveness and readiness probes use /admin/health
+probes:
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}

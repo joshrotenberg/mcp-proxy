@@ -1,0 +1,17 @@
+apiVersion: v2
+name: mcp-proxy
+description: Config-driven MCP reverse proxy with auth, resilience, and observability
+type: application
+version: 0.1.0
+appVersion: "0.2.0"
+home: https://github.com/joshrotenberg/mcp-proxy
+sources:
+  - https://github.com/joshrotenberg/mcp-proxy
+maintainers:
+  - name: Josh Rotenberg
+    url: https://github.com/joshrotenberg
+keywords:
+  - mcp
+  - proxy
+  - ai
+  - llm
