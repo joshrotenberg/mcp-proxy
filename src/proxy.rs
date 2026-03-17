@@ -101,6 +101,7 @@ impl Proxy {
                 cache_handle,
                 proxy_for_management,
                 &config,
+                config.source_path.clone(),
             ),
         );
         tracing::info!("Admin API enabled at /admin/backends");

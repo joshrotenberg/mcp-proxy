@@ -566,6 +566,76 @@ async fn handle_terminate_session(
     }
 }
 
+async fn handle_update_config(
+    Extension(config_path): Extension<Option<std::path::PathBuf>>,
+    body: String,
+) -> (StatusCode, Json<BackendOpResponse>) {
+    // Detect format from config file extension (or try TOML then YAML)
+    let is_yaml = config_path
+        .as_ref()
+        .and_then(|p| p.extension())
+        .is_some_and(|ext| ext == "yaml" || ext == "yml");
+
+    let config = if is_yaml {
+        #[cfg(feature = "yaml")]
+        {
+            crate::config::ProxyConfig::parse_yaml(&body)
+        }
+        #[cfg(not(feature = "yaml"))]
+        {
+            Err(anyhow::anyhow!("YAML support requires the 'yaml' feature"))
+        }
+    } else {
+        crate::config::ProxyConfig::parse(&body)
+    };
+
+    let config = match config {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(BackendOpResponse {
+                    ok: false,
+                    message: format!("Invalid config: {e}"),
+                }),
+            );
+        }
+    };
+
+    // Write to disk if we have a config path (triggers hot reload if enabled)
+    let Some(path) = config_path else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(BackendOpResponse {
+                ok: false,
+                message: "No config file path available (running in --from-mcp-json mode?)"
+                    .to_string(),
+            }),
+        );
+    };
+
+    if let Err(e) = std::fs::write(&path, &body) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(BackendOpResponse {
+                ok: false,
+                message: format!("Failed to write config: {e}"),
+            }),
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(BackendOpResponse {
+            ok: true,
+            message: format!(
+                "Config updated ({} backends). Hot reload will apply changes if enabled.",
+                config.backends.len()
+            ),
+        }),
+    )
+}
+
 /// OpenAPI spec for the admin API.
 ///
 /// Available at `GET /admin/openapi.json` when the `openapi` feature is enabled.
@@ -603,6 +673,7 @@ pub fn admin_router(
     cache_handle: Option<crate::cache::CacheHandle>,
     proxy: McpProxy,
     config: &crate::config::ProxyConfig,
+    config_path: Option<std::path::PathBuf>,
 ) -> Router {
     let config_toml = std::sync::Arc::new(toml::to_string_pretty(config).unwrap_or_default());
 
@@ -617,7 +688,7 @@ pub fn admin_router(
         .route("/sessions/detail", get(handle_list_sessions_detail))
         .route("/sessions/{id}", delete(handle_terminate_session))
         .route("/stats", get(handle_aggregate_stats))
-        .route("/config", get(handle_get_config))
+        .route("/config", get(handle_get_config).put(handle_update_config))
         .route("/config/validate", post(handle_validate_config))
         // Per-backend endpoints
         .route("/backends/{name}/health", get(handle_single_backend_health))
@@ -635,7 +706,8 @@ pub fn admin_router(
         .layer(Extension(session_handle))
         .layer(Extension(cache_handle))
         .layer(Extension(proxy))
-        .layer(Extension(config_toml));
+        .layer(Extension(config_toml))
+        .layer(Extension(config_path));
 
     #[cfg(feature = "metrics")]
     let router = router.layer(Extension(metrics_handle));
@@ -767,6 +839,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         let json = get_json(&router, "/health").await;
@@ -785,6 +858,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         let json = get_json(&router, "/health").await;
@@ -805,6 +879,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         let json = get_json(&router, "/backends").await;
@@ -827,6 +902,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         let json = get_json(&router, "/cache/stats").await;
@@ -844,6 +920,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         let resp = router
@@ -875,6 +952,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         let resp = router
@@ -905,6 +983,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         let json = get_json(&router, "/backends/db/health").await;
@@ -923,6 +1002,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         let resp = router
@@ -949,6 +1029,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         let json = get_json(&router, "/stats").await;
@@ -968,6 +1049,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         let json = get_json(&router, "/backends/db/health/history").await;
@@ -1005,6 +1087,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         // Should only return events for "db"
@@ -1026,6 +1109,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         let json = get_json(&router, "/sessions").await;
@@ -1043,6 +1127,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         let json = get_json(&router, "/sessions/detail").await;
@@ -1061,6 +1146,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         let resp = router
@@ -1155,6 +1241,7 @@ mod tests {
             None,
             make_test_proxy().await,
             &make_test_config(),
+            None,
         );
 
         // Check session count
