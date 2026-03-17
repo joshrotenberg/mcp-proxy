@@ -79,7 +79,10 @@ pub async fn register_admin_tools(
     };
 
     // Build agentskills.io prompts
+    #[cfg(feature = "skills")]
     let skills = crate::skills::build_skills(state.config_snapshot.clone());
+    #[cfg(not(feature = "skills"))]
+    let skills: Vec<tower_mcp::Prompt> = vec![];
 
     let router = build_admin_router(state, discovery_tools, search_mode, skills);
     let transport = ChannelTransport::new(router);
