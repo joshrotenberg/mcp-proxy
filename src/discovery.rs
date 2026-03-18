@@ -392,3 +392,218 @@ pub fn build_discovery_tools(index: SharedDiscoveryIndex) -> Vec<tower_mcp::Tool
 
     vec![search_tools, similar_tools, tool_categories]
 }
+
+#[cfg(test)]
+mod tests {
+    use jpx_engine::DiscoveryRegistry;
+    use tower_mcp::ToolDefinition;
+    use tower_mcp_types::protocol::ToolAnnotations;
+
+    use super::*;
+
+    fn make_tool(
+        name: &str,
+        description: Option<&str>,
+        annotations: Option<ToolAnnotations>,
+    ) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            title: None,
+            description: description.map(|d| d.to_string()),
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema: None,
+            icons: None,
+            annotations,
+            execution: None,
+            meta: None,
+        }
+    }
+
+    // -- index_tools tests ---------------------------------------------------
+
+    #[test]
+    fn index_tools_empty_list() {
+        let mut registry = DiscoveryRegistry::new();
+        index_tools(&mut registry, &[], "/");
+        let cats = registry.list_categories();
+        assert!(cats.is_empty());
+    }
+
+    #[test]
+    fn index_tools_groups_by_namespace() {
+        let tools = vec![
+            make_tool("fs/read", Some("Read a file"), None),
+            make_tool("fs/write", Some("Write a file"), None),
+            make_tool("db/query", Some("Run a query"), None),
+        ];
+
+        let mut registry = DiscoveryRegistry::new();
+        index_tools(&mut registry, &tools, "/");
+
+        let cats = registry.list_categories();
+        assert_eq!(cats.len(), 2);
+        assert!(cats.contains_key("fs"));
+        assert!(cats.contains_key("db"));
+    }
+
+    #[test]
+    fn index_tools_no_separator_uses_default_namespace() {
+        let tools = vec![make_tool("standalone", Some("No namespace"), None)];
+
+        let mut registry = DiscoveryRegistry::new();
+        index_tools(&mut registry, &tools, "/");
+
+        // The tool is registered under the "default" server; search finds it
+        let results = registry.query("namespace", 10);
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn index_tools_without_descriptions() {
+        let tools = vec![make_tool("ns/tool", None, None)];
+
+        let mut registry = DiscoveryRegistry::new();
+        index_tools(&mut registry, &tools, "/");
+
+        let cats = registry.list_categories();
+        assert_eq!(cats.len(), 1);
+    }
+
+    #[test]
+    fn index_tools_with_annotations() {
+        let tools = vec![make_tool(
+            "ns/dangerous",
+            Some("Dangerous tool"),
+            Some(ToolAnnotations {
+                title: None,
+                destructive_hint: true,
+                read_only_hint: false,
+                idempotent_hint: false,
+                open_world_hint: true,
+            }),
+        )];
+
+        let mut registry = DiscoveryRegistry::new();
+        index_tools(&mut registry, &tools, "/");
+
+        // The tool was indexed; search for its annotation tag
+        let results = registry.query("destructive", 10);
+        assert!(!results.is_empty());
+    }
+
+    // -- tool_definition_to_spec tests ----------------------------------------
+
+    #[test]
+    fn tool_definition_to_spec_extracts_local_name() {
+        let tool = make_tool("backend/read_file", Some("Reads files"), None);
+        let spec = tool_definition_to_spec(&tool, "/");
+        assert_eq!(spec.name, "read_file");
+        assert_eq!(spec.category.as_deref(), Some("backend"));
+    }
+
+    #[test]
+    fn tool_definition_to_spec_no_separator() {
+        let tool = make_tool("read_file", Some("Reads files"), None);
+        let spec = tool_definition_to_spec(&tool, "/");
+        assert_eq!(spec.name, "read_file");
+        assert!(spec.category.is_none());
+    }
+
+    #[test]
+    fn tool_definition_to_spec_annotation_tags() {
+        let tool = make_tool(
+            "ns/tool",
+            Some("desc"),
+            Some(ToolAnnotations {
+                title: None,
+                destructive_hint: true,
+                read_only_hint: true,
+                idempotent_hint: true,
+                open_world_hint: true,
+            }),
+        );
+        let spec = tool_definition_to_spec(&tool, "/");
+        assert_eq!(spec.tags.len(), 4);
+        assert!(spec.tags.contains(&"destructive".to_string()));
+        assert!(spec.tags.contains(&"read-only".to_string()));
+        assert!(spec.tags.contains(&"idempotent".to_string()));
+        assert!(spec.tags.contains(&"open-world".to_string()));
+    }
+
+    #[test]
+    fn tool_definition_to_spec_no_annotations_no_tags() {
+        let tool = make_tool("ns/tool", Some("desc"), None);
+        let spec = tool_definition_to_spec(&tool, "/");
+        assert!(spec.tags.is_empty());
+    }
+
+    #[test]
+    fn tool_definition_to_spec_preserves_description() {
+        let tool = make_tool("ns/tool", Some("My description"), None);
+        let spec = tool_definition_to_spec(&tool, "/");
+        assert_eq!(spec.summary.as_deref(), Some("My description"));
+        assert_eq!(spec.description.as_deref(), Some("My description"));
+    }
+
+    // -- extract_params tests ------------------------------------------------
+
+    #[test]
+    fn extract_params_empty_schema() {
+        let schema = serde_json::json!({"type": "object"});
+        let params = extract_params(&schema);
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn extract_params_with_properties() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path"
+                },
+                "recursive": {
+                    "type": "boolean"
+                }
+            },
+            "required": ["path"]
+        });
+        let params = extract_params(&schema);
+        assert_eq!(params.len(), 2);
+
+        let path_param = params.iter().find(|p| p.name == "path").unwrap();
+        assert!(path_param.required);
+        assert_eq!(path_param.param_type.as_deref(), Some("string"));
+        assert_eq!(path_param.description.as_deref(), Some("File path"));
+
+        let recursive_param = params.iter().find(|p| p.name == "recursive").unwrap();
+        assert!(!recursive_param.required);
+        assert_eq!(recursive_param.param_type.as_deref(), Some("boolean"));
+    }
+
+    #[test]
+    fn extract_params_no_required_field() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            }
+        });
+        let params = extract_params(&schema);
+        assert_eq!(params.len(), 1);
+        assert!(!params[0].required);
+    }
+
+    // -- build_discovery_tools tests -----------------------------------------
+
+    #[test]
+    fn build_discovery_tools_returns_three_tools() {
+        let index = Arc::new(RwLock::new(DiscoveryRegistry::new()));
+        let tools = build_discovery_tools(index);
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[0].name, "search_tools");
+        assert_eq!(tools[1].name, "similar_tools");
+        assert_eq!(tools[2].name, "tool_categories");
+    }
+}

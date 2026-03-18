@@ -138,3 +138,29 @@ impl tower_mcp::client::ClientTransport for WebSocketClientTransport {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn connect_fails_with_invalid_url() {
+        let result = WebSocketClientTransport::connect("ws://127.0.0.1:1").await;
+        let err = result.err().expect("should fail").to_string();
+        assert!(
+            err.contains("WebSocket connection failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_with_bearer_token_fails_with_invalid_url() {
+        let result =
+            WebSocketClientTransport::connect_with_bearer_token("ws://127.0.0.1:1", "tok").await;
+        let err = result.err().expect("should fail").to_string();
+        assert!(
+            err.contains("WebSocket connection failed"),
+            "unexpected error: {err}"
+        );
+    }
+}
