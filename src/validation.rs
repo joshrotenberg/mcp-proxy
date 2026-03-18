@@ -1,6 +1,49 @@
 //! Request validation middleware for the proxy.
 //!
-//! Validates tool call arguments against size limits before forwarding.
+//! Validates incoming requests against configurable constraints before they
+//! reach backend services. Currently supports argument size limits for tool
+//! calls; additional validation rules can be added to [`ValidationConfig`]
+//! as needed.
+//!
+//! # Argument size validation
+//!
+//! When `max_argument_size` is set, the [`ValidationService`] serializes
+//! `CallTool` arguments to JSON and checks the byte length against the
+//! limit. Requests that exceed the limit are rejected immediately with an
+//! `invalid_params` JSON-RPC error containing the actual and maximum sizes.
+//! This prevents oversized payloads from reaching backends that may have
+//! their own (less informative) size limits.
+//!
+//! Non-`CallTool` requests (e.g., `ListTools`, `ReadResource`, `Ping`)
+//! pass through without validation. When `max_argument_size` is `None`,
+//! all requests pass through.
+//!
+//! # Configuration
+//!
+//! Argument size limits are configured in the `[security]` section of the
+//! TOML config:
+//!
+//! ```toml
+//! [security]
+//! max_argument_size = 1048576  # 1 MiB
+//! ```
+//!
+//! Omit `max_argument_size` (or set it to `null` in YAML) to disable
+//! argument size validation entirely.
+//!
+//! # Middleware stack position
+//!
+//! Validation runs early in the middleware stack -- after request coalescing
+//! but before capability filtering. This means oversized requests are
+//! rejected before any filtering or routing logic runs. The ordering in
+//! `proxy.rs`:
+//!
+//! 1. Request coalescing
+//! 2. **Request validation** (this module)
+//! 3. Capability filtering ([`crate::filter`])
+//! 4. Search-mode filtering ([`crate::filter`])
+//! 5. Tool aliasing ([`crate::alias`])
+//! 6. Composite tools ([`crate::composite`])
 
 use std::convert::Infallible;
 use std::future::Future;

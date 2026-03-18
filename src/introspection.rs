@@ -1,9 +1,65 @@
 //! OAuth 2.1 token introspection and authorization server discovery.
 //!
-//! Provides:
-//! - [`AuthServerMetadata`]: RFC 8414 authorization server metadata discovery
-//! - [`IntrospectionValidator`]: RFC 7662 token introspection as a [`TokenValidator`]
-//! - [`FallbackValidator`]: Try JWT validation first, fall back to introspection
+//! This module implements two complementary OAuth standards for token
+//! validation in environments where local JWT verification alone is
+//! insufficient:
+//!
+//! - **RFC 8414** -- Authorization server metadata discovery. The proxy
+//!   fetches the issuer's `.well-known/oauth-authorization-server` (or
+//!   `.well-known/openid-configuration` as a fallback) to auto-discover
+//!   the JWKS URI, introspection endpoint, and other server capabilities.
+//!   See [`discover_auth_server`] and [`AuthServerMetadata`].
+//!
+//! - **RFC 7662** -- Token introspection. The proxy calls the authorization
+//!   server's introspection endpoint with client credentials to validate
+//!   opaque (non-JWT) tokens at request time. See [`IntrospectionValidator`].
+//!
+//! # Validation strategies
+//!
+//! The [`FallbackValidator`] combines both approaches: it attempts fast,
+//! local JWT validation first (no network call), and falls back to
+//! introspection only when JWT decoding fails. This is the recommended
+//! strategy when the authorization server issues both JWT and opaque tokens.
+//!
+//! | Strategy | Type | Network per request | Use when |
+//! |---|---|---|---|
+//! | JWT only | [`TokenValidator`] | No | All tokens are JWTs |
+//! | Introspection only | [`IntrospectionValidator`] | Yes | Opaque tokens, real-time revocation |
+//! | Both (fallback) | [`FallbackValidator`] | Sometimes | Mixed token types |
+//!
+//! The strategy is selected via the `token_validation` field in the auth
+//! config: `"jwt"` (default), `"introspection"`, or `"both"`.
+//!
+//! # Configuration example
+//!
+//! ```toml
+//! [auth]
+//! type = "oauth"
+//! issuer = "https://auth.example.com"
+//! audience = "mcp-proxy"
+//! client_id = "mcp-proxy-client"
+//! client_secret = "${OAUTH_CLIENT_SECRET}"
+//! token_validation = "both"
+//!
+//! # Optional: override auto-discovered endpoints
+//! # jwks_uri = "https://auth.example.com/custom/jwks"
+//! # introspection_endpoint = "https://auth.example.com/custom/introspect"
+//! ```
+//!
+//! When `token_validation` is `"introspection"` or `"both"`, `client_id` and
+//! `client_secret` are required (the proxy authenticates to the introspection
+//! endpoint using HTTP Basic auth with these credentials).
+//!
+//! # Discovery flow
+//!
+//! [`discover_auth_server`] performs metadata discovery in two steps:
+//!
+//! 1. Fetch `{issuer}/.well-known/oauth-authorization-server` (RFC 8414).
+//! 2. If that fails, fall back to `{issuer}/.well-known/openid-configuration`
+//!    (OpenID Connect Discovery).
+//!
+//! The returned [`AuthServerMetadata`] provides the JWKS URI and introspection
+//! endpoint used to construct validators at proxy startup.
 
 use std::sync::Arc;
 

@@ -1,7 +1,60 @@
 //! Tool aliasing middleware for the proxy.
 //!
 //! Rewrites tool names in list responses and call requests based on
-//! per-backend alias configuration.
+//! per-backend alias configuration. This lets operators expose backend tools
+//! under different names without modifying the backends themselves.
+//!
+//! # How it works
+//!
+//! Aliasing maintains a bidirectional mapping between original and aliased
+//! names (stored in [`AliasMap`]):
+//!
+//! - **Forward mapping** (original -> alias) -- applied to `ListTools`,
+//!   `ListResources`, and `ListPrompts` responses so clients see the
+//!   aliased names.
+//! - **Reverse mapping** (alias -> original) -- applied to `CallTool`,
+//!   `ReadResource`, and `GetPrompt` requests so the backend receives
+//!   the original name it expects.
+//!
+//! Names that have no alias configured pass through unchanged in both
+//! directions.
+//!
+//! # Configuration
+//!
+//! Aliases are configured per-backend in TOML. The `from` field is the
+//! backend-local tool name (without the namespace prefix); the `to` field
+//! is the new name to expose:
+//!
+//! ```toml
+//! [[backends]]
+//! name = "files"
+//! transport = "stdio"
+//! command = "file-server"
+//!
+//! [[backends.aliases]]
+//! from = "read_file"
+//! to = "read"
+//!
+//! [[backends.aliases]]
+//! from = "write_file"
+//! to = "write"
+//! ```
+//!
+//! With this config, `files/read_file` appears to clients as `files/read`,
+//! and calling `files/read` is transparently forwarded to the backend as
+//! `files/read_file`.
+//!
+//! # Middleware stack position
+//!
+//! Aliasing runs after capability filtering and search-mode filtering, so
+//! filters operate on original names and aliases are applied last. The
+//! ordering in `proxy.rs`:
+//!
+//! 1. Request validation ([`crate::validation`])
+//! 2. Capability filtering ([`crate::filter`])
+//! 3. Search-mode filtering ([`crate::filter`])
+//! 4. **Tool aliasing** (this module)
+//! 5. Composite tools ([`crate::composite`])
 
 use std::collections::HashMap;
 use std::convert::Infallible;

@@ -1,6 +1,66 @@
-//! Admin API for proxy introspection.
+//! Admin HTTP API for proxy introspection and management.
 //!
-//! Provides endpoints for checking backend health and proxy status.
+//! The admin API runs on the same HTTP server as the MCP endpoint and is
+//! mounted under the `/admin` path prefix. It provides read-only
+//! introspection endpoints and management operations for backends, sessions,
+//! caching, and configuration.
+//!
+//! # Endpoint reference
+//!
+//! | Method | Path | Description |
+//! |--------|------|-------------|
+//! | `GET` | `/admin/health` | Aggregated health status of all backends |
+//! | `GET` | `/admin/backends` | List all backends with metadata |
+//! | `GET` | `/admin/backends/{name}/health` | Health status for a single backend |
+//! | `GET` | `/admin/backends/{name}/health/history` | Health state transition history for a backend |
+//! | `POST` | `/admin/backends/add` | Add a new backend at runtime |
+//! | `PUT` | `/admin/backends/{name}` | Update an existing backend's configuration |
+//! | `DELETE` | `/admin/backends/{name}` | Remove a backend at runtime |
+//! | `GET` | `/admin/sessions` | List active MCP sessions (summary) |
+//! | `GET` | `/admin/sessions/detail` | List active MCP sessions (full detail) |
+//! | `DELETE` | `/admin/sessions/{id}` | Terminate a session by ID |
+//! | `GET` | `/admin/stats` | Aggregated proxy statistics |
+//! | `GET` | `/admin/cache/stats` | Cache hit/miss statistics |
+//! | `POST` | `/admin/cache/clear` | Flush the response cache |
+//! | `GET` | `/admin/config` | Current proxy configuration (sanitized) |
+//! | `PUT` | `/admin/config` | Hot-reload proxy configuration |
+//! | `POST` | `/admin/config/validate` | Validate a config without applying it |
+//! | `GET` | `/admin/metrics` | Prometheus metrics scrape endpoint (feature `metrics`) |
+//! | `GET` | `/admin/openapi.json` | OpenAPI spec (feature `openapi`) |
+//!
+//! # Health checking
+//!
+//! Backend health is monitored by a background task ([`spawn_health_checker`])
+//! that periodically sends `ping` requests to each backend and records
+//! pass/fail status. The cached results are stored in [`AdminState`] and
+//! served by the `/admin/health` endpoint without per-request latency.
+//!
+//! Health state transitions (healthy -> unhealthy or vice versa) are recorded
+//! in a ring buffer of [`HealthEvent`] entries (capped at 100 events). The
+//! per-backend history is available at `/admin/backends/{name}/health/history`.
+//!
+//! # Session management
+//!
+//! The proxy tracks active MCP sessions (SSE and Streamable HTTP transports).
+//! The `/admin/sessions` endpoint lists session IDs and metadata, while
+//! `/admin/sessions/{id}` (DELETE) terminates a session by closing its
+//! transport.
+//!
+//! # Cache management
+//!
+//! When response caching is enabled, `/admin/cache/stats` reports hit/miss
+//! counts and `/admin/cache/clear` flushes all cached entries.
+//!
+//! # Authentication
+//!
+//! Admin endpoints are protected by a token-based auth scheme. The proxy
+//! resolves the admin token using a fallback chain:
+//!
+//! 1. `security.admin_token` -- explicit bearer token for admin access.
+//! 2. Proxy's inbound auth config -- reuses the same auth as MCP endpoints.
+//! 3. If neither is set, the admin API is open (suitable for local/dev use).
+//!
+//! The token supports `${ENV_VAR}` syntax for environment variable expansion.
 
 use std::collections::HashMap;
 use std::sync::Arc;
