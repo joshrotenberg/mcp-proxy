@@ -1,8 +1,63 @@
 //! Composite tool middleware for fan-out to multiple backend tools.
 //!
-//! Adds config-defined composite tools that appear in `ListTools` responses
-//! and, when called, fan out the request to multiple backend tools concurrently
-//! using `tokio::JoinSet`, aggregating all results into a single response.
+//! Composite tools are virtual tools that do not exist on any single backend.
+//! When called, they fan out the request to multiple backend tools concurrently,
+//! aggregating all results into a single response. This is useful for
+//! cross-cutting operations like "search everything" or "health-check all
+//! backends."
+//!
+//! # How it works
+//!
+//! The [`CompositeService`] intercepts two request types:
+//!
+//! - **`ListTools`** -- appends the composite tool definitions to the response
+//!   so clients discover them alongside regular backend tools.
+//! - **`CallTool`** -- if the tool name matches a composite, the same arguments
+//!   are forwarded to every target tool concurrently using `tokio::JoinSet`.
+//!   Results from all targets are collected into a single `CallToolResult`
+//!   whose `content` is the concatenation of all individual results. If any
+//!   target fails, the aggregated result's `is_error` flag is set to `true`,
+//!   but successful results are still included.
+//!
+//! All other request types pass through unchanged.
+//!
+//! # Strategy
+//!
+//! The `strategy` field controls execution order. Currently one strategy
+//! is supported:
+//!
+//! - **`parallel`** (default) -- all target tools execute concurrently via
+//!   `tokio::JoinSet`. Results are returned in completion order.
+//!
+//! # Configuration
+//!
+//! Composite tools are defined at the top level in TOML, referencing
+//! namespaced tool names from any backend:
+//!
+//! ```toml
+//! [[composite_tools]]
+//! name = "search_all"
+//! description = "Search across all knowledge sources"
+//! tools = ["github/search", "jira/search", "docs/search"]
+//! strategy = "parallel"
+//! ```
+//!
+//! Validation enforces that composite tool names are non-empty, unique,
+//! and reference at least one target tool.
+//!
+//! # Middleware stack position
+//!
+//! Composite tools are the outermost middleware in the request-processing
+//! stack, applied after aliasing. This means composite tool names are not
+//! subject to alias rewriting, but the target tools they reference are
+//! resolved through the full middleware chain (including aliases, filters,
+//! and validation). The ordering in `proxy.rs`:
+//!
+//! 1. Request validation ([`crate::validation`])
+//! 2. Capability filtering ([`crate::filter`])
+//! 3. Search-mode filtering ([`crate::filter`])
+//! 4. Tool aliasing ([`crate::alias`])
+//! 5. **Composite tools** (this module)
 
 use std::convert::Infallible;
 use std::future::Future;

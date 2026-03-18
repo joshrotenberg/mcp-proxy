@@ -1,7 +1,103 @@
 //! Capability filtering middleware for the proxy.
 //!
+//! This module provides two complementary filtering middlewares that control
+//! which MCP capabilities (tools, resources, prompts) are visible and callable
+//! through the proxy.
+//!
+//! # Capability filtering ([`CapabilityFilterService`])
+//!
 //! Wraps a `Service<RouterRequest>` and filters tools, resources, and prompts
-//! based on per-backend allow/deny lists from config.
+//! based on per-backend allow/deny lists from config. Filtering happens in two
+//! places:
+//!
+//! - **List responses** -- tools, resources, and prompts are removed from
+//!   `ListTools`, `ListResources`, `ListResourceTemplates`, and `ListPrompts`
+//!   responses before they reach the client.
+//! - **Call/read/get requests** -- `CallTool`, `ReadResource`, and `GetPrompt`
+//!   requests for filtered capabilities are rejected immediately with an
+//!   `invalid_params` JSON-RPC error, without ever reaching the backend.
+//!
+//! ## Pattern support
+//!
+//! Filter patterns support three matching modes:
+//!
+//! - **Exact match** -- `"read_file"` matches only `read_file`.
+//! - **Glob patterns** -- `"*_file"` matches `read_file`, `write_file`, etc.
+//!   Standard glob wildcards (`*`, `?`) are supported.
+//! - **Regex patterns** -- prefix a pattern with `re:` to use a regular
+//!   expression: `"re:^list_.*$"` matches `list_files`, `list_users`, etc.
+//!
+//! ## Annotation-based filtering
+//!
+//! In addition to name-based allow/deny lists, the capability filter supports
+//! filtering based on MCP tool annotations:
+//!
+//! - **`hide_destructive`** -- hides any tool whose `destructive_hint`
+//!   annotation is `true`. Non-annotated tools are kept.
+//! - **`read_only_only`** -- only exposes tools whose `read_only_hint`
+//!   annotation is `true`. Tools without annotations are hidden (they are
+//!   not known to be read-only).
+//!
+//! Name-based and annotation-based filters compose: a tool must pass both
+//! the name filter and the annotation filter to be visible.
+//!
+//! ## Configuration
+//!
+//! Filters are configured per-backend in TOML. Use `expose_tools` (allowlist)
+//! or `hide_tools` (denylist) -- not both:
+//!
+//! ```toml
+//! [[backends]]
+//! name = "files"
+//! transport = "stdio"
+//! command = "file-server"
+//! # Allowlist: only these tools are visible
+//! expose_tools = ["read_file", "list_*"]
+//!
+//! [[backends]]
+//! name = "db"
+//! transport = "stdio"
+//! command = "db-server"
+//! # Denylist: everything except these tools is visible
+//! hide_tools = ["drop_table", "re:^delete_"]
+//! # Annotation filter: hide destructive tools
+//! hide_destructive = true
+//!
+//! [[backends]]
+//! name = "safe"
+//! transport = "stdio"
+//! command = "safe-server"
+//! # Only expose read-only tools
+//! read_only_only = true
+//! ```
+//!
+//! The same pattern applies to resources (`expose_resources` / `hide_resources`)
+//! and prompts (`expose_prompts` / `hide_prompts`).
+//!
+//! ## Middleware stack position
+//!
+//! Capability filtering runs after request validation and before search-mode
+//! filtering in the middleware stack. The ordering in `proxy.rs`:
+//!
+//! 1. Request coalescing
+//! 2. Request validation ([`crate::validation`])
+//! 3. **Capability filtering** (this module)
+//! 4. Search-mode filtering (this module)
+//! 5. Tool aliasing ([`crate::alias`])
+//! 6. Composite tools ([`crate::composite`])
+//!
+//! # Search-mode filtering ([`SearchModeFilterService`])
+//!
+//! When the proxy is configured with `tool_exposure = "search"`, the
+//! [`SearchModeFilterService`] hides all tools from `ListTools` responses
+//! except those under the `proxy/` namespace prefix. This is useful when
+//! aggregating many backends whose combined tool count would overwhelm an
+//! LLM's context window.
+//!
+//! Backend tools remain callable -- they are just hidden from discovery.
+//! Clients use `proxy/search_tools` to find tools and `proxy/call_tool`
+//! to invoke them. Only `ListTools` responses are filtered; all other
+//! request types (including `CallTool`) pass through unchanged.
 
 use std::convert::Infallible;
 use std::future::Future;
