@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-03-18
+
+### Testing
+
+- Add examples for library and config scenarios ([#170](https://github.com/joshrotenberg/mcp-proxy/pull/170))
+- Add unit tests for admin_tools, coalesce, and reload modules ([#172](https://github.com/joshrotenberg/mcp-proxy/pull/172))
+- Add unit tests for ws_transport, discovery, and skills modules ([#171](https://github.com/joshrotenberg/mcp-proxy/pull/171))
+
+
+
 ## [0.3.0] - 2026-03-18
 
 ### Bug Fixes
