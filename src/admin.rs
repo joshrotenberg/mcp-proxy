@@ -636,6 +636,29 @@ async fn handle_update_config(
     )
 }
 
+async fn handle_circuit_breakers(
+    Extension(handles): Extension<Arc<std::collections::HashMap<String, crate::proxy::CbHandle>>>,
+) -> Json<Vec<CircuitBreakerStatus>> {
+    let mut statuses = Vec::new();
+    for (name, handle) in handles.iter() {
+        statuses.push(CircuitBreakerStatus {
+            backend: name.clone(),
+            state: format!("{:?}", handle.state()),
+            health: handle.health_status().to_string(),
+        });
+    }
+    statuses.sort_by(|a, b| a.backend.cmp(&b.backend));
+    Json(statuses)
+}
+
+#[derive(Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+struct CircuitBreakerStatus {
+    backend: String,
+    state: String,
+    health: String,
+}
+
 /// OpenAPI spec for the admin API.
 ///
 /// Available at `GET /admin/openapi.json` when the `openapi` feature is enabled.
@@ -666,6 +689,7 @@ async fn handle_openapi() -> impl IntoResponse {
 }
 
 /// Build the admin API router.
+#[allow(clippy::too_many_arguments)]
 pub fn admin_router(
     state: AdminState,
     metrics_handle: MetricsHandle,
@@ -674,6 +698,7 @@ pub fn admin_router(
     proxy: McpProxy,
     config: &crate::config::ProxyConfig,
     config_path: Option<std::path::PathBuf>,
+    cb_handles: std::collections::HashMap<String, crate::proxy::CbHandle>,
 ) -> Router {
     let config_toml = std::sync::Arc::new(toml::to_string_pretty(config).unwrap_or_default());
 
@@ -688,6 +713,7 @@ pub fn admin_router(
         .route("/sessions/detail", get(handle_list_sessions_detail))
         .route("/sessions/{id}", delete(handle_terminate_session))
         .route("/stats", get(handle_aggregate_stats))
+        .route("/circuit-breakers", get(handle_circuit_breakers))
         .route("/config", get(handle_get_config).put(handle_update_config))
         .route("/config/validate", post(handle_validate_config))
         // Per-backend endpoints
@@ -707,7 +733,8 @@ pub fn admin_router(
         .layer(Extension(cache_handle))
         .layer(Extension(proxy))
         .layer(Extension(config_toml))
-        .layer(Extension(config_path));
+        .layer(Extension(config_path))
+        .layer(Extension(Arc::new(cb_handles)));
 
     #[cfg(feature = "metrics")]
     let router = router.layer(Extension(metrics_handle));
@@ -870,6 +897,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         let json = get_json(&router, "/health").await;
@@ -889,6 +917,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         let json = get_json(&router, "/health").await;
@@ -910,6 +939,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         let json = get_json(&router, "/backends").await;
@@ -933,6 +963,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         let json = get_json(&router, "/cache/stats").await;
@@ -951,6 +982,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         let resp = router
@@ -983,6 +1015,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         let resp = router
@@ -1014,6 +1047,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         let json = get_json(&router, "/backends/db/health").await;
@@ -1033,6 +1067,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         let resp = router
@@ -1060,6 +1095,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         let json = get_json(&router, "/stats").await;
@@ -1080,6 +1116,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         let json = get_json(&router, "/backends/db/health/history").await;
@@ -1118,6 +1155,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         // Should only return events for "db"
@@ -1140,6 +1178,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         let json = get_json(&router, "/sessions").await;
@@ -1158,6 +1197,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         let json = get_json(&router, "/sessions/detail").await;
@@ -1177,6 +1217,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         let resp = router
@@ -1272,6 +1313,7 @@ mod tests {
             make_test_proxy().await,
             &make_test_config(),
             None,
+            std::collections::HashMap::new(),
         );
 
         // Check session count
