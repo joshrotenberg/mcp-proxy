@@ -445,3 +445,141 @@ fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn http_backend(name: &str, url: &str) -> BackendConfig {
+        // Parse from TOML to get all default values automatically
+        let toml = format!(
+            r#"
+            name = "{name}"
+            transport = "http"
+            url = "{url}"
+            "#,
+        );
+        toml::from_str(&toml).unwrap()
+    }
+
+    #[test]
+    fn test_config_fingerprint_stable() {
+        let backend = http_backend("api", "http://localhost:8080");
+        let fp1 = config_fingerprint(&backend);
+        let fp2 = config_fingerprint(&backend);
+        assert_eq!(fp1, fp2, "fingerprint should be stable across calls");
+    }
+
+    #[test]
+    fn test_config_fingerprint_differs_on_url_change() {
+        let b1 = http_backend("api", "http://localhost:8080");
+        let b2 = http_backend("api", "http://localhost:9090");
+        assert_ne!(
+            config_fingerprint(&b1),
+            config_fingerprint(&b2),
+            "different URLs should produce different fingerprints"
+        );
+    }
+
+    #[test]
+    fn test_config_fingerprint_differs_on_name_change() {
+        let b1 = http_backend("api", "http://localhost:8080");
+        let b2 = http_backend("api2", "http://localhost:8080");
+        assert_ne!(
+            config_fingerprint(&b1),
+            config_fingerprint(&b2),
+            "different names should produce different fingerprints"
+        );
+    }
+
+    #[test]
+    fn test_config_fingerprint_differs_on_transport_change() {
+        let b1 = http_backend("api", "http://localhost:8080");
+        let b2: BackendConfig = toml::from_str(
+            r#"
+            name = "api"
+            transport = "stdio"
+            command = "echo"
+            "#,
+        )
+        .unwrap();
+        assert_ne!(
+            config_fingerprint(&b1),
+            config_fingerprint(&b2),
+            "different transports should produce different fingerprints"
+        );
+    }
+
+    #[test]
+    fn test_config_fingerprint_differs_with_timeout() {
+        let b1 = http_backend("api", "http://localhost:8080");
+        let b2: BackendConfig = toml::from_str(
+            r#"
+            name = "api"
+            transport = "http"
+            url = "http://localhost:8080"
+            [timeout]
+            seconds = 30
+            "#,
+        )
+        .unwrap();
+        assert_ne!(
+            config_fingerprint(&b1),
+            config_fingerprint(&b2),
+            "adding a timeout should change the fingerprint"
+        );
+    }
+
+    #[test]
+    fn test_fingerprint_map_detects_additions_and_removals() {
+        let backends_v1 = [
+            http_backend("api", "http://api:8080"),
+            http_backend("db", "http://db:5432"),
+        ];
+        let backends_v2 = [
+            http_backend("api", "http://api:8080"),
+            http_backend("cache", "http://cache:6379"),
+        ];
+
+        let fp_v1: HashMap<String, String> = backends_v1
+            .iter()
+            .map(|b| (b.name.clone(), config_fingerprint(b)))
+            .collect();
+        let fp_v2: HashMap<String, String> = backends_v2
+            .iter()
+            .map(|b| (b.name.clone(), config_fingerprint(b)))
+            .collect();
+
+        let old_names: HashSet<&String> = fp_v1.keys().collect();
+        let new_names: HashSet<&String> = fp_v2.keys().collect();
+
+        let added: HashSet<_> = new_names.difference(&old_names).collect();
+        let removed: HashSet<_> = old_names.difference(&new_names).collect();
+
+        assert_eq!(added.len(), 1, "one backend should be added");
+        assert!(added.contains(&&"cache".to_string()));
+        assert_eq!(removed.len(), 1, "one backend should be removed");
+        assert!(removed.contains(&&"db".to_string()));
+    }
+
+    #[test]
+    fn test_fingerprint_map_detects_modifications() {
+        let b_old = http_backend("api", "http://api:8080");
+        let b_new = http_backend("api", "http://api:9090");
+
+        let fp_old = config_fingerprint(&b_old);
+        let fp_new = config_fingerprint(&b_new);
+
+        assert_ne!(
+            fp_old, fp_new,
+            "modified backend should have a different fingerprint"
+        );
+    }
+
+    // NOTE: Testing the full watch_loop is impractical in unit tests because
+    // it requires real filesystem events and a running tokio runtime with
+    // file watchers. The core logic (fingerprint computation and set
+    // difference for add/remove/replace) is tested above via the extracted
+    // config_fingerprint function and HashMap operations that mirror the
+    // watch_loop implementation.
+}
