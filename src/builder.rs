@@ -70,6 +70,7 @@ impl ProxyBuilder {
                 cache: CacheBackendConfig::default(),
                 observability: ObservabilityConfig::default(),
                 composite_tools: Vec::new(),
+                source_path: None,
             },
         }
     }

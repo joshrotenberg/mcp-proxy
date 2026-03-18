@@ -141,6 +141,7 @@ async fn spawn_proxy_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
             None,
             proxy_for_mgmt,
             &test_config,
+            None,
         ),
     );
 

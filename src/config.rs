@@ -32,6 +32,9 @@ pub struct ProxyConfig {
     /// Composite tools that fan out to multiple backend tools.
     #[serde(default)]
     pub composite_tools: Vec<CompositeToolConfig>,
+    /// Path to the config file (set during load, not serialized).
+    #[serde(skip)]
+    pub source_path: Option<std::path::PathBuf>,
 }
 
 /// Fan-out strategy for composite tools.
@@ -1055,6 +1058,7 @@ impl ProxyConfig {
             }
         }
 
+        config.source_path = Some(path.to_path_buf());
         config.validate()?;
         Ok(config)
     }
@@ -1111,6 +1115,7 @@ impl ProxyConfig {
             cache: CacheBackendConfig::default(),
             observability: ObservabilityConfig::default(),
             composite_tools: Vec::new(),
+            source_path: Some(path.to_path_buf()),
         };
 
         config.validate()?;
