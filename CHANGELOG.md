@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-03-18
+
+### Bug Fixes
+
+- Add PUT /admin/config endpoint for config updates ([#162](https://github.com/joshrotenberg/mcp-proxy/pull/162))
+
+### Features
+
+- Helm chart for Kubernetes deployment ([#158](https://github.com/joshrotenberg/mcp-proxy/pull/158))
+- Agentskills.io compliant skills for proxy management ([#159](https://github.com/joshrotenberg/mcp-proxy/pull/159))
+- Admin API auth protection ([#164](https://github.com/joshrotenberg/mcp-proxy/pull/164))
+- Expose circuit breaker states via admin API ([#166](https://github.com/joshrotenberg/mcp-proxy/pull/166))
+
+### Testing
+
+- Add unit tests for session admin endpoints ([#160](https://github.com/joshrotenberg/mcp-proxy/pull/160))
+
+### Research
+
+- Benchmark proxy overhead with criterion ([#165](https://github.com/joshrotenberg/mcp-proxy/pull/165))
+
+
+
 ## [0.2.0] - 2026-03-17
 
 ### Bug Fixes
