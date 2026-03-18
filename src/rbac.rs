@@ -1,8 +1,81 @@
-//! Role-based access control middleware for the proxy.
+//! Role-based access control (RBAC) middleware for the proxy.
 //!
-//! Reads JWT claims from `RouterRequest.extensions`, maps them to roles
-//! via config, and applies per-role tool allow/deny lists.
-//! Runs on top of static capability filtering (can only further restrict).
+//! This module enforces per-role tool access policies on authenticated requests.
+//! It reads JWT claims from [`RouterRequest`] extensions, maps claim values to
+//! named roles via a configurable mapping, and applies per-role allow/deny lists
+//! to both `tools/call` and `tools/list` requests.
+//!
+//! # How role resolution works
+//!
+//! 1. The auth layer (JWT or introspection) validates the token and inserts
+//!    [`TokenClaims`](tower_mcp::oauth::token::TokenClaims) into the request
+//!    extensions.
+//! 2. [`RbacConfig`] reads a configured claim (e.g. `"scope"`, `"role"`,
+//!    `"groups"`) from those claims.
+//! 3. The claim value is matched against `role_mapping.mapping` to resolve a
+//!    role name (e.g. `"read-only"` -> `"reader"`).
+//! 4. The resolved role's `allow_tools` and `deny_tools` lists determine access.
+//!
+//! If no [`TokenClaims`](tower_mcp::oauth::token::TokenClaims) are present in
+//! the request extensions (e.g. unauthenticated or bearer-token-only requests),
+//! the RBAC layer passes the request through without restriction.
+//!
+//! # Allow/deny list semantics
+//!
+//! Each role can define an allow list, a deny list, or both:
+//!
+//! - **Allow list only**: only the listed tools are accessible. All others are
+//!   denied.
+//! - **Deny list only**: all tools are accessible except those listed.
+//! - **Both**: a tool must appear in the allow list AND not appear in the deny
+//!   list.
+//! - **Neither** (empty lists): the role has unrestricted access (e.g. an admin
+//!   role).
+//!
+//! # Interaction with capability filtering
+//!
+//! RBAC runs **on top of** the static capability filter configured per backend.
+//! The final set of visible tools is the **intersection** of what the backend
+//! exposes and what the role permits -- RBAC can only further restrict, never
+//! widen, the tools a client can see or call.
+//!
+//! # Configuration example
+//!
+//! ```toml
+//! [auth]
+//! type = "jwt"
+//! issuer = "https://auth.example.com"
+//! audience = "mcp-proxy"
+//! jwks_uri = "https://auth.example.com/.well-known/jwks.json"
+//!
+//! [[auth.roles]]
+//! name = "admin"
+//! # Empty allow/deny = unrestricted access
+//!
+//! [[auth.roles]]
+//! name = "reader"
+//! allow_tools = ["files/read_file", "files/list_dir"]
+//!
+//! [[auth.roles]]
+//! name = "developer"
+//! deny_tools = ["admin/restart", "admin/shutdown"]
+//!
+//! [auth.role_mapping]
+//! claim = "scope"
+//!
+//! [auth.role_mapping.mapping]
+//! admin = "admin"
+//! read-only = "reader"
+//! dev = "developer"
+//! ```
+//!
+//! # Enforcement
+//!
+//! [`RbacService`] is a Tower middleware that wraps the proxy's inner service.
+//! On `tools/call` requests, it checks the tool name against the resolved role
+//! before forwarding. On `tools/list` responses, it filters out tools the role
+//! cannot access. Denied calls receive a JSON-RPC `InvalidParams` error with
+//! a message identifying the role and tool.
 
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;

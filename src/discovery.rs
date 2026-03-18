@@ -1,12 +1,68 @@
-//! BM25-based tool discovery and search.
+//! BM25 full-text tool discovery and search.
 //!
-//! When `tool_discovery = true` is set in the proxy config, this module
-//! indexes all tools from all backends using jpx-engine's BM25 search and
-//! exposes discovery tools under the `proxy/` namespace:
+//! When a proxy aggregates many backends, clients (and the LLMs behind them)
+//! need a way to find relevant tools without scanning a long flat list. This
+//! module builds a BM25 search index over all registered tools using
+//! [`jpx-engine`](jpx_engine) and exposes three discovery tools under the
+//! `proxy/` namespace:
 //!
-//! - `proxy/search_tools` -- Full-text search across tool names, descriptions, and tags
-//! - `proxy/similar_tools` -- Find tools related to a given tool
-//! - `proxy/tool_categories` -- Browse tools by backend category
+//! | Tool | Description |
+//! |---|---|
+//! | `proxy/search_tools` | Full-text search across tool names, descriptions, parameters, and tags |
+//! | `proxy/similar_tools` | Find tools related to a given tool by BM25 term similarity |
+//! | `proxy/tool_categories` | Browse tools grouped by backend namespace with counts |
+//!
+//! # Enabling discovery
+//!
+//! Set `tool_discovery = true` in the `[proxy]` section:
+//!
+//! ```toml
+//! [proxy]
+//! name = "my-proxy"
+//! tool_discovery = true
+//!
+//! [proxy.listen]
+//! # ...
+//! ```
+//!
+//! The three `proxy/` discovery tools are added to the proxy's tool list
+//! alongside the backend tools.
+//!
+//! # Search mode (`tool_exposure = "search"`)
+//!
+//! For proxies aggregating a large number of tools (100+), listing every tool
+//! in `tools/list` responses can overwhelm LLM context windows. Setting
+//! `tool_exposure = "search"` hides individual backend tools from listings
+//! while keeping them invokable. Only the `proxy/` meta-tools appear in
+//! `tools/list`; clients use `proxy/search_tools` to discover and then call
+//! backend tools by name.
+//!
+//! ```toml
+//! [proxy]
+//! name = "my-proxy"
+//! tool_exposure = "search"
+//! # tool_discovery is implied when tool_exposure = "search"
+//! ```
+//!
+//! # Indexing architecture
+//!
+//! At startup, [`build_index`] sends a `ListTools` request through the proxy
+//! to collect all registered tools, groups them by backend namespace (derived
+//! from the configured separator), and registers each group as a
+//! [`DiscoverySpec`] in a
+//! [`DiscoveryRegistry`]. Tool annotations
+//! (destructive, read-only, idempotent, open-world) are extracted as
+//! searchable tags.
+//!
+//! The index is stored as a [`SharedDiscoveryIndex`] (`Arc<RwLock<DiscoveryRegistry>>`)
+//! for concurrent read access from tool handlers.
+//!
+//! # Hot reload re-indexing
+//!
+//! When the proxy configuration is hot-reloaded (backends added, removed, or
+//! updated), [`reindex`] rebuilds the search index from scratch with the new
+//! tool set. This keeps search results consistent with the proxy's current
+//! state without requiring a restart.
 
 use std::sync::Arc;
 
