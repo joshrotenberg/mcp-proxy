@@ -335,7 +335,7 @@ async fn handle_cache_clear(
 
 /// Create an `AdminState` directly for testing.
 #[cfg(test)]
-fn test_admin_state(
+pub(crate) fn test_admin_state(
     proxy_name: &str,
     proxy_version: &str,
     backend_count: usize,

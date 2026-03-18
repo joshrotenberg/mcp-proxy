@@ -309,3 +309,202 @@ struct CallToolInput {
     /// Arguments to pass to the tool
     arguments: Option<serde_json::Map<String, serde_json::Value>>,
 }
+
+#[cfg(test)]
+mod tests {
+    use tower::Service;
+    use tower_mcp::client::ChannelTransport;
+    use tower_mcp::protocol::{
+        CallToolParams, ListToolsParams, McpRequest, McpResponse, RequestId,
+    };
+    use tower_mcp::proxy::McpProxy;
+    use tower_mcp::router::{Extensions, RouterRequest};
+    use tower_mcp::{CallToolResult, McpRouter, SessionHandle, ToolBuilder};
+
+    use super::*;
+
+    fn make_session_handle() -> SessionHandle {
+        let svc = tower::util::BoxCloneService::new(tower::service_fn(
+            |_req: tower_mcp::RouterRequest| async {
+                Ok::<_, std::convert::Infallible>(tower_mcp::RouterResponse {
+                    id: RequestId::Number(1),
+                    inner: Ok(McpResponse::Pong(Default::default())),
+                })
+            },
+        ));
+        let (_, handle) =
+            tower_mcp::transport::http::HttpTransport::from_service(svc).into_router_with_handle();
+        handle
+    }
+
+    fn make_admin_state() -> AdminState {
+        crate::admin::test_admin_state("test-proxy", "0.1.0", 0, vec![])
+    }
+
+    async fn make_test_proxy() -> McpProxy {
+        let router = McpRouter::new().server_info("test", "1.0.0").tool(
+            ToolBuilder::new("ping")
+                .description("Ping")
+                .handler(|_: tower_mcp::NoParams| async move { Ok(CallToolResult::text("pong")) })
+                .build(),
+        );
+
+        McpProxy::builder("test-proxy", "1.0.0")
+            .backend("test", ChannelTransport::new(router))
+            .await
+            .build_strict()
+            .await
+            .unwrap()
+    }
+
+    async fn list_tools(proxy: &mut McpProxy) -> Vec<String> {
+        let req = RouterRequest {
+            id: RequestId::Number(1),
+            inner: McpRequest::ListTools(ListToolsParams {
+                cursor: None,
+                meta: None,
+            }),
+            extensions: Extensions::new(),
+        };
+        let resp = proxy.call(req).await.expect("infallible");
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => result.tools.into_iter().map(|t| t.name).collect(),
+            other => panic!("expected ListTools, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_build_admin_router_has_expected_tools() {
+        let proxy = make_test_proxy().await;
+        let state = AdminToolState {
+            admin_state: make_admin_state(),
+            session_handle: make_session_handle(),
+            config_snapshot: Arc::new("# empty config".to_string()),
+            proxy: proxy.clone(),
+        };
+
+        let router = build_admin_router(state, None, false, vec![]);
+        let transport = ChannelTransport::new(router);
+
+        let mut test_proxy = McpProxy::builder("verify", "1.0.0")
+            .backend("admin", transport)
+            .await
+            .build_strict()
+            .await
+            .unwrap();
+
+        let tools = list_tools(&mut test_proxy).await;
+        assert!(tools.contains(&"admin_list_backends".to_string()));
+        assert!(tools.contains(&"admin_health_check".to_string()));
+        assert!(tools.contains(&"admin_session_count".to_string()));
+        assert!(tools.contains(&"admin_add_backend".to_string()));
+        assert!(tools.contains(&"admin_config".to_string()));
+        // call_tool should NOT be present when search_mode is false
+        assert!(!tools.contains(&"admin_call_tool".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_search_mode_adds_call_tool() {
+        let proxy = make_test_proxy().await;
+        let state = AdminToolState {
+            admin_state: make_admin_state(),
+            session_handle: make_session_handle(),
+            config_snapshot: Arc::new(String::new()),
+            proxy: proxy.clone(),
+        };
+
+        let router = build_admin_router(state, None, true, vec![]);
+        let transport = ChannelTransport::new(router);
+
+        let mut test_proxy = McpProxy::builder("verify", "1.0.0")
+            .backend("admin", transport)
+            .await
+            .build_strict()
+            .await
+            .unwrap();
+
+        let tools = list_tools(&mut test_proxy).await;
+        assert!(
+            tools.contains(&"admin_call_tool".to_string()),
+            "search mode should add call_tool, got: {tools:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_discovery_tools_included() {
+        let proxy = make_test_proxy().await;
+        let state = AdminToolState {
+            admin_state: make_admin_state(),
+            session_handle: make_session_handle(),
+            config_snapshot: Arc::new(String::new()),
+            proxy: proxy.clone(),
+        };
+
+        let extra_tool = ToolBuilder::new("search_tools")
+            .description("Search for tools")
+            .handler(
+                |_: tower_mcp::NoParams| async move { Ok(CallToolResult::text("search results")) },
+            )
+            .build();
+
+        let router = build_admin_router(state, Some(vec![extra_tool]), false, vec![]);
+        let transport = ChannelTransport::new(router);
+
+        let mut test_proxy = McpProxy::builder("verify", "1.0.0")
+            .backend("admin", transport)
+            .await
+            .build_strict()
+            .await
+            .unwrap();
+
+        let tools = list_tools(&mut test_proxy).await;
+        assert!(
+            tools.contains(&"admin_search_tools".to_string()),
+            "discovery tool should be included, got: {tools:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_config_tool_returns_snapshot() {
+        let config_text = "[proxy]\nname = \"test\"\n".to_string();
+        let proxy = make_test_proxy().await;
+        let state = AdminToolState {
+            admin_state: make_admin_state(),
+            session_handle: make_session_handle(),
+            config_snapshot: Arc::new(config_text.clone()),
+            proxy: proxy.clone(),
+        };
+
+        let router = build_admin_router(state, None, false, vec![]);
+        let transport = ChannelTransport::new(router);
+
+        let mut test_proxy = McpProxy::builder("verify", "1.0.0")
+            .backend("admin", transport)
+            .await
+            .build_strict()
+            .await
+            .unwrap();
+
+        let req = RouterRequest {
+            id: RequestId::Number(1),
+            inner: McpRequest::CallTool(CallToolParams {
+                name: "admin_config".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+            extensions: Extensions::new(),
+        };
+        let resp = test_proxy.call(req).await.expect("infallible");
+        match resp.inner.unwrap() {
+            McpResponse::CallTool(result) => {
+                let text = result.all_text();
+                assert!(
+                    text.contains("[proxy]"),
+                    "config tool should return the config snapshot, got: {text}"
+                );
+            }
+            other => panic!("expected CallTool, got: {other:?}"),
+        }
+    }
+}
