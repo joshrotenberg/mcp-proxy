@@ -645,7 +645,37 @@ pub fn admin_router(
     #[cfg(feature = "openapi")]
     let router = router.route("/openapi.json", get(handle_openapi));
 
-    router
+    // Admin API auth: admin_token takes priority, then fall back to proxy bearer tokens
+    let admin_tokens = resolve_admin_tokens(config);
+    if !admin_tokens.is_empty() {
+        tracing::info!(token_count = admin_tokens.len(), "Admin API auth enabled");
+        let validator = tower_mcp::auth::StaticBearerValidator::new(admin_tokens);
+        let layer = tower_mcp::auth::AuthLayer::new(validator);
+        router.layer(layer)
+    } else {
+        router
+    }
+}
+
+/// Resolve admin auth tokens: admin_token if set, otherwise proxy bearer tokens.
+fn resolve_admin_tokens(config: &crate::config::ProxyConfig) -> Vec<String> {
+    // Explicit admin token takes priority
+    if let Some(ref token) = config.security.admin_token {
+        return vec![token.clone()];
+    }
+
+    // Fall back to proxy bearer tokens
+    match &config.auth {
+        Some(crate::config::AuthConfig::Bearer {
+            tokens,
+            scoped_tokens,
+        }) => {
+            let mut all: Vec<String> = tokens.clone();
+            all.extend(scoped_tokens.iter().map(|st| st.token.clone()));
+            all
+        }
+        _ => vec![],
+    }
 }
 
 #[cfg(test)]
