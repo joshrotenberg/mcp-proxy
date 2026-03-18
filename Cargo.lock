@@ -3743,9 +3743,9 @@ checksum = "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e"
 
 [[package]]
 name = "tower-mcp"
-version = "0.8.8"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c5ebe34aaad6dc4222d0397055af291d798482143ff100717f0ec14107ba38b"
+checksum = "b19e01ad0f2885015d280eb804088cfd1722c054d20cc8d3944c3ff9d27ff83a"
 dependencies = [
  "async-trait",
  "axum",
@@ -3772,9 +3772,9 @@ dependencies = [
 
 [[package]]
 name = "tower-mcp-types"
-version = "0.8.8"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbcf22e1cb75f07791e6341e533d3f3f84364473fa8a8fddbe0b77b2e2c02637"
+checksum = "83be26fe533a00f3f076a03d1d8a862d8462814f5dd0e4760e9121bee58d1d3a"
 dependencies = [
  "base64",
  "serde",
@@ -3784,9 +3784,9 @@ dependencies = [
 
 [[package]]
 name = "tower-resilience"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b585f60eac1e45f3f5b820a4402dfc84d9075c50b69e3f11a45c54b4ee72d19"
+checksum = "a6d0d9b4835bc80b017391985f22e79a972482bb8c03f6dbecb695be58554eb1"
 dependencies = [
  "tower-resilience-circuitbreaker",
  "tower-resilience-core",
@@ -3812,9 +3812,9 @@ dependencies = [
 
 [[package]]
 name = "tower-resilience-circuitbreaker"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4991600a00fa355ad2345a26c552cb23002b0835e0456daf663eeb941bef2a3f"
+checksum = "de17cd6e94d2f9d6c1c128cf218b211fd5637255dbdc9e5c9c343d85f1a89e20"
 dependencies = [
  "futures",
  "thiserror 2.0.18",
@@ -3825,9 +3825,9 @@ dependencies = [
 
 [[package]]
 name = "tower-resilience-core"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bec695fda09925a0a686d6748063eebc9524b079fa54a85a046719d598cf245"
+checksum = "93d5dbead0dc80bac53e3cc245c3d85b3025ff677991c44da4e2d287ba01cab9"
 dependencies = [
  "thiserror 2.0.18",
  "tokio",
@@ -3835,9 +3835,9 @@ dependencies = [
 
 [[package]]
 name = "tower-resilience-hedge"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e480769d51ca5230840e9c76e7d364ebb08fb76b194715cda63fe5efbabf325"
+checksum = "f419169008d45196e75a7a3039d855aca56154fc8e1d3f516c16336786a8d8e6"
 dependencies = [
  "futures",
  "pin-project-lite",
@@ -3850,9 +3850,9 @@ dependencies = [
 
 [[package]]
 name = "tower-resilience-ratelimiter"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e017627a593f52ca49961083039bf7ef1f3ad6f6f73d862672d5c02083aa2ba8"
+checksum = "230aadac0fb91a238741a50342a82ca2d60294b2f2018b9767fc87d6776799cd"
 dependencies = [
  "futures",
  "tokio",
@@ -3862,9 +3862,9 @@ dependencies = [
 
 [[package]]
 name = "tower-resilience-retry"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f192ef4f7e3a952c428aed9f5d37f09daa5f3b6eac94c079baa52f58e428537"
+checksum = "0d44af247591c2d4049ea375eecf2507467022142ff63d03e6d91b24fc9c0942"
 dependencies = [
  "futures",
  "rand 0.9.2",

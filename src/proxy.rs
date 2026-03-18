@@ -1,5 +1,6 @@
 //! Core proxy construction and serving.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Duration;
 
@@ -41,7 +42,7 @@ impl Proxy {
     /// the axum router. Call [`serve()`](Self::serve) to run standalone or
     /// [`into_router()`](Self::into_router) to embed in an existing app.
     pub async fn from_config(config: ProxyConfig) -> Result<Self> {
-        let mcp_proxy = build_mcp_proxy(&config).await?;
+        let (mcp_proxy, cb_handles) = build_mcp_proxy(&config).await?;
         let proxy_for_admin = mcp_proxy.clone();
         let mut proxy_for_caller = mcp_proxy.clone();
         let proxy_for_management = mcp_proxy.clone();
@@ -102,6 +103,7 @@ impl Proxy {
                 proxy_for_management,
                 &config,
                 config.source_path.clone(),
+                cb_handles,
             ),
         );
         tracing::info!("Admin API enabled at /admin/backends");
@@ -217,10 +219,15 @@ impl Proxy {
     }
 }
 
+/// Circuit breaker handle type alias.
+pub type CbHandle = tower_resilience::circuitbreaker::CircuitBreakerHandle;
+
 /// Build the McpProxy with all backends and per-backend middleware.
-async fn build_mcp_proxy(config: &ProxyConfig) -> Result<McpProxy> {
+/// Returns the proxy and a map of backend name -> circuit breaker handle.
+async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<String, CbHandle>)> {
     let mut builder = McpProxy::builder(&config.proxy.name, &config.proxy.version)
         .separator(&config.proxy.separator);
+    let mut cb_handles: HashMap<String, CbHandle> = HashMap::new();
 
     if let Some(instructions) = &config.proxy.instructions {
         builder = builder.instructions(instructions);
@@ -386,13 +393,14 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<McpProxy> {
                 wait_seconds = cb.wait_duration_seconds,
                 "Applying circuit breaker"
             );
-            let layer = tower_resilience::circuitbreaker::CircuitBreakerLayer::builder()
+            let (layer, handle) = tower_resilience::circuitbreaker::CircuitBreakerLayer::builder()
                 .failure_rate_threshold(cb.failure_rate_threshold)
                 .minimum_number_of_calls(cb.minimum_calls)
                 .wait_duration_in_open(Duration::from_secs(cb.wait_duration_seconds))
                 .permitted_calls_in_half_open(cb.permitted_calls_in_half_open)
                 .name(format!("{}-cb", backend.name))
-                .build();
+                .build_with_handle();
+            cb_handles.insert(backend.name.clone(), handle);
             builder = builder.backend_layer(layer);
         }
 
@@ -424,7 +432,7 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<McpProxy> {
         }
     }
 
-    Ok(result.proxy)
+    Ok((result.proxy, cb_handles))
 }
 
 /// Build the MCP-level middleware stack around the proxy.
