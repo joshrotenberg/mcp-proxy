@@ -638,6 +638,11 @@ pub struct PerformanceConfig {
 pub struct SecurityConfig {
     /// Maximum size of tool call arguments in bytes (default: unlimited)
     pub max_argument_size: Option<usize>,
+    /// Bearer token for admin API access. If set, all admin endpoints require
+    /// `Authorization: Bearer <token>`. If not set, falls back to the proxy's
+    /// inbound auth config. If neither is set, admin API is open.
+    /// Supports `${ENV_VAR}` syntax.
+    pub admin_token: Option<String>,
 }
 
 /// Logging, metrics, and distributed tracing configuration.
@@ -1527,6 +1532,14 @@ impl ProxyConfig {
                     st.token = env_val;
                 }
             }
+        }
+
+        // Resolve env vars in admin_token
+        if let Some(ref mut token) = self.security.admin_token
+            && let Some(var_name) = token.strip_prefix("${").and_then(|s| s.strip_suffix('}'))
+            && let Ok(env_val) = std::env::var(var_name)
+        {
+            *token = env_val;
         }
 
         // Resolve env vars in OAuth config
