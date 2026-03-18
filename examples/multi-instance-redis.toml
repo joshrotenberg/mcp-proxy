@@ -1,0 +1,44 @@
+# Multi-instance deployment with Redis cache
+# Run multiple proxy instances behind a load balancer, sharing cache via Redis.
+
+[proxy]
+name = "multi-proxy"
+[proxy.listen]
+host = "0.0.0.0"
+port = 8080
+
+# External Redis cache -- shared across all instances
+[cache]
+backend = "redis"
+url = "redis://redis:6379"
+prefix = "mcp-proxy:"
+
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://api:8080"
+
+# Per-backend cache TTLs (stored in Redis)
+[backends.cache]
+resource_ttl_seconds = 300
+tool_ttl_seconds = 60
+max_entries = 5000
+
+[[backends]]
+name = "search"
+transport = "http"
+url = "http://search:8080"
+
+[backends.cache]
+tool_ttl_seconds = 120
+max_entries = 1000
+
+[observability]
+log_level = "info"
+json_logs = true    # Structured logs for aggregation
+
+[observability.metrics]
+enabled = true      # Prometheus at /admin/metrics
+
+[security]
+admin_token = "${ADMIN_TOKEN}"   # Protect admin API in production

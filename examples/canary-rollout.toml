@@ -1,0 +1,44 @@
+# Canary rollout -- gradually shift traffic to a new backend version.
+# Start at 5% canary weight, increase as confidence grows.
+
+[proxy]
+name = "canary-proxy"
+[proxy.listen]
+host = "0.0.0.0"
+port = 8080
+
+# Primary backend (receives ~95% of traffic)
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://api-v1:8080"
+
+[backends.circuit_breaker]
+failure_rate_threshold = 0.3
+minimum_calls = 10
+wait_duration_seconds = 30
+
+# Canary backend (receives ~5% of traffic)
+[[backends]]
+name = "api-canary"
+transport = "http"
+url = "http://api-v2:8080"
+canary_of = "api"
+weight = 5              # 5% of traffic to canary
+
+[backends.circuit_breaker]
+failure_rate_threshold = 0.1    # Stricter threshold for canary
+minimum_calls = 5
+wait_duration_seconds = 60
+
+# Mirror traffic to a shadow backend for testing (fire-and-forget)
+[[backends]]
+name = "api-shadow"
+transport = "http"
+url = "http://api-v3-beta:8080"
+mirror_of = "api"
+mirror_percent = 1      # 1% of traffic mirrored
+
+[observability]
+audit = true            # Audit all requests during rollout
+log_level = "info"
