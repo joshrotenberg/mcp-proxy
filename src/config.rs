@@ -1,4 +1,226 @@
-//! Proxy configuration types and TOML parsing.
+//! Proxy configuration types and parsing.
+//!
+//! All proxy behavior is driven by [`ProxyConfig`], typically loaded from a TOML
+//! file via [`ProxyConfig::load()`]. YAML is also supported when the `yaml` feature
+//! is enabled. The config can also be built programmatically via [`crate::ProxyBuilder`].
+//!
+//! # Config Structure
+//!
+//! ```toml
+//! [proxy]                    # Core settings (name, listen, separator)
+//! [[backends]]               # Backend MCP servers (stdio, http, websocket)
+//! [auth]                     # Authentication (bearer, jwt, oauth)
+//! [performance]              # Request coalescing
+//! [security]                 # Argument size limits, admin token
+//! [cache]                    # Cache backend (memory, redis, sqlite)
+//! [observability]            # Logging, metrics, tracing
+//! [[composite_tools]]        # Fan-out tools
+//! ```
+//!
+//! # Proxy Settings
+//!
+//! ```toml
+//! [proxy]
+//! name = "my-proxy"              # Proxy name in MCP server info
+//! version = "1.0.0"              # Version string (default: "0.1.0")
+//! separator = "/"                # Namespace separator (default: "/")
+//! hot_reload = true              # Watch config file for changes
+//! tool_discovery = true          # Enable BM25 search (adds proxy/search_tools)
+//! tool_exposure = "search"       # "direct" (default) or "search" (meta-tools only)
+//! shutdown_timeout_seconds = 30  # Graceful shutdown timeout
+//! import_backends = ".mcp.json"  # Import backends from Claude/Cursor config
+//!
+//! [proxy.listen]
+//! host = "0.0.0.0"
+//! port = 8080
+//!
+//! [proxy.rate_limit]             # Global rate limit (all backends)
+//! requests = 1000
+//! period_seconds = 1
+//! ```
+//!
+//! # Backend Configuration
+//!
+//! Each backend is an MCP server the proxy routes to. The `name` becomes the
+//! namespace prefix for all tools/resources/prompts from that backend.
+//!
+//! ## Transports
+//!
+//! ```toml
+//! # Subprocess (stdin/stdout)
+//! [[backends]]
+//! name = "files"
+//! transport = "stdio"
+//! command = "npx"
+//! args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+//! [backends.env]
+//! NODE_ENV = "production"
+//!
+//! # Remote HTTP server
+//! [[backends]]
+//! name = "api"
+//! transport = "http"
+//! url = "http://mcp-server:8080"
+//! bearer_token = "${API_TOKEN}"    # ${VAR} syntax for env vars
+//! forward_auth = true              # Forward client's auth token
+//!
+//! # WebSocket server
+//! [[backends]]
+//! name = "ws"
+//! transport = "websocket"
+//! url = "wss://mcp.example.com/ws"
+//! ```
+//!
+//! ## Per-Backend Middleware
+//!
+//! All middleware is optional and configured per-backend:
+//!
+//! ```toml
+//! [[backends]]
+//! name = "api"
+//! transport = "http"
+//! url = "http://api:8080"
+//!
+//! # Timeout
+//! [backends.timeout]
+//! seconds = 30
+//!
+//! # Circuit breaker (failure-rate based)
+//! [backends.circuit_breaker]
+//! failure_rate_threshold = 0.5       # Trip at 50% failure rate
+//! minimum_calls = 5
+//! wait_duration_seconds = 30
+//! permitted_calls_in_half_open = 3
+//!
+//! # Rate limit
+//! [backends.rate_limit]
+//! requests = 100
+//! period_seconds = 1
+//!
+//! # Retry with exponential backoff
+//! [backends.retry]
+//! max_retries = 3
+//! initial_backoff_ms = 100
+//! max_backoff_ms = 5000
+//! budget_percent = 20.0              # Max 20% of requests can be retries
+//!
+//! # Request hedging (tail latency)
+//! [backends.hedging]
+//! delay_ms = 200
+//! max_hedges = 1
+//!
+//! # Outlier detection (passive health)
+//! [backends.outlier_detection]
+//! consecutive_errors = 5
+//! interval_seconds = 10
+//! base_ejection_seconds = 30
+//!
+//! # Response caching
+//! [backends.cache]
+//! resource_ttl_seconds = 300
+//! tool_ttl_seconds = 60
+//! max_entries = 1000
+//!
+//! # Concurrency limit
+//! [backends.concurrency]
+//! max_concurrent = 10
+//! ```
+//!
+//! ## Capability Filtering
+//!
+//! Control which tools, resources, and prompts are exposed:
+//!
+//! ```toml
+//! # Allowlist (mutually exclusive with hide_*)
+//! expose_tools = ["read_file", "list_*", "re:^search_.*$"]
+//! # Or denylist
+//! hide_tools = ["delete_*", "re:^admin_"]
+//! # Annotation-based
+//! hide_destructive = true    # Hide tools with destructive_hint
+//! read_only_only = true      # Only expose read_only_hint tools
+//! ```
+//!
+//! ## Traffic Routing
+//!
+//! ```toml
+//! # Failover (priority-ordered chain)
+//! [[backends]]
+//! name = "api-backup"
+//! transport = "http"
+//! url = "http://backup:8080"
+//! failover_for = "api"
+//! priority = 1                   # Lower = tried first
+//!
+//! # Canary routing (weight-based split)
+//! [[backends]]
+//! name = "api-v2"
+//! transport = "http"
+//! url = "http://api-v2:8080"
+//! canary_of = "api"
+//! weight = 10                    # 10% of traffic
+//!
+//! # Traffic mirroring (shadow, fire-and-forget)
+//! [[backends]]
+//! name = "api-mirror"
+//! transport = "http"
+//! url = "http://mirror:8080"
+//! mirror_of = "api"
+//! mirror_percent = 5
+//! ```
+//!
+//! # Authentication
+//!
+//! ```toml
+//! # Bearer tokens (simple)
+//! [auth]
+//! type = "bearer"
+//! tokens = ["${TOKEN}"]
+//!
+//! # With per-token scoping
+//! [[auth.scoped_tokens]]
+//! token = "${READONLY_TOKEN}"
+//! allow_tools = ["api/read_*"]
+//!
+//! # JWT/JWKS
+//! [auth]
+//! type = "jwt"
+//! issuer = "https://auth.example.com"
+//! audience = "mcp-proxy"
+//! jwks_uri = "https://auth.example.com/.well-known/jwks.json"
+//!
+//! # OAuth 2.1 (auto-discovery)
+//! [auth]
+//! type = "oauth"
+//! issuer = "https://accounts.google.com"
+//! audience = "mcp-proxy"
+//! token_validation = "both"      # jwt + introspection fallback
+//! client_id = "my-client"
+//! client_secret = "${OAUTH_SECRET}"
+//! ```
+//!
+//! # Security
+//!
+//! ```toml
+//! [security]
+//! max_argument_size = 1048576    # 1MB limit on tool call arguments
+//! admin_token = "${ADMIN_TOKEN}" # Protect admin API (falls back to proxy auth)
+//! ```
+//!
+//! # Cache Backend
+//!
+//! ```toml
+//! [cache]
+//! backend = "redis"              # "memory" (default), "redis", "sqlite"
+//! url = "redis://localhost:6379"
+//! prefix = "mcp-proxy:"
+//! ```
+//!
+//! # Environment Variables
+//!
+//! Any config value can reference environment variables with `${VAR_NAME}` syntax.
+//! The `--check` flag warns about unset variables. Supported in: `bearer_token`,
+//! `env` values, auth `tokens`, `scoped_tokens[].token`, `client_secret`,
+//! `admin_token`.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
