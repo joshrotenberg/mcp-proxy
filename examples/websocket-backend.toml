@@ -1,0 +1,31 @@
+# WebSocket backend example
+# Connect to a WebSocket-based MCP server alongside stdio and HTTP backends.
+
+[proxy]
+name = "ws-proxy"
+[proxy.listen]
+host = "0.0.0.0"
+port = 8080
+
+# Local stdio backend
+[[backends]]
+name = "files"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+# Remote HTTP backend
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://api-server:8080"
+
+# WebSocket backend (ws:// or wss://)
+[[backends]]
+name = "realtime"
+transport = "websocket"
+url = "wss://mcp.example.com/ws"
+bearer_token = "${WS_TOKEN}"
+
+[backends.timeout]
+seconds = 60
