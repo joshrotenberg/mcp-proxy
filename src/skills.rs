@@ -155,3 +155,71 @@ fn build_explain_config_skill(config_snapshot: Arc<String>) -> Prompt {
         })
         .build()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_snapshot() -> Arc<String> {
+        Arc::new("[proxy]\nname = \"test\"\n".to_string())
+    }
+
+    #[test]
+    fn build_skills_returns_seven_prompts() {
+        let skills = build_skills(config_snapshot());
+        assert_eq!(skills.len(), 7);
+    }
+
+    #[test]
+    fn all_skills_have_names_and_descriptions() {
+        let skills = build_skills(config_snapshot());
+        for skill in &skills {
+            assert!(!skill.name.is_empty(), "skill name should not be empty");
+            assert!(
+                skill.description.is_some(),
+                "skill '{}' should have a description",
+                skill.name,
+            );
+        }
+    }
+
+    #[test]
+    fn skill_names_are_expected() {
+        let skills = build_skills(config_snapshot());
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "setup",
+                "configure_auth",
+                "configure_resilience",
+                "check_config",
+                "diagnose",
+                "status",
+                "explain_config",
+            ]
+        );
+    }
+
+    #[test]
+    fn static_skills_produce_correct_names() {
+        assert_eq!(build_setup_skill().name, "setup");
+        assert_eq!(build_configure_auth_skill().name, "configure_auth");
+        assert_eq!(
+            build_configure_resilience_skill().name,
+            "configure_resilience"
+        );
+        assert_eq!(build_diagnose_skill().name, "diagnose");
+        assert_eq!(build_status_skill().name, "status");
+    }
+
+    #[test]
+    fn dynamic_skills_include_config_snapshot() {
+        let config = config_snapshot();
+        let check = build_check_config_skill(config.clone());
+        assert_eq!(check.name, "check_config");
+
+        let explain = build_explain_config_skill(config);
+        assert_eq!(explain.name, "explain_config");
+    }
+}
