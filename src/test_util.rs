@@ -56,6 +56,8 @@ impl Service<RouterRequest> for MockService {
                 McpRequest::ListTools(_) => Ok(McpResponse::ListTools(ListToolsResult {
                     tools,
                     next_cursor: None,
+                    ttl_ms: None,
+                    cache_scope: None,
                     meta: None,
                 })),
                 McpRequest::CallTool(params) => Ok(McpResponse::CallTool(CallToolResult::text(
