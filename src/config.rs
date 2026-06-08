@@ -701,7 +701,12 @@ pub enum AuthConfig {
         /// Override the auto-discovered introspection endpoint.
         #[serde(default)]
         introspection_endpoint: Option<String>,
-        /// Required scopes for access (space-delimited).
+        /// Scopes a token must carry to access the proxy.
+        ///
+        /// Every listed scope must be present in the token (AND semantics);
+        /// requests whose token is missing any of them are rejected for all
+        /// operations. Empty (the default) means no scope gate. Enforced at the
+        /// MCP middleware level via the OAuth scope-enforcement layer.
         #[serde(default)]
         required_scopes: Vec<String>,
         /// RBAC role definitions.

@@ -435,6 +435,25 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
     Ok((result.proxy, cb_handles))
 }
 
+/// Build a scope-enforcement layer from configured OAuth `required_scopes`.
+///
+/// Returns `None` when no scopes are required (the layer would be a no-op).
+/// Otherwise returns a [`ScopeEnforcementLayer`](tower_mcp::oauth::ScopeEnforcementLayer)
+/// whose default policy requires *all* of `required_scopes` to be present in the
+/// token (AND semantics) for every request.
+#[cfg(feature = "oauth")]
+fn oauth_scope_layer(
+    required_scopes: &[String],
+) -> Option<tower_mcp::oauth::ScopeEnforcementLayer> {
+    if required_scopes.is_empty() {
+        return None;
+    }
+    let policy = tower_mcp::oauth::ScopePolicy::new().default_scopes(
+        tower_mcp::oauth::ScopeRequirement::all(required_scopes.iter().cloned()),
+    );
+    Some(tower_mcp::oauth::ScopeEnforcementLayer::new(policy))
+}
+
 /// Build the MCP-level middleware stack around the proxy.
 fn build_middleware_stack(
     config: &ProxyConfig,
@@ -747,6 +766,26 @@ fn build_middleware_stack(
             service = BoxCloneService::new(RbacService::new(service, rbac));
         }
 
+        // OAuth `required_scopes` enforcement: a coarse global gate that rejects
+        // any token missing one of the configured scopes (AND semantics). Runs
+        // outside RBAC so a token lacking the required scopes is denied for every
+        // operation, including `tools/list`. Reads TokenClaims injected by the
+        // OAuth auth layer; requests without claims pass through (already rejected
+        // upstream by the HTTP auth layer when auth is enabled).
+        let required_scopes: &[String] = match &config.auth {
+            Some(AuthConfig::OAuth {
+                required_scopes, ..
+            }) => required_scopes,
+            _ => &[],
+        };
+        if let Some(layer) = oauth_scope_layer(required_scopes) {
+            tracing::info!(
+                scopes = ?required_scopes,
+                "Enabling OAuth required_scopes enforcement"
+            );
+            service = BoxCloneService::new(tower::Layer::layer(&layer, service));
+        }
+
         // Token passthrough (inject ClientToken for forward_auth backends)
         let forward_namespaces: std::collections::HashSet<String> = config
             .backends
@@ -1015,4 +1054,83 @@ pub async fn shutdown_signal(timeout: Duration) {
         timeout_seconds = timeout.as_secs(),
         "Shutdown signal received, draining connections"
     );
+}
+
+#[cfg(all(test, feature = "oauth"))]
+mod scope_enforcement_tests {
+    use std::collections::HashMap;
+
+    use tower::{Layer, Service};
+    use tower_mcp::oauth::token::TokenClaims;
+    use tower_mcp::protocol::{CallToolParams, McpRequest, RequestId};
+    use tower_mcp::router::Extensions;
+
+    use super::oauth_scope_layer;
+    use crate::test_util::MockService;
+
+    /// Build a `tools/call` request, optionally carrying a token with `scope`.
+    fn call_with_scope(scope: Option<&str>) -> tower_mcp::RouterRequest {
+        let mut extensions = Extensions::new();
+        if let Some(scope) = scope {
+            extensions.insert(TokenClaims {
+                sub: Some("user".into()),
+                iss: None,
+                aud: None,
+                exp: None,
+                scope: Some(scope.to_string()),
+                client_id: None,
+                extra: HashMap::new(),
+            });
+        }
+        tower_mcp::RouterRequest {
+            id: RequestId::Number(1),
+            inner: McpRequest::CallTool(CallToolParams {
+                name: "fs/read".into(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+            extensions,
+        }
+    }
+
+    #[test]
+    fn no_required_scopes_yields_no_layer() {
+        assert!(oauth_scope_layer(&[]).is_none());
+    }
+
+    #[tokio::test]
+    async fn token_missing_required_scope_is_rejected() {
+        let required = vec!["mcp:access".to_string()];
+        let layer = oauth_scope_layer(&required).expect("layer for non-empty scopes");
+        let mut svc = layer.layer(MockService::with_tools(&["fs/read"]));
+
+        // Token carries a different scope -> missing the required one.
+        let resp = svc
+            .call(call_with_scope(Some("other:scope")))
+            .await
+            .unwrap();
+        let err = resp.inner.unwrap_err();
+        assert!(
+            err.message.to_lowercase().contains("scope"),
+            "expected insufficient-scope error, got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn token_with_all_required_scopes_is_allowed() {
+        let required = vec!["mcp:access".to_string(), "mcp:read".to_string()];
+        let layer = oauth_scope_layer(&required).expect("layer for non-empty scopes");
+        let mut svc = layer.layer(MockService::with_tools(&["fs/read"]));
+
+        let resp = svc
+            .call(call_with_scope(Some("mcp:access mcp:read mcp:extra")))
+            .await
+            .unwrap();
+        assert!(
+            resp.inner.is_ok(),
+            "token carrying all required scopes should be allowed"
+        );
+    }
 }
