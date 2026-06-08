@@ -53,7 +53,14 @@ name = "admin"
 [auth.role_mapping]
 claim = "scope"
 mapping = { "mcp:read" = "reader", "mcp:admin" = "admin" }
+# default_deny = true   # gateway hardening: deny authenticated tokens whose
+                        # scope is not in `mapping` (default false = pass-through)
 ```
+
+For gateway deployments, set `default_deny = true` so that an authenticated
+principal carrying a scope not listed in `mapping` is denied rather than passed
+through with unrestricted access. It defaults to `false` for backwards
+compatibility, and never affects requests with no token claims at all.
 
 ### 3. OAuth 2.1 (Enterprise)
 Best for: enterprise IdP integration (Okta, Auth0, Azure AD, Google, Keycloak).

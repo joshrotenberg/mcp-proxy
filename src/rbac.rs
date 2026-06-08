@@ -92,6 +92,18 @@ use tower_mcp_types::JsonRpcError;
 
 use crate::config::{RoleConfig, RoleMappingConfig};
 
+/// Outcome of resolving a role from request token claims.
+enum RoleResolution {
+    /// No `TokenClaims` present in the request (e.g. unauthenticated or
+    /// bearer-token-only requests). Always passes through.
+    NoClaims,
+    /// Claims present and the mapped claim value resolved to a named role.
+    Role(String),
+    /// Claims present, but the claim value is not in `claim_to_role`. Governed
+    /// by `default_deny`.
+    Unmapped,
+}
+
 /// Resolved RBAC rules.
 #[derive(Clone)]
 pub struct RbacConfig {
@@ -103,6 +115,8 @@ pub struct RbacConfig {
     role_allow: HashMap<String, HashSet<String>>,
     /// Map of role name -> denied tools
     role_deny: HashMap<String, HashSet<String>>,
+    /// Deny authenticated requests whose claim value is not in `claim_to_role`.
+    default_deny: bool,
 }
 
 impl RbacConfig {
@@ -128,22 +142,29 @@ impl RbacConfig {
             claim_to_role: mapping.mapping.clone(),
             role_allow,
             role_deny,
+            default_deny: mapping.default_deny,
         }
     }
 
     /// Resolve the role for the current request from TokenClaims.
-    fn resolve_role(&self, extensions: &tower_mcp::router::Extensions) -> Option<String> {
-        let claims = extensions.get::<tower_mcp::oauth::token::TokenClaims>()?;
+    ///
+    /// Distinguishes three cases: no claims present (pass through), claims that
+    /// map to a named role, and claims whose value is unrecognized (governed by
+    /// `default_deny`).
+    fn resolve_role(&self, extensions: &tower_mcp::router::Extensions) -> RoleResolution {
+        let Some(claims) = extensions.get::<tower_mcp::oauth::token::TokenClaims>() else {
+            return RoleResolution::NoClaims;
+        };
 
         // Check standard scope field first
         if self.claim == "scope" {
             let scopes = claims.scopes();
             for scope in &scopes {
                 if let Some(role) = self.claim_to_role.get(scope) {
-                    return Some(role.clone());
+                    return RoleResolution::Role(role.clone());
                 }
             }
-            return None;
+            return RoleResolution::Unmapped;
         }
 
         // Check extra claims
@@ -154,17 +175,17 @@ impl RbacConfig {
             };
             // Try direct mapping
             if let Some(role) = self.claim_to_role.get(&claim_str) {
-                return Some(role.clone());
+                return RoleResolution::Role(role.clone());
             }
             // Try space-delimited (like scope)
             for part in claim_str.split_whitespace() {
                 if let Some(role) = self.claim_to_role.get(part) {
-                    return Some(role.clone());
+                    return RoleResolution::Role(role.clone());
                 }
             }
         }
 
-        None
+        RoleResolution::Unmapped
     }
 
     /// Check if a tool is allowed for the given role.
@@ -222,15 +243,34 @@ where
         let config = Arc::clone(&self.config);
         let request_id = req.id.clone();
 
-        // Resolve role from extensions
-        let role = config.resolve_role(&req.extensions);
-
-        // If no role resolved, pass through (no RBAC restriction applies)
-        // This allows unauthenticated or bearer-auth requests to proceed
-        // (they're already validated by the auth layer)
-        let Some(role) = role else {
-            let fut = self.inner.call(req);
-            return Box::pin(fut);
+        // Resolve role from extensions.
+        let role = match config.resolve_role(&req.extensions) {
+            // No TokenClaims at all (unauthenticated or bearer-token-only
+            // requests, already validated by the auth layer): pass through, no
+            // RBAC restriction applies.
+            RoleResolution::NoClaims => {
+                let fut = self.inner.call(req);
+                return Box::pin(fut);
+            }
+            // Valid claims whose scope is not in the mapping. Under default-deny
+            // this is rejected; otherwise it preserves the legacy pass-through.
+            RoleResolution::Unmapped => {
+                if config.default_deny {
+                    return Box::pin(async move {
+                        Ok(RouterResponse {
+                            id: request_id,
+                            inner: Err(JsonRpcError::invalid_params(
+                                "Authenticated principal carries no recognized role; \
+                                 access denied (rbac default_deny)"
+                                    .to_string(),
+                            )),
+                        })
+                    });
+                }
+                let fut = self.inner.call(req);
+                return Box::pin(fut);
+            }
+            RoleResolution::Role(role) => role,
         };
 
         let role_for_filter = role.clone();
@@ -282,6 +322,10 @@ mod tests {
     use crate::test_util::MockService;
 
     fn test_rbac_config() -> RbacConfig {
+        rbac_config_with_default_deny(false)
+    }
+
+    fn rbac_config_with_default_deny(default_deny: bool) -> RbacConfig {
         let roles = vec![
             RoleConfig {
                 name: "admin".into(),
@@ -300,6 +344,7 @@ mod tests {
                 ("admin".into(), "admin".into()),
                 ("read-only".into(), "reader".into()),
             ]),
+            default_deny,
         };
         RbacConfig::new(&roles, &mapping)
     }
@@ -414,5 +459,116 @@ mod tests {
         };
         let resp = svc.call(req).await.unwrap();
         assert!(resp.inner.is_ok(), "no claims should pass through");
+    }
+
+    #[tokio::test]
+    async fn test_rbac_unmapped_scope_passes_through_by_default() {
+        // Valid claims, but the scope is not in the mapping. With default_deny
+        // = false (the default), this preserves legacy pass-through behavior.
+        let mock = MockService::with_tools(&["fs/write"]);
+        let mut svc = RbacService::new(mock, rbac_config_with_default_deny(false));
+
+        let req = request_with_scope(
+            "unknown-scope",
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/write".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        );
+        let resp = svc.call(req).await.unwrap();
+        assert!(
+            resp.inner.is_ok(),
+            "unmapped scope should pass through when default_deny is false"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rbac_unmapped_scope_denied_with_default_deny() {
+        // Valid claims, scope not in the mapping, default_deny = true: denied.
+        let mock = MockService::with_tools(&["fs/write"]);
+        let mut svc = RbacService::new(mock, rbac_config_with_default_deny(true));
+
+        let req = request_with_scope(
+            "unknown-scope",
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/write".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        );
+        let resp = svc.call(req).await.unwrap();
+        let err = resp.inner.unwrap_err();
+        assert!(
+            err.message.contains("default_deny"),
+            "unmapped scope should be denied when default_deny is true, got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rbac_mapped_scope_resolves_with_default_deny_enabled() {
+        // A recognized scope must still resolve its role regardless of the
+        // default_deny setting: reader can read, cannot write.
+        let mock = MockService::with_tools(&["fs/read", "fs/write"]);
+        let mut svc = RbacService::new(mock, rbac_config_with_default_deny(true));
+
+        let read_req = request_with_scope(
+            "read-only",
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/read".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        );
+        let resp = svc.call(read_req).await.unwrap();
+        assert!(
+            resp.inner.is_ok(),
+            "mapped role should still resolve with default_deny enabled"
+        );
+
+        let write_req = request_with_scope(
+            "read-only",
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/write".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+        );
+        let resp = svc.call(write_req).await.unwrap();
+        let err = resp.inner.unwrap_err();
+        assert!(
+            err.message.contains("not authorized"),
+            "reader should be denied write via role policy, got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rbac_no_claims_passes_through_with_default_deny() {
+        // default_deny must NOT affect the "no TokenClaims at all" case: a
+        // request with no claims always passes through.
+        let mock = MockService::with_tools(&["fs/write"]);
+        let mut svc = RbacService::new(mock, rbac_config_with_default_deny(true));
+
+        let req = tower_mcp::RouterRequest {
+            id: RequestId::Number(1),
+            inner: McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/write".to_string(),
+                arguments: serde_json::json!({}),
+                meta: None,
+                task: None,
+            }),
+            extensions: Extensions::new(),
+        };
+        let resp = svc.call(req).await.unwrap();
+        assert!(
+            resp.inner.is_ok(),
+            "no claims must pass through even when default_deny is true"
+        );
     }
 }

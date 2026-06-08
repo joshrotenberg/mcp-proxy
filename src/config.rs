@@ -782,6 +782,19 @@ pub struct RoleMappingConfig {
     pub claim: String,
     /// Map claim values to role names
     pub mapping: HashMap<String, String>,
+    /// Default-deny policy for authenticated principals whose claim value is
+    /// not present in `mapping`.
+    ///
+    /// When `false` (the default, for backwards compatibility), a request that
+    /// carries valid token claims but whose mapped scope is unrecognized passes
+    /// through with no RBAC restriction. When `true`, such a request is denied.
+    ///
+    /// Recommended `true` for gateway deployments: an authenticated principal
+    /// carrying an unrecognized scope should not get unrestricted access. This
+    /// only governs requests that already carry token claims; requests with no
+    /// claims at all (no JWT/RBAC configured) always pass through.
+    #[serde(default)]
+    pub default_deny: bool,
 }
 
 /// Tool alias: exposes a backend tool under a different name.
