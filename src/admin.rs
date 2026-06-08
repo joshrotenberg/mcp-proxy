@@ -57,8 +57,13 @@
 //! resolves the admin token using a fallback chain:
 //!
 //! 1. `security.admin_token` -- explicit bearer token for admin access.
-//! 2. Proxy's inbound auth config -- reuses the same auth as MCP endpoints.
+//! 2. Proxy's bearer auth tokens -- reused when `auth.type = "bearer"`.
 //! 3. If neither is set, the admin API is open (suitable for local/dev use).
+//!
+//! When `auth.type` is `jwt` or `oauth` there is no static-token fallback
+//! (step 2 only applies to bearer auth), so `security.admin_token` is
+//! **required** -- config validation rejects its absence to avoid leaving the
+//! admin plane unauthenticated.
 //!
 //! The token supports `${ENV_VAR}` syntax for environment variable expansion.
 

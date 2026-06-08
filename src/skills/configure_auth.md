@@ -34,6 +34,11 @@ type = "jwt"
 issuer = "https://auth.example.com"
 audience = "mcp-proxy"
 jwks_uri = "https://auth.example.com/.well-known/jwks.json"
+
+# Required with jwt/oauth: the admin API has no token fallback for these auth
+# types, so an explicit admin token is mandatory (config validation enforces it).
+[security]
+admin_token = "${ADMIN_TOKEN}"
 ```
 
 With RBAC roles:
@@ -59,6 +64,10 @@ Auto-discovers JWKS and introspection endpoints from the issuer URL.
 type = "oauth"
 issuer = "https://accounts.google.com"
 audience = "mcp-proxy"
+
+# Required with jwt/oauth (see note above).
+[security]
+admin_token = "${ADMIN_TOKEN}"
 ```
 
 With token introspection (for opaque tokens):

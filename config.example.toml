@@ -310,6 +310,9 @@ url = "http://mcp-server:8080"
 
 # [security]
 # max_argument_size = 1048576    # 1MB limit on tool call arguments
+# admin_token = "${ADMIN_TOKEN}" # Bearer token for the /admin API. REQUIRED when
+#                                # auth.type is jwt/oauth (those auth types have no
+#                                # token fallback for admin); optional otherwise.
 
 # =============================================================================
 # Observability
