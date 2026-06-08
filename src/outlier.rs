@@ -581,6 +581,8 @@ mod tests {
                 tower_mcp_types::protocol::ListToolsResult {
                     tools: vec![],
                     next_cursor: None,
+                    ttl_ms: None,
+                    cache_scope: None,
                     meta: None,
                 },
             )),
