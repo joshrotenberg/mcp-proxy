@@ -224,6 +224,27 @@ impl IntrospectionValidator {
     }
 }
 
+/// Check whether an introspection response's `aud` satisfies the configured
+/// expected audience.
+///
+/// When no audience is expected, validation always passes. When an audience is
+/// expected, the response `aud` must contain it (as a string, or as an element
+/// of a string array). If an audience is expected but the response omits `aud`
+/// (or carries an unexpected type), this fails closed rather than accept a
+/// token that may have been issued for a different resource.
+fn audience_matches(expected: Option<&str>, aud: Option<&serde_json::Value>) -> bool {
+    let Some(expected) = expected else {
+        return true; // No expected audience configured; don't reject.
+    };
+    match aud {
+        Some(serde_json::Value::String(s)) => s == expected,
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .any(|v| v.as_str().is_some_and(|s| s == expected)),
+        _ => false,
+    }
+}
+
 impl TokenValidator for IntrospectionValidator {
     async fn validate_token(&self, token: &str) -> Result<TokenClaims, OAuthError> {
         let resp = self
@@ -256,17 +277,11 @@ impl TokenValidator for IntrospectionValidator {
         }
 
         // Validate audience if configured
-        if let Some(expected_aud) = &self.inner.expected_audience {
-            let aud_matches = match &introspection.aud {
-                Some(serde_json::Value::String(s)) => s == expected_aud,
-                Some(serde_json::Value::Array(arr)) => arr
-                    .iter()
-                    .any(|v| v.as_str().is_some_and(|s| s == expected_aud)),
-                _ => true, // No audience in response; don't reject
-            };
-            if !aud_matches {
-                return Err(OAuthError::InvalidAudience);
-            }
+        if !audience_matches(
+            self.inner.expected_audience.as_deref(),
+            introspection.aud.as_ref(),
+        ) {
+            return Err(OAuthError::InvalidAudience);
         }
 
         Ok(TokenClaims {
@@ -341,6 +356,44 @@ mod tests {
             validator.inner.expected_audience.as_deref(),
             Some("mcp-proxy")
         );
+    }
+
+    #[test]
+    fn test_audience_missing_when_expected_is_rejected() {
+        // expected_audience set + response has no `aud` -> rejected (fail closed)
+        assert!(!audience_matches(Some("mcp-proxy"), None));
+        // An unexpected `aud` type is likewise rejected.
+        assert!(!audience_matches(
+            Some("mcp-proxy"),
+            Some(&serde_json::Value::Null)
+        ));
+    }
+
+    #[test]
+    fn test_audience_match_when_expected_is_accepted() {
+        // expected_audience set + response `aud` string matches -> accepted
+        assert!(audience_matches(
+            Some("mcp-proxy"),
+            Some(&serde_json::json!("mcp-proxy"))
+        ));
+        // expected_audience set + response `aud` array contains it -> accepted
+        assert!(audience_matches(
+            Some("mcp-proxy"),
+            Some(&serde_json::json!(["other", "mcp-proxy"]))
+        ));
+        // expected_audience set + response `aud` does not match -> rejected
+        assert!(!audience_matches(
+            Some("mcp-proxy"),
+            Some(&serde_json::json!("someone-else"))
+        ));
+    }
+
+    #[test]
+    fn test_audience_not_expected_accepts_missing_aud() {
+        // expected_audience NOT set + response has no `aud` -> accepted (unchanged)
+        assert!(audience_matches(None, None));
+        // No expected audience: any `aud` value is fine.
+        assert!(audience_matches(None, Some(&serde_json::json!("anything"))));
     }
 
     #[test]
