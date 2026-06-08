@@ -378,7 +378,7 @@ pub fn build_discovery_tools(index: SharedDiscoveryIndex) -> Vec<tower_mcp::Tool
                 let registry = idx.read().await;
                 let categories = registry.list_categories();
                 let mut cats: Vec<CategorySummary> = categories.into_values().collect();
-                cats.sort_by(|a, b| b.tool_count.cmp(&a.tool_count));
+                cats.sort_by_key(|b| std::cmp::Reverse(b.tool_count));
                 let result = CategoriesResult {
                     total_categories: cats.len(),
                     categories: cats,

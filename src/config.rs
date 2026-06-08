@@ -865,8 +865,11 @@ pub struct SecurityConfig {
     pub max_argument_size: Option<usize>,
     /// Bearer token for admin API access. If set, all admin endpoints require
     /// `Authorization: Bearer <token>`. If not set, falls back to the proxy's
-    /// inbound auth config. If neither is set, admin API is open.
-    /// Supports `${ENV_VAR}` syntax.
+    /// bearer auth tokens (bearer auth only). When `auth.type` is `jwt` or
+    /// `oauth` this token is **required** -- those auth types have no static
+    /// fallback for the admin plane, so config validation rejects a missing
+    /// `admin_token`. With no auth configured at all, the admin API is open
+    /// (suitable for local/dev use). Supports `${ENV_VAR}` syntax.
     pub admin_token: Option<String>,
 }
 
@@ -1499,6 +1502,23 @@ impl ProxyConfig {
             anyhow::bail!("OAuth introspection requires both 'client_id' and 'client_secret'");
         }
 
+        // Admin API protection: JWT/OAuth auth has no static-token fallback for
+        // the admin plane (resolve_admin_tokens only derives tokens from bearer
+        // auth). Without an explicit admin_token the admin endpoints -- which can
+        // add backends, rewrite the running config, and terminate sessions --
+        // would be left unauthenticated. Require admin_token to be set in that case.
+        if matches!(
+            &self.auth,
+            Some(AuthConfig::Jwt { .. }) | Some(AuthConfig::OAuth { .. })
+        ) && self.security.admin_token.is_none()
+        {
+            anyhow::bail!(
+                "security.admin_token is required when auth.type is 'jwt' or 'oauth': \
+                 the admin API has no token fallback for these auth types and would be \
+                 left unauthenticated. Set security.admin_token (supports ${{ENV_VAR}})."
+            );
+        }
+
         // Check for duplicate backend names
         let mut seen_names = HashSet::new();
         for backend in &self.backends {
@@ -2087,6 +2107,9 @@ mod tests {
         [auth.role_mapping]
         claim = "scope"
         mapping = { "mcp:read" = "reader", "mcp:admin" = "admin" }
+
+        [security]
+        admin_token = "admin-secret"
         "#;
 
         let config = ProxyConfig::parse(toml).unwrap();
@@ -2755,6 +2778,84 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_jwt_requires_admin_token() {
+        // JWT auth without security.admin_token must be rejected: the admin
+        // plane has no token fallback for JWT/OAuth and would be left open.
+        let toml = r#"
+        [proxy]
+        name = "jwt-gw"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "jwt"
+        issuer = "https://auth.example.com"
+        audience = "mcp-proxy"
+        jwks_uri = "https://auth.example.com/.well-known/jwks.json"
+        "#;
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("admin_token"),
+            "expected admin_token error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_jwt_with_admin_token_ok() {
+        // Same config with an explicit admin_token validates successfully.
+        let toml = r#"
+        [proxy]
+        name = "jwt-gw"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "jwt"
+        issuer = "https://auth.example.com"
+        audience = "mcp-proxy"
+        jwks_uri = "https://auth.example.com/.well-known/jwks.json"
+
+        [security]
+        admin_token = "admin-secret"
+        "#;
+        assert!(ProxyConfig::parse(toml).is_ok());
+    }
+
+    #[test]
+    fn test_validate_oauth_requires_admin_token() {
+        // OAuth (JWT-validation strategy, so credentials aren't required) without
+        // admin_token must also be rejected.
+        let toml = r#"
+        [proxy]
+        name = "oauth-gw"
+        [proxy.listen]
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+
+        [auth]
+        type = "oauth"
+        issuer = "https://auth.example.com"
+        audience = "mcp-proxy"
+        "#;
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("admin_token"),
+            "expected admin_token error, got: {err}"
+        );
+    }
+
+    #[test]
     fn test_parse_global_rate_limit() {
         let toml = r#"
         [proxy]
@@ -3350,6 +3451,9 @@ mod tests {
         type = "oauth"
         issuer = "https://accounts.google.com"
         audience = "mcp-proxy"
+
+        [security]
+        admin_token = "admin-secret"
         "#;
 
         let config = ProxyConfig::parse(toml).unwrap();
@@ -3387,6 +3491,9 @@ mod tests {
         client_id = "my-client"
         client_secret = "my-secret"
         token_validation = "introspection"
+
+        [security]
+        admin_token = "admin-secret"
         "#;
 
         let config = ProxyConfig::parse(toml).unwrap();
@@ -3453,6 +3560,9 @@ mod tests {
         client_secret = "my-secret"
         token_validation = "both"
         required_scopes = ["read", "write"]
+
+        [security]
+        admin_token = "admin-secret"
         "#;
 
         let config = ProxyConfig::parse(toml).unwrap();
@@ -3582,6 +3692,9 @@ mod tests {
         client_id = "my-client"
         client_secret = "${TOTALLY_UNSET_OAUTH_SECRET}"
         token_validation = "introspection"
+
+        [security]
+        admin_token = "admin-secret"
         "#;
 
         let config = ProxyConfig::parse(toml).unwrap();
