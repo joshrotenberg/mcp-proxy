@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-06-10
+
+### Bug Fixes
+
+- Require admin_token when auth is jwt or oauth ([#174](https://github.com/joshrotenberg/mcp-proxy/pull/174))
+- Patch TLS cert-validation advisories + compatible dep bumps ([#173](https://github.com/joshrotenberg/mcp-proxy/pull/173))
+- Reject introspection tokens with missing aud when audience configured (closes #177) ([#180](https://github.com/joshrotenberg/mcp-proxy/pull/180))
+- Enforce required_scopes in oauth auth (closes #175) ([#182](https://github.com/joshrotenberg/mcp-proxy/pull/182))
+
+### Features
+
+- Add rbac default_deny for unmapped scopes (closes #176) ([#181](https://github.com/joshrotenberg/mcp-proxy/pull/181))
+
+### Miscellaneous Tasks
+
+- Upgrade tower-mcp 0.9.2 -> 0.12.0 ([#184](https://github.com/joshrotenberg/mcp-proxy/pull/184))
+- Upgrade opentelemetry stack 0.29 -> 0.32 ([#185](https://github.com/joshrotenberg/mcp-proxy/pull/185))
+- Bump remaining dependencies to latest ([#186](https://github.com/joshrotenberg/mcp-proxy/pull/186))
+
+### Testing
+
+- Add http-level negative auth tests (closes #178) ([#183](https://github.com/joshrotenberg/mcp-proxy/pull/183))
+
+
+
 ## [0.3.1] - 2026-03-18
 
 ### Testing
