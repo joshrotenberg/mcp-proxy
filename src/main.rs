@@ -93,11 +93,12 @@ async fn main() -> Result<()> {
     );
 
     let hot_reload = config.proxy.hot_reload;
+    let watchers = config.proxy.watchers.clone();
 
     let proxy = Proxy::from_config(config).await?;
 
     if hot_reload {
-        proxy.enable_hot_reload(cli.config.clone());
+        proxy.enable_hot_reload(cli.config.clone(), watchers);
     }
 
     proxy.serve().await

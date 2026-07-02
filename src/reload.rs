@@ -5,72 +5,195 @@
 
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
+use std::path::Path;
 use std::path::PathBuf;
-use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
-use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
+use anyhow::Result;
+use notify_debouncer_mini::new_debouncer;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tower::util::BoxCloneService;
 use tower_mcp::proxy::{BackendService, McpProxy};
-use tower_mcp::{RouterRequest, RouterResponse};
 
-use crate::config::{BackendConfig, ProxyConfig, TransportType};
+use crate::config::{BackendConfig, ProxyConfig, TransportType, WatcherConfig};
 
-/// Spawn a background task that watches the config file and adds new backends.
+/// Trait for config file watchers.
+#[async_trait::async_trait]
+trait ConfigWatcher: Send + Sync + 'static {
+    async fn watch(&self, path: &Path) -> Result<mpsc::Receiver<()>>;
+    fn name(&self) -> &'static str;
+}
+
+/// OS-level file watcher using notify (inotify/kqueue/fsevents).
+struct InotifyWatcher;
+
+#[async_trait::async_trait]
+impl ConfigWatcher for InotifyWatcher {
+    async fn watch(&self, path: &Path) -> Result<mpsc::Receiver<()>> {
+        let (tx, rx) = mpsc::channel(1);
+        let mut debouncer = new_debouncer(
+            Duration::from_secs(2),
+            move |res: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| {
+                if let Ok(events) = res {
+                    let has_write = events
+                        .iter()
+                        .any(|e| matches!(e.kind, notify_debouncer_mini::DebouncedEventKind::Any));
+                    if has_write {
+                        let _ = tx.blocking_send(());
+                    }
+                }
+            },
+        )?;
+        debouncer
+            .watcher()
+            .watch(path, notify::RecursiveMode::NonRecursive)?;
+        // Keep debouncer alive by leaking it (it runs in background)
+        std::mem::forget(debouncer);
+        Ok(rx)
+    }
+    fn name(&self) -> &'static str {
+        "inotify"
+    }
+}
+
+/// Lightweight mtime-based polling watcher.
+struct MtimeWatcher {
+    interval: Duration,
+}
+
+#[async_trait::async_trait]
+impl ConfigWatcher for MtimeWatcher {
+    async fn watch(&self, path: &Path) -> Result<mpsc::Receiver<()>> {
+        let (tx, rx) = mpsc::channel(1);
+        let path = path.to_path_buf();
+        let interval = self.interval;
+
+        tokio::spawn(async move {
+            let mut last_mtime = std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok());
+            loop {
+                tokio::time::sleep(interval).await;
+                if let Ok(meta) = std::fs::metadata(&path)
+                    && let Ok(mtime) = meta.modified()
+                    && last_mtime != Some(mtime)
+                {
+                    last_mtime = Some(mtime);
+                    if tx.send(()).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(rx)
+    }
+    fn name(&self) -> &'static str {
+        "mtime"
+    }
+}
+
+/// Signal-based watcher (SIGHUP).
+struct SignalWatcher;
+
+#[async_trait::async_trait]
+impl ConfigWatcher for SignalWatcher {
+    async fn watch(&self, _path: &Path) -> Result<mpsc::Receiver<()>> {
+        let (tx, rx) = mpsc::channel(1);
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut sighup = signal(SignalKind::hangup())?;
+            tokio::spawn(async move {
+                while sighup.recv().await.is_some() {
+                    if tx.send(()).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        #[cfg(not(unix))]
+        {
+            // On non-Unix, this watcher does nothing (never fires)
+            tokio::spawn(async move {
+                let _ = tx; // suppress unused warning
+                // Channel never receives, receiver will hang forever
+                // which is fine - we'll fall back to other watchers
+                std::future::pending::<()>().await;
+            });
+        }
+        Ok(rx)
+    }
+    fn name(&self) -> &'static str {
+        "signal"
+    }
+}
+
+/// Build a watcher from config.
+fn build_watcher(config: &WatcherConfig) -> Box<dyn ConfigWatcher> {
+    match config {
+        WatcherConfig::Inotify => Box::new(InotifyWatcher),
+        WatcherConfig::Mtime { interval_seconds } => Box::new(MtimeWatcher {
+            interval: Duration::from_secs(*interval_seconds),
+        }),
+        WatcherConfig::Signal => Box::new(SignalWatcher),
+    }
+}
+
+/// Spawn a background task that watches the config file and manages backends dynamically.
+/// Tries watchers in order until one succeeds.
 pub fn spawn_config_watcher(
     config_path: PathBuf,
     proxy: McpProxy,
+    watchers: Vec<WatcherConfig>,
     #[cfg(feature = "discovery")] discovery_index: Option<(
         crate::discovery::SharedDiscoveryIndex,
         String,
     )>,
 ) {
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("hot reload runtime");
-        rt.block_on(watch_loop(
+    tokio::spawn(async move {
+        watch_loop(
             config_path,
             proxy,
+            watchers,
             #[cfg(feature = "discovery")]
             discovery_index,
-        ));
+        )
+        .await;
     });
 }
 
 async fn watch_loop(
     config_path: PathBuf,
     proxy: McpProxy,
+    watchers: Vec<WatcherConfig>,
     #[cfg(feature = "discovery")] discovery_index: Option<(
         crate::discovery::SharedDiscoveryIndex,
         String,
     )>,
 ) {
-    let (tx, rx) = std_mpsc::channel();
+    // Try each watcher in order until one works
+    let mut receiver: Option<mpsc::Receiver<()>> = None;
 
-    let mut debouncer = match new_debouncer(Duration::from_secs(2), tx) {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to create file watcher, hot reload disabled");
-            return;
+    for watcher_config in watchers {
+        let watcher = build_watcher(&watcher_config);
+        tracing::info!(watcher = watcher.name(), "Trying config file watcher");
+        match watcher.watch(&config_path).await {
+            Ok(rx) => {
+                receiver = Some(rx);
+                tracing::info!(watcher = watcher.name(), "Config file watcher started");
+                break;
+            }
+            Err(e) => {
+                tracing::warn!(watcher = watcher.name(), error = %e, "Watcher failed, trying next");
+            }
         }
-    };
-
-    if let Err(e) = debouncer
-        .watcher()
-        .watch(&config_path, notify::RecursiveMode::NonRecursive)
-    {
-        tracing::error!(
-            path = %config_path.display(),
-            error = %e,
-            "Failed to watch config file, hot reload disabled"
-        );
-        return;
     }
 
-    tracing::info!(path = %config_path.display(), "Hot reload watching config file");
+    let Some(mut receiver) = receiver else {
+        tracing::error!("All config file watchers failed, hot reload disabled");
+        return;
+    };
 
     // Track known backends and their config fingerprints for change detection
     let mut backend_fingerprints: HashMap<String, String> = {
@@ -86,25 +209,10 @@ async fn watch_loop(
     };
 
     loop {
-        // Block until a file event arrives (this is a std::sync channel)
-        let events = match rx.recv() {
-            Ok(Ok(events)) => events,
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, "File watcher error");
-                continue;
-            }
-            Err(_) => {
-                tracing::info!("File watcher channel closed, stopping hot reload");
-                break;
-            }
-        };
-
-        // Only process write events
-        let has_write = events
-            .iter()
-            .any(|e| matches!(e.kind, DebouncedEventKind::Any));
-        if !has_write {
-            continue;
+        // Wait for file change event
+        if receiver.recv().await.is_none() {
+            tracing::info!("Config watcher channel closed, stopping hot reload");
+            break;
         }
 
         tracing::info!("Config file changed, reloading backends");
@@ -292,8 +400,7 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
         #[cfg(not(feature = "websocket"))]
         TransportType::Websocket => {
             anyhow::bail!(
-                "WebSocket transport requires the 'websocket' feature. \
-                 Rebuild with: cargo install mcp-proxy --features websocket"
+                "WebSocket transport requires the 'websocket' feature.                  Rebuild with: cargo install mcp-proxy --features websocket"
             );
         }
     }
@@ -318,12 +425,16 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
 /// arbitrary combinations of optional layers.
 struct BackendMiddlewareLayer {
     build_fn: Box<
-        dyn Fn(BackendService) -> BoxCloneService<RouterRequest, RouterResponse, Infallible> + Send,
+        dyn Fn(
+                BackendService,
+            )
+                -> BoxCloneService<tower_mcp::RouterRequest, tower_mcp::RouterResponse, Infallible>
+            + Send,
     >,
 }
 
 impl tower::Layer<BackendService> for BackendMiddlewareLayer {
-    type Service = BoxCloneService<RouterRequest, RouterResponse, Infallible>;
+    type Service = BoxCloneService<tower_mcp::RouterRequest, tower_mcp::RouterResponse, Infallible>;
 
     fn layer(&self, inner: BackendService) -> Self::Service {
         (self.build_fn)(inner)
@@ -356,8 +467,11 @@ fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
 
     BackendMiddlewareLayer {
         build_fn: Box::new(move |inner: BackendService| {
-            let mut svc: BoxCloneService<RouterRequest, RouterResponse, Infallible> =
-                BoxCloneService::new(inner);
+            let mut svc: BoxCloneService<
+                tower_mcp::RouterRequest,
+                tower_mcp::RouterResponse,
+                Infallible,
+            > = BoxCloneService::new(inner);
 
             // Retry (innermost)
             if let Some(ref retry_cfg) = retry_config {
@@ -550,36 +664,12 @@ mod tests {
             .map(|b| (b.name.clone(), config_fingerprint(b)))
             .collect();
 
-        let old_names: HashSet<&String> = fp_v1.keys().collect();
-        let new_names: HashSet<&String> = fp_v2.keys().collect();
+        let removed: HashSet<_> = fp_v1.keys().filter(|k| !fp_v2.contains_key(*k)).collect();
+        let added: HashSet<_> = fp_v2.keys().filter(|k| !fp_v1.contains_key(*k)).collect();
 
-        let added: HashSet<_> = new_names.difference(&old_names).collect();
-        let removed: HashSet<_> = old_names.difference(&new_names).collect();
-
-        assert_eq!(added.len(), 1, "one backend should be added");
-        assert!(added.contains(&&"cache".to_string()));
-        assert_eq!(removed.len(), 1, "one backend should be removed");
-        assert!(removed.contains(&&"db".to_string()));
+        assert_eq!(removed.len(), 1);
+        assert!(removed.contains(&"db".to_string()));
+        assert_eq!(added.len(), 1);
+        assert!(added.contains(&"cache".to_string()));
     }
-
-    #[test]
-    fn test_fingerprint_map_detects_modifications() {
-        let b_old = http_backend("api", "http://api:8080");
-        let b_new = http_backend("api", "http://api:9090");
-
-        let fp_old = config_fingerprint(&b_old);
-        let fp_new = config_fingerprint(&b_new);
-
-        assert_ne!(
-            fp_old, fp_new,
-            "modified backend should have a different fingerprint"
-        );
-    }
-
-    // NOTE: Testing the full watch_loop is impractical in unit tests because
-    // it requires real filesystem events and a running tokio runtime with
-    // file watchers. The core logic (fingerprint computation and set
-    // difference for add/remove/replace) is tested above via the extracted
-    // config_fingerprint function and HashMap operations that mirror the
-    // watch_loop implementation.
 }

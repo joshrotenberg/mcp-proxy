@@ -165,11 +165,16 @@ impl Proxy {
     ///
     /// New backends added to the config file will be connected dynamically
     /// without restarting the proxy.
-    pub fn enable_hot_reload(&self, config_path: std::path::PathBuf) {
+    pub fn enable_hot_reload(
+        &self,
+        config_path: std::path::PathBuf,
+        watchers: Vec<crate::config::WatcherConfig>,
+    ) {
         tracing::info!("Hot reload enabled, watching config file for changes");
         crate::reload::spawn_config_watcher(
             config_path,
             self.inner.clone(),
+            watchers,
             #[cfg(feature = "discovery")]
             self.discovery_index
                 .as_ref()

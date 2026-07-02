@@ -336,6 +336,11 @@ pub struct ProxySettings {
     ///   Implies `tool_discovery = true`.
     #[serde(default)]
     pub tool_exposure: ToolExposure,
+
+    /// File watcher configuration for hot reload. Tried in order until one works.
+    /// Default: [Inotify, Mtime { interval_seconds: 30 }, Signal]
+    #[serde(default = "default_watchers")]
+    pub watchers: Vec<WatcherConfig>,
 }
 
 /// How backend tools are exposed to MCP clients.
@@ -363,6 +368,44 @@ pub enum ToolExposure {
     /// Only `proxy/` namespace meta-tools appear. Backend tools are hidden
     /// from listings but remain invokable via `proxy/call_tool`.
     Search,
+}
+
+/// Configuration for a config file watcher.
+///
+/// The proxy tries watchers in order until one successfully detects a change.
+/// The default watchers are: inotify (OS-level), mtime polling (30s interval), and SIGHUP signal.
+///
+/// # Examples
+///
+/// ```toml
+/// [proxy]
+/// watchers = [
+///   { type = "inotify" },
+///   { type = "mtime", interval_seconds = 30 },
+///   { type = "signal" }
+/// ]
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum WatcherConfig {
+    /// OS-level file watcher using inotify (Linux), kqueue (macOS/BSD), or ReadDirectoryChangesW (Windows).
+    /// Most efficient but may not work in all environments (e.g., some containers, network filesystems).
+    Inotify,
+    /// Lightweight polling watcher that checks file modification time at a fixed interval.
+    /// Works everywhere but uses more CPU and has latency up to the interval.
+    Mtime {
+        /// Polling interval in seconds (default: 30).
+        #[serde(default = "default_mtime_interval")]
+        interval_seconds: u64,
+    },
+    /// Signal-based watcher that triggers reload on SIGHUP.
+    /// Useful for manual reloads or integration with external watchers (e.g., systemd, Docker).
+    Signal,
+}
+
+/// Default polling interval for Mtime watcher (30 seconds).
+fn default_mtime_interval() -> u64 {
+    30
 }
 
 /// Global rate limit configuration applied across all backends.
@@ -610,6 +653,7 @@ pub struct InjectArgsConfig {
 /// hide = ["path"]
 /// defaults = { path = "/home/docs" }
 /// rename = { recursive = "deep_search" }
+/// instructions = "Execute SQL queries safely. Use read-only mode for SELECT."
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ParamOverrideConfig {
@@ -629,6 +673,10 @@ pub struct ParamOverrideConfig {
     /// mapped back to the original before forwarding to the backend.
     #[serde(default)]
     pub rename: HashMap<String, String>,
+    /// Override the tool's description (instructions) shown to clients.
+    /// If set, this replaces the tool's `description` field in ListTools responses.
+    #[serde(default)]
+    pub instructions: Option<String>,
 }
 
 /// Request hedging configuration.
@@ -1050,6 +1098,16 @@ fn default_service_name() -> String {
     "mcp-proxy".to_string()
 }
 
+pub fn default_watchers() -> Vec<WatcherConfig> {
+    vec![
+        WatcherConfig::Inotify,
+        WatcherConfig::Mtime {
+            interval_seconds: 30,
+        },
+        WatcherConfig::Signal,
+    ]
+}
+
 /// Resolved filter rules for a backend's capabilities.
 #[derive(Debug, Clone)]
 pub struct BackendFilter {
@@ -1350,6 +1408,7 @@ impl ProxyConfig {
                 rate_limit: None,
                 tool_discovery: false,
                 tool_exposure: ToolExposure::default(),
+                watchers: default_watchers(),
             },
             backends,
             auth: None,

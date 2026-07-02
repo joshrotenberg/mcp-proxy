@@ -1,8 +1,8 @@
 //! Parameter override middleware for tool customization.
 //!
 //! Modifies tool schemas and call arguments to hide parameters (injecting
-//! defaults) and rename parameters. This turns generic tools into
-//! domain-specific ones via config.
+//! defaults), rename parameters, and override tool descriptions. This turns
+//! generic tools into domain-specific ones via config.
 //!
 //! # Configuration
 //!
@@ -12,10 +12,12 @@
 //! hide = ["path"]
 //! defaults = { path = "/home/docs" }
 //! rename = { recursive = "deep_search" }
+//! instructions = "Execute SQL queries safely. Use read-only mode for SELECT."
 //! ```
 //!
 //! On `ListTools`: hidden parameters are removed from the tool's `input_schema`,
-//! and renamed parameters have their schema keys swapped.
+//! renamed parameters have their schema keys swapped, and the tool's
+//! `description` is replaced if `instructions` is set.
 //!
 //! On `CallTool`: hidden parameter defaults are injected, and renamed
 //! parameters are mapped back to their original names before forwarding.
@@ -76,6 +78,8 @@ pub struct ToolOverride {
     rename_forward: HashMap<String, String>,
     /// Reverse rename map: new_name -> original_name (for call rewriting).
     rename_reverse: HashMap<String, String>,
+    /// Optional override for the tool's description (instructions).
+    instructions: Option<String>,
 }
 
 impl ToolOverride {
@@ -94,6 +98,7 @@ impl ToolOverride {
             defaults: config.defaults.clone(),
             rename_forward,
             rename_reverse,
+            instructions: config.instructions.clone(),
         }
     }
 }
@@ -219,7 +224,7 @@ where
         Box::pin(async move {
             let mut resp = fut.await?;
 
-            // On ListTools: rewrite schemas
+            // On ListTools: rewrite schemas and override descriptions
             if let Ok(McpResponse::ListTools(ref mut result)) = resp.inner {
                 for tool in &mut result.tools {
                     for tool_override in overrides.iter() {
@@ -229,6 +234,10 @@ where
                                 &tool_override.hide,
                                 &tool_override.rename_forward,
                             );
+                            // Override tool description if instructions is configured
+                            if let Some(ref instructions) = tool_override.instructions {
+                                tool.description = Some(instructions.clone());
+                            }
                             break;
                         }
                     }
@@ -298,6 +307,7 @@ mod tests {
                     m
                 },
                 rename: HashMap::new(),
+                instructions: None,
             }],
         );
         let mut svc = ParamOverrideService::new(mock, overrides);
@@ -336,6 +346,7 @@ mod tests {
                     m
                 },
                 rename: HashMap::new(),
+                instructions: None,
             }],
         );
         let mut svc = ParamOverrideService::new(mock, overrides);
@@ -368,6 +379,7 @@ mod tests {
                     m.insert("recursive".to_string(), "deep_search".to_string());
                     m
                 },
+                instructions: None,
             }],
         );
         let mut svc = ParamOverrideService::new(mock, overrides);
@@ -405,6 +417,7 @@ mod tests {
                     m.insert("recursive".to_string(), "deep_search".to_string());
                     m
                 },
+                instructions: None,
             }],
         );
         let mut svc = ParamOverrideService::new(mock, overrides);
@@ -442,6 +455,7 @@ mod tests {
                     m.insert("recursive".to_string(), "deep_search".to_string());
                     m
                 },
+                instructions: None,
             }],
         );
         let mut svc = ParamOverrideService::new(mock, overrides);
@@ -472,6 +486,7 @@ mod tests {
                 hide: vec!["path".to_string()],
                 defaults: serde_json::Map::new(),
                 rename: HashMap::new(),
+                instructions: None,
             }],
         );
         let mut svc = ParamOverrideService::new(mock, overrides);
@@ -499,6 +514,7 @@ mod tests {
                 hide: vec!["path".to_string()],
                 defaults: serde_json::Map::new(),
                 rename: HashMap::new(),
+                instructions: None,
             }],
         );
         let mut svc = ParamOverrideService::new(mock, overrides);
@@ -530,6 +546,7 @@ mod tests {
                     m.insert("recursive".to_string(), "deep_search".to_string());
                     m
                 },
+                instructions: None,
             }],
         );
         let mut svc = ParamOverrideService::new(mock, overrides);
@@ -578,6 +595,7 @@ mod tests {
                 m.insert("recursive".to_string(), "deep_search".to_string());
                 m
             },
+            instructions: None,
         };
         let to = ToolOverride::new("fs/", &config);
         assert_eq!(to.namespaced_tool, "fs/list_directory");
@@ -600,6 +618,7 @@ mod tests {
                     m
                 },
                 rename: HashMap::new(),
+                instructions: None,
             }],
         );
 
@@ -629,5 +648,161 @@ mod tests {
             // path should still be /custom
             assert_eq!(args.get("path").unwrap(), "/custom");
         }
+    }
+
+    #[tokio::test]
+    async fn test_instructions_override_rewrites_description() {
+        let mock = mock_with_schema("fs/list_directory", list_dir_schema());
+        let overrides = make_overrides(
+            "fs/",
+            vec![ParamOverrideConfig {
+                tool: "list_directory".to_string(),
+                hide: vec![],
+                defaults: serde_json::Map::new(),
+                rename: HashMap::new(),
+                instructions: Some(
+                    "Execute SQL queries safely. Use read-only mode for SELECT.".to_string(),
+                ),
+            }],
+        );
+        let mut svc = ParamOverrideService::new(mock, overrides);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                let tool = &result.tools[0];
+                assert_eq!(
+                    tool.description,
+                    Some("Execute SQL queries safely. Use read-only mode for SELECT.".to_string())
+                );
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_instructions_override_only_affects_matching_tool() {
+        let mock = mock_with_schema("db/query", list_dir_schema());
+        let overrides = make_overrides(
+            "fs/",
+            vec![ParamOverrideConfig {
+                tool: "list_directory".to_string(),
+                hide: vec![],
+                defaults: serde_json::Map::new(),
+                rename: HashMap::new(),
+                instructions: Some("Custom instructions".to_string()),
+            }],
+        );
+        let mut svc = ParamOverrideService::new(mock, overrides);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                // db/query should keep its original description
+                let tool = &result.tools[0];
+                assert_eq!(tool.description, Some("db/query tool".to_string()));
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_instructions_override_combined_with_hide_rename() {
+        let mock = mock_with_schema("fs/list_directory", list_dir_schema());
+        let overrides = make_overrides(
+            "fs/",
+            vec![ParamOverrideConfig {
+                tool: "list_directory".to_string(),
+                hide: vec!["path".to_string()],
+                defaults: {
+                    let mut m = serde_json::Map::new();
+                    m.insert("path".to_string(), serde_json::json!("/home/docs"));
+                    m
+                },
+                rename: {
+                    let mut m = HashMap::new();
+                    m.insert("recursive".to_string(), "deep_search".to_string());
+                    m
+                },
+                instructions: Some("Combined override with hide and rename".to_string()),
+            }],
+        );
+        let mut svc = ParamOverrideService::new(mock, overrides);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                let tool = &result.tools[0];
+                // Description should be overridden
+                assert_eq!(
+                    tool.description,
+                    Some("Combined override with hide and rename".to_string())
+                );
+                // Schema should still have hide and rename applied
+                let props = tool.input_schema["properties"].as_object().unwrap();
+                assert!(!props.contains_key("path"), "path should be hidden");
+                assert!(
+                    !props.contains_key("recursive"),
+                    "recursive should be renamed"
+                );
+                assert!(
+                    props.contains_key("deep_search"),
+                    "deep_search should appear"
+                );
+                assert!(props.contains_key("pattern"), "pattern should remain");
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_instructions_override_none_preserves_original() {
+        let mock = mock_with_schema("fs/list_directory", list_dir_schema());
+        let overrides = make_overrides(
+            "fs/",
+            vec![ParamOverrideConfig {
+                tool: "list_directory".to_string(),
+                hide: vec![],
+                defaults: serde_json::Map::new(),
+                rename: HashMap::new(),
+                instructions: None,
+            }],
+        );
+        let mut svc = ParamOverrideService::new(mock, overrides);
+
+        let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(result) => {
+                let tool = &result.tools[0];
+                // Original description should be preserved
+                assert_eq!(tool.description, Some("fs/list_directory tool".to_string()));
+            }
+            other => panic!("expected ListTools, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_tool_override_construction_with_instructions() {
+        let config = ParamOverrideConfig {
+            tool: "list_directory".to_string(),
+            hide: vec!["path".to_string()],
+            defaults: {
+                let mut m = serde_json::Map::new();
+                m.insert("path".to_string(), serde_json::json!("/home"));
+                m
+            },
+            rename: {
+                let mut m = HashMap::new();
+                m.insert("recursive".to_string(), "deep_search".to_string());
+                m
+            },
+            instructions: Some("Custom instructions".to_string()),
+        };
+        let to = ToolOverride::new("fs/", &config);
+        assert_eq!(to.namespaced_tool, "fs/list_directory");
+        assert_eq!(to.hide, vec!["path"]);
+        assert_eq!(to.rename_forward.get("recursive").unwrap(), "deep_search");
+        assert_eq!(to.rename_reverse.get("deep_search").unwrap(), "recursive");
+        assert_eq!(to.instructions, Some("Custom instructions".to_string()));
     }
 }
