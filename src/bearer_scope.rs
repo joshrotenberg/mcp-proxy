@@ -423,6 +423,8 @@ mod tests {
             McpRequest::CallTool(CallToolParams {
                 name: "fs/write".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -444,6 +446,8 @@ mod tests {
             McpRequest::CallTool(CallToolParams {
                 name: "fs/read".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -463,6 +467,8 @@ mod tests {
             McpRequest::CallTool(CallToolParams {
                 name: "fs/write".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

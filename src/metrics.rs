@@ -120,6 +120,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "tool".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

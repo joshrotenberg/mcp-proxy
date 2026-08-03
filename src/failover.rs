@@ -127,6 +127,8 @@ fn rewrite_request(req: &McpRequest, primary_prefix: &str, failover_prefix: &str
                 McpRequest::CallTool(CallToolParams {
                     name: format!("{failover_prefix}{local}"),
                     arguments: params.arguments.clone(),
+                    input_responses: params.input_responses.clone(),
+                    request_state: params.request_state.clone(),
                     meta: params.meta.clone(),
                     task: params.task.clone(),
                 })
@@ -138,6 +140,8 @@ fn rewrite_request(req: &McpRequest, primary_prefix: &str, failover_prefix: &str
             if let Some(local) = params.uri.strip_prefix(primary_prefix) {
                 McpRequest::ReadResource(ReadResourceParams {
                     uri: format!("{failover_prefix}{local}"),
+                    input_responses: params.input_responses.clone(),
+                    request_state: params.request_state.clone(),
                     meta: params.meta.clone(),
                 })
             } else {
@@ -149,6 +153,8 @@ fn rewrite_request(req: &McpRequest, primary_prefix: &str, failover_prefix: &str
                 McpRequest::GetPrompt(GetPromptParams {
                     name: format!("{failover_prefix}{local}"),
                     arguments: params.arguments.clone(),
+                    input_responses: params.input_responses.clone(),
+                    request_state: params.request_state.clone(),
                     meta: params.meta.clone(),
                 })
             } else {
@@ -247,7 +253,7 @@ where
 mod tests {
     use tower_mcp::protocol::{McpRequest, McpResponse};
 
-    use super::FailoverService;
+    use super::{FailoverService, rewrite_request};
     use crate::test_util::{MockService, call_service};
 
     fn make_failover_svc(mock: MockService) -> FailoverService<MockService> {
@@ -255,6 +261,26 @@ mod tests {
             .into_iter()
             .collect();
         FailoverService::new(mock, failovers, "/")
+    }
+
+    #[test]
+    fn test_rewrite_preserves_continuation_state() {
+        let request = McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+            name: "primary/tool".to_string(),
+            arguments: serde_json::json!({"q": "test"}),
+            input_responses: Some(Default::default()),
+            request_state: Some("continuation-1".to_string()),
+            meta: None,
+            task: None,
+        });
+
+        let rewritten = rewrite_request(&request, "primary/", "backup/");
+        let McpRequest::CallTool(params) = rewritten else {
+            panic!("expected CallTool");
+        };
+        assert_eq!(params.name, "backup/tool");
+        assert!(params.input_responses.is_some());
+        assert_eq!(params.request_state.as_deref(), Some("continuation-1"));
     }
 
     #[tokio::test]
@@ -276,6 +302,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "primary/tool".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -340,6 +368,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "primary/tool".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -418,6 +448,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "primary/tool".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -482,6 +514,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "primary/tool".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

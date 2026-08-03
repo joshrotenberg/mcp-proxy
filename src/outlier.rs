@@ -350,6 +350,8 @@ mod tests {
             inner: McpRequest::CallTool(tower_mcp_types::protocol::CallToolParams {
                 name: "test/fail".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

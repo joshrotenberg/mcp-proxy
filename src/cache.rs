@@ -1,7 +1,8 @@
 //! Response caching middleware for the proxy.
 //!
 //! Caches `ReadResource` and `CallTool` responses with per-backend TTL.
-//! Cache keys are derived from the request type, name/URI, and arguments.
+//! Cache keys are derived from the request type, name/URI, arguments, and MCP
+//! continuation state.
 //!
 //! # Cache Backends
 //!
@@ -39,7 +40,7 @@ use moka::future::Cache;
 use serde::Serialize;
 use tower::{Layer, Service};
 use tower_mcp::router::{RouterRequest, RouterResponse};
-use tower_mcp_types::protocol::McpRequest;
+use tower_mcp_types::protocol::{InputResponses, McpRequest};
 
 use crate::config::{BackendCacheConfig, CacheBackendConfig};
 
@@ -488,13 +489,22 @@ impl<S> CacheService<S> {
 }
 
 /// Extract cache key and find the matching backend cache + stats.
+fn continuation_identity(
+    input_responses: &Option<InputResponses>,
+    request_state: &Option<String>,
+) -> String {
+    serde_json::to_string(&(input_responses, request_state)).unwrap_or_default()
+}
+
 fn resolve_cache<'a>(
     caches: &'a [BackendCache],
     req: &McpRequest,
 ) -> Option<(&'a CacheStore, String, &'a Arc<CacheStats>)> {
     match req {
         McpRequest::ReadResource(params) => {
-            let key = format!("res:{}", params.uri);
+            let continuation =
+                continuation_identity(&params.input_responses, &params.request_state);
+            let key = format!("res:{}:{continuation}", params.uri);
             for bc in caches {
                 if params.uri.starts_with(&bc.namespace) {
                     return bc.resource_cache.as_ref().map(|c| (c, key, &bc.stats));
@@ -504,7 +514,9 @@ fn resolve_cache<'a>(
         }
         McpRequest::CallTool(params) => {
             let args = serde_json::to_string(&params.arguments).unwrap_or_default();
-            let key = format!("tool:{}:{}", params.name, args);
+            let continuation =
+                continuation_identity(&params.input_responses, &params.request_state);
+            let key = format!("tool:{}:{args}:{continuation}", params.name);
             for bc in caches {
                 if params.name.starts_with(&bc.namespace) {
                     return bc.tool_cache.as_ref().map(|c| (c, key, &bc.stats));
@@ -577,13 +589,19 @@ mod tests {
     use crate::config::{BackendCacheConfig, CacheBackendConfig};
     use crate::test_util::{MockService, call_service};
 
-    fn tool_call(name: &str) -> McpRequest {
+    fn tool_call_with_state(name: &str, request_state: Option<&str>) -> McpRequest {
         McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
             name: name.to_string(),
             arguments: serde_json::json!({"key": "value"}),
+            input_responses: None,
+            request_state: request_state.map(str::to_owned),
             meta: None,
             task: None,
         })
+    }
+
+    fn tool_call(name: &str) -> McpRequest {
+        tool_call_with_state(name, None)
     }
 
     fn default_backend_config() -> CacheBackendConfig {
@@ -697,6 +715,29 @@ mod tests {
         assert_eq!(stats[0].hits, 1);
         assert_eq!(stats[0].misses, 1);
         assert!((stats[0].hit_rate - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_cache_separates_continuation_state() {
+        let mock = MockService::with_tools(&["fs/read"]);
+        let cfg = BackendCacheConfig {
+            resource_ttl_seconds: 60,
+            tool_ttl_seconds: 60,
+            max_entries: 100,
+        };
+        let (mut svc, handle) = CacheService::new(
+            mock,
+            vec![("fs/".to_string(), &cfg)],
+            &default_backend_config(),
+        );
+
+        let _ = call_service(&mut svc, tool_call_with_state("fs/read", Some("first"))).await;
+        let _ = call_service(&mut svc, tool_call_with_state("fs/read", Some("second"))).await;
+        let _ = call_service(&mut svc, tool_call_with_state("fs/read", Some("first"))).await;
+
+        let stats = handle.stats().await;
+        assert_eq!(stats[0].misses, 2);
+        assert_eq!(stats[0].hits, 1);
     }
 
     #[tokio::test]

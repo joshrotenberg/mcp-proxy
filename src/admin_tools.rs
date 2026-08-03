@@ -241,6 +241,8 @@ fn build_admin_router(
                         inner: McpRequest::CallTool(CallToolParams {
                             name: input.name.clone(),
                             arguments: input.arguments.unwrap_or_default().into(),
+                            input_responses: None,
+                            request_state: None,
                             meta: None,
                             task: None,
                         }),
@@ -490,6 +492,8 @@ mod tests {
             inner: McpRequest::CallTool(CallToolParams {
                 name: "admin_config".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

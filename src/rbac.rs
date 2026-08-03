@@ -377,6 +377,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "fs/write".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -395,6 +397,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "fs/write".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -414,6 +418,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "fs/read".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -452,6 +458,8 @@ mod tests {
             inner: McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "fs/write".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -473,6 +481,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "fs/write".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -495,6 +505,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "fs/write".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -520,6 +532,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "fs/read".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -535,6 +549,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "fs/write".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -560,6 +576,8 @@ mod tests {
             inner: McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "fs/write".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

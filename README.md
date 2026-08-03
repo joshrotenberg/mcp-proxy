@@ -9,14 +9,21 @@ A config-driven [Model Context Protocol](https://modelcontextprotocol.io/) (MCP)
 
 Built on [tower-mcp](https://github.com/joshrotenberg/tower-mcp) and the [tower](https://github.com/tower-rs/tower) middleware ecosystem.
 
+> **Project status:** maintained with an intentionally stable scope. mcp-proxy
+> is a tower-native gateway and reference deployment for aggregating MCP
+> backends. Maintenance focuses on security, dependency and protocol updates,
+> bug fixes, and documentation rather than speculative new features.
+
 ## Features
 
 ### Proxy
-- **Multi-backend proxy** -- connect stdio and HTTP MCP servers behind one endpoint
+- **Multi-backend proxy** -- connect stdio, HTTP, and WebSocket MCP servers behind one endpoint
 - **Capability filtering** -- allow/deny lists for tools, resources, and prompts per backend
 - **Tool aliasing** -- rename tools exposed by backends
 - **Argument injection** -- merge default or per-tool arguments into tool calls
 - **Hot reload** -- watch config file and add new backends without restart
+- **Tool discovery** -- BM25 search and an optional search-only exposure mode
+- **Composite tools** -- fan out one tool call across multiple backend tools
 - **Library mode** -- embed the proxy in your own Rust application
 
 ### Resilience
@@ -30,12 +37,14 @@ Built on [tower-mcp](https://github.com/joshrotenberg/tower-mcp) and the [tower]
 
 ### Traffic Management
 - **Traffic mirroring** -- shadow traffic to a canary backend (fire-and-forget)
-- **Response caching** -- per-backend TTL-based caching for tool calls and resource reads
+- **Canary routing and failover** -- weighted rollouts and ordered fallback backends
+- **Response caching** -- in-memory caching with optional Redis or SQLite storage
 - **Request coalescing** -- deduplicate identical concurrent requests
 
 ### Security
 - **Bearer token auth** -- static token validation
 - **JWT/JWKS auth** -- token verification with RBAC (role-based access control)
+- **OAuth 2.1 auth** -- metadata discovery and token introspection
 - **Token passthrough** -- forward client auth tokens to backends
 - **Request validation** -- argument size limits
 
@@ -234,7 +243,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mcp-proxy = "0.1"
+mcp-proxy = "0.5"
 ```
 
 ```rust
@@ -289,13 +298,21 @@ Global middleware wraps the entire proxy. Per-backend middleware is applied indi
 
 ## Feature Flags
 
-Pre-built binaries and `cargo install` include all features by default. If you're building from source and don't need everything, you can disable optional features for a smaller binary:
+Pre-built binaries and `cargo install` include the default features. If you're building from source and don't need everything, you can disable optional features for a smaller binary:
 
 | Feature | Default | What it includes |
 |---------|---------|-----------------|
 | `otel` | yes | OpenTelemetry distributed tracing (OTLP export) |
 | `metrics` | yes | Prometheus metrics and `/admin/metrics` endpoint |
 | `oauth` | yes | JWT/JWKS auth, RBAC, and token passthrough |
+| `openapi` | yes | OpenAPI schema and endpoint support |
+| `websocket` | yes | WebSocket backend transport |
+| `discovery` | yes | BM25 tool discovery and search exposure mode |
+| `yaml` | yes | YAML configuration files |
+| `skills` | yes | agentskills.io prompts for proxy administration |
+| `redis-cache` | no | Shared Redis response cache |
+| `sqlite-cache` | no | Persistent SQLite response cache |
+| `protocol-2026-07-28` | no | Released MCP 2026-07-28 protocol support through tower-mcp |
 
 ```bash
 # Minimal build (bearer auth only, no metrics/tracing/JWT)
@@ -306,6 +323,11 @@ cargo install mcp-proxy --no-default-features --features metrics
 ```
 
 Config parsing always works regardless of features -- if you reference a disabled feature in your config (e.g., `type = "jwt"` without the `oauth` feature), you'll get a clear error at startup.
+
+The default protocol baseline remains MCP 2025-11-25. Build with
+`--features protocol-2026-07-28` to compile support for the released,
+sessionless 2026-07-28 protocol. Continuation fields such as `inputResponses`
+and `requestState` are preserved through proxy routing in either build.
 
 ## License
 

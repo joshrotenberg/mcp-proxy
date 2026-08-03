@@ -172,6 +172,8 @@ fn tool_call(name: &str, args: serde_json::Value) -> McpRequest {
     McpRequest::CallTool(CallToolParams {
         name: name.to_string(),
         arguments: args,
+        input_responses: None,
+        request_state: None,
         meta: None,
         task: None,
     })
@@ -1557,6 +1559,8 @@ mod bearer_scoping {
             McpRequest::CallTool(CallToolParams {
                 name: "text/echo".to_string(),
                 arguments: serde_json::json!({"message": "hi"}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -1578,6 +1582,8 @@ mod bearer_scoping {
             McpRequest::CallTool(CallToolParams {
                 name: "math/add".to_string(),
                 arguments: serde_json::json!({"a": 3, "b": 4}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -1695,6 +1701,8 @@ mod websocket_transport {
             McpRequest::CallTool(CallToolParams {
                 name: "ws/echo".to_string(),
                 arguments: serde_json::json!({"value": "hello ws"}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -1800,6 +1808,8 @@ mod tool_discovery {
             McpRequest::CallTool(CallToolParams {
                 name: "discovery/search_tools".to_string(),
                 arguments: serde_json::json!({"query": "add numbers"}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -1836,6 +1846,8 @@ mod tool_discovery {
             McpRequest::CallTool(CallToolParams {
                 name: "discovery/tool_categories".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -1941,6 +1953,8 @@ mod search_mode {
             McpRequest::CallTool(CallToolParams {
                 name: "math/add".to_string(),
                 arguments: serde_json::json!({"a": 3, "b": 7}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -1978,6 +1992,8 @@ mod search_mode {
             McpRequest::CallTool(CallToolParams {
                 name: "proxy/search_tools".to_string(),
                 arguments: serde_json::json!({"query": "add numbers"}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

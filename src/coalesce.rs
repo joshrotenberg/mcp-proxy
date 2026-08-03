@@ -14,7 +14,7 @@ use std::task::{Context, Poll};
 use tokio::sync::{Mutex, broadcast};
 use tower::{Layer, Service};
 use tower_mcp::router::{RouterRequest, RouterResponse};
-use tower_mcp_types::protocol::McpRequest;
+use tower_mcp_types::protocol::{InputResponses, McpRequest};
 
 /// Tower layer that produces a [`CoalesceService`].
 #[derive(Clone)]
@@ -58,13 +58,26 @@ impl<S> CoalesceService<S> {
     }
 }
 
+fn continuation_identity(
+    input_responses: &Option<InputResponses>,
+    request_state: &Option<String>,
+) -> String {
+    serde_json::to_string(&(input_responses, request_state)).unwrap_or_default()
+}
+
 fn coalesce_key(req: &McpRequest) -> Option<String> {
     match req {
         McpRequest::CallTool(params) => {
             let args = serde_json::to_string(&params.arguments).unwrap_or_default();
-            Some(format!("tool:{}:{}", params.name, args))
+            let continuation =
+                continuation_identity(&params.input_responses, &params.request_state);
+            Some(format!("tool:{}:{args}:{continuation}", params.name))
         }
-        McpRequest::ReadResource(params) => Some(format!("res:{}", params.uri)),
+        McpRequest::ReadResource(params) => {
+            let continuation =
+                continuation_identity(&params.input_responses, &params.request_state);
+            Some(format!("res:{}:{continuation}", params.uri))
+        }
         _ => None,
     }
 }
@@ -153,6 +166,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "fs/read".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -181,6 +196,8 @@ mod tests {
             super::coalesce_key(&McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "tool".to_string(),
                 arguments: serde_json::json!({"a": 1}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }));
@@ -188,6 +205,8 @@ mod tests {
             super::coalesce_key(&McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "tool".to_string(),
                 arguments: serde_json::json!({"a": 2}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }));
@@ -200,6 +219,8 @@ mod tests {
             super::coalesce_key(&McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "tool".to_string(),
                 arguments: serde_json::json!({"a": 1}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }));
@@ -207,6 +228,8 @@ mod tests {
             super::coalesce_key(&McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "tool".to_string(),
                 arguments: serde_json::json!({"a": 1}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }));
@@ -218,10 +241,33 @@ mod tests {
         let key = super::coalesce_key(&McpRequest::ReadResource(
             tower_mcp::protocol::ReadResourceParams {
                 uri: "file:///tmp/test.txt".to_string(),
+                input_responses: None,
+                request_state: None,
                 meta: None,
             },
         ));
-        assert_eq!(key, Some("res:file:///tmp/test.txt".to_string()));
+        assert_eq!(
+            key,
+            Some("res:file:///tmp/test.txt:[null,null]".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_coalesce_key_includes_continuation_state() {
+        let request = |state: &str| {
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "tool".to_string(),
+                arguments: serde_json::json!({"a": 1}),
+                input_responses: None,
+                request_state: Some(state.to_string()),
+                meta: None,
+                task: None,
+            })
+        };
+
+        let key1 = super::coalesce_key(&request("first"));
+        let key2 = super::coalesce_key(&request("second"));
+        assert_ne!(key1, key2, "continuations must not be coalesced together");
     }
 
     #[tokio::test]
@@ -296,6 +342,8 @@ mod tests {
                 inner: McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                     name: "tool".to_string(),
                     arguments: serde_json::json!({"x": 42}),
+                    input_responses: None,
+                    request_state: None,
                     meta: None,
                     task: None,
                 }),
@@ -334,6 +382,8 @@ mod tests {
             inner: McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "tool".to_string(),
                 arguments: serde_json::json!({"x": 1}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -346,6 +396,8 @@ mod tests {
             inner: McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "tool".to_string(),
                 arguments: serde_json::json!({"x": 2}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -374,6 +426,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "failing_tool".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

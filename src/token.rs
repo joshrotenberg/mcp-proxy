@@ -151,6 +151,8 @@ mod tests {
         let req = McpRequest::CallTool(CallToolParams {
             name: "github/search".to_string(),
             arguments: serde_json::json!({}),
+            input_responses: None,
+            request_state: None,
             meta: None,
             task: None,
         });
@@ -163,6 +165,8 @@ mod tests {
         let req = McpRequest::CallTool(CallToolParams {
             name: "db/query".to_string(),
             arguments: serde_json::json!({}),
+            input_responses: None,
+            request_state: None,
             meta: None,
             task: None,
         });
@@ -199,6 +203,8 @@ mod tests {
             inner: McpRequest::CallTool(CallToolParams {
                 name: "github/search".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -220,6 +226,8 @@ mod tests {
             McpRequest::CallTool(CallToolParams {
                 name: "db/query".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -241,6 +249,8 @@ mod tests {
             McpRequest::CallTool(CallToolParams {
                 name: "github/search".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

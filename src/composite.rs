@@ -161,6 +161,8 @@ where
             let extensions = req.extensions.clone();
             let tool_names = composite.tools.clone();
             let arguments = params.arguments.clone();
+            let input_responses = params.input_responses.clone();
+            let request_state = params.request_state.clone();
             let meta = params.meta.clone();
             let task = params.task.clone();
             let inner = self.inner.clone();
@@ -175,6 +177,8 @@ where
                         inner: McpRequest::CallTool(CallToolParams {
                             name: tool_name,
                             arguments: arguments.clone(),
+                            input_responses: input_responses.clone(),
+                            request_state: request_state.clone(),
                             meta: meta.clone(),
                             task: task.clone(),
                         }),
@@ -329,6 +333,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "search_all".to_string(),
                 arguments: serde_json::json!({"q": "test"}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -361,6 +367,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "db/query".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -386,6 +394,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "search_all".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
