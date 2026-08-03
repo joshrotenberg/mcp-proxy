@@ -282,6 +282,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "files/read".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -306,6 +308,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "db/query".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

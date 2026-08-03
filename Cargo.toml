@@ -3,10 +3,17 @@ name = "mcp-proxy"
 version = "0.4.0"
 edition = "2024"
 rust-version = "1.90"
-description = "Standalone MCP proxy -- config-driven reverse proxy with auth, rate limiting, and observability"
+description = "Tower-native MCP gateway for aggregating backends with auth, resilience, and observability"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/joshrotenberg/mcp-proxy"
 homepage = "https://github.com/joshrotenberg/mcp-proxy"
+documentation = "https://docs.rs/mcp-proxy"
+readme = "README.md"
+keywords = ["mcp", "proxy", "tower", "json-rpc", "gateway"]
+categories = ["network-programming", "command-line-utilities"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [lib]
 name = "mcp_proxy"
@@ -27,13 +34,14 @@ yaml = ["dep:serde_yaml"]
 skills = []
 redis-cache = ["dep:redis"]
 sqlite-cache = ["dep:rusqlite"]
+protocol-2026-07-28 = ["tower-mcp/protocol-2026-07-28"]
 
 [dependencies]
-tower-mcp = { version = "0.12.0", features = ["http", "http-client", "proxy"] }
-tower-mcp-types = "0.12.0"
+tower-mcp = { version = "0.18.0", features = ["http", "http-client", "proxy"] }
+tower-mcp-types = "0.18.0"
 axum = "0.8"
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
-tower-resilience = { version = "0.9.3", default-features = false, features = ["circuitbreaker", "ratelimiter", "hedge", "retry"] }
+tower-resilience = { version = "0.10.1", default-features = false, features = ["circuitbreaker", "ratelimiter", "hedge", "retry"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -57,10 +65,10 @@ regex = "1"
 notify-debouncer-mini = "0.7"
 utoipa = { version = "5", features = ["chrono"], optional = true }
 utoipa-axum = { version = "0.2", optional = true }
-tokio-tungstenite = { version = "0.29", features = ["connect", "rustls-tls-webpki-roots"], optional = true }
+tokio-tungstenite = { version = "0.30", features = ["connect", "rustls-tls-webpki-roots"], optional = true }
 async-trait = { version = "0.1", optional = true }
 futures-util = { version = "0.3", optional = true }
-jpx-engine = { version = "0.3.5", optional = true }
+jpx-engine = { version = "0.4.0", optional = true }
 reqwest = { version = "0.13", features = ["json", "form"], optional = true }
 serde_yaml = { version = "0.9", optional = true }
 redis = { version = "1", features = ["tokio-comp"], optional = true }
@@ -69,8 +77,8 @@ rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json"] }
 tokio-stream = "0.1"
-tower-resilience-chaos = "0.9"
-tower-mcp = { version = "0.12.0", features = ["http", "http-client", "proxy", "websocket"] }
+tower-resilience-chaos = "0.10"
+tower-mcp = { version = "0.18.0", features = ["http", "http-client", "proxy", "websocket"] }
 futures-util = "0.3"
 docker-wrapper = { version = "0.11.1", features = ["testing", "templates"] }
 uuid = { version = "1", features = ["v4"] }

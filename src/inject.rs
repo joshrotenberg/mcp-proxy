@@ -218,6 +218,8 @@ mod tests {
             McpRequest::CallTool(CallToolParams {
                 name: "db/query".to_string(),
                 arguments: serde_json::json!({"sql": "SELECT 1"}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -243,6 +245,8 @@ mod tests {
             inner: McpRequest::CallTool(CallToolParams {
                 name: "db/query".to_string(),
                 arguments: serde_json::json!({"sql": "SELECT 1", "timeout": 60}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -283,6 +287,8 @@ mod tests {
             McpRequest::CallTool(CallToolParams {
                 name: "db/query".to_string(),
                 arguments: serde_json::json!({"sql": "SELECT 1"}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -322,6 +328,8 @@ mod tests {
             McpRequest::CallTool(CallToolParams {
                 name: "other/tool".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

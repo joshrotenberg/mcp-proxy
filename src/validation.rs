@@ -167,6 +167,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "tool".to_string(),
                 arguments: serde_json::json!({"key": "small"}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -189,6 +191,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "tool".to_string(),
                 arguments: serde_json::json!({"key": "this string is definitely longer than 10 bytes"}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -228,6 +232,8 @@ mod tests {
             McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
                 name: "tool".to_string(),
                 arguments: serde_json::json!({"key": "any size is fine"}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

@@ -138,6 +138,8 @@ fn clone_for_mirror(
             McpRequest::CallTool(CallToolParams {
                 name: rewrite_name(&params.name, source_prefix, mirror_prefix),
                 arguments: params.arguments.clone(),
+                input_responses: params.input_responses.clone(),
+                request_state: params.request_state.clone(),
                 meta: params.meta.clone(),
                 task: params.task.clone(),
             })
@@ -145,6 +147,8 @@ fn clone_for_mirror(
         McpRequest::ReadResource(params) if params.uri.starts_with(source_prefix) => {
             McpRequest::ReadResource(ReadResourceParams {
                 uri: rewrite_name(&params.uri, source_prefix, mirror_prefix),
+                input_responses: params.input_responses.clone(),
+                request_state: params.request_state.clone(),
                 meta: params.meta.clone(),
             })
         }
@@ -152,6 +156,8 @@ fn clone_for_mirror(
             McpRequest::GetPrompt(GetPromptParams {
                 name: rewrite_name(&params.name, source_prefix, mirror_prefix),
                 arguments: params.arguments.clone(),
+                input_responses: params.input_responses.clone(),
+                request_state: params.request_state.clone(),
                 meta: params.meta.clone(),
             })
         }
@@ -315,6 +321,8 @@ mod tests {
             inner: McpRequest::CallTool(CallToolParams {
                 name: "api/search".to_string(),
                 arguments: serde_json::json!({"q": "test"}),
+                input_responses: Some(Default::default()),
+                request_state: Some("continuation-1".to_string()),
                 meta: None,
                 task: None,
             }),
@@ -326,6 +334,8 @@ mod tests {
             McpRequest::CallTool(params) => {
                 assert_eq!(params.name, "api-v2/search");
                 assert_eq!(params.arguments, serde_json::json!({"q": "test"}));
+                assert!(params.input_responses.is_some());
+                assert_eq!(params.request_state.as_deref(), Some("continuation-1"));
             }
             _ => panic!("expected CallTool"),
         }
@@ -337,6 +347,8 @@ mod tests {
             id: RequestId::Number(1),
             inner: McpRequest::ReadResource(ReadResourceParams {
                 uri: "api/docs/readme".to_string(),
+                input_responses: None,
+                request_state: None,
                 meta: None,
             }),
             extensions: Extensions::new(),
@@ -372,6 +384,8 @@ mod tests {
             McpRequest::CallTool(CallToolParams {
                 name: "api/search".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -393,6 +407,8 @@ mod tests {
             McpRequest::CallTool(CallToolParams {
                 name: "other/tool".to_string(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

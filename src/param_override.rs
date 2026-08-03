@@ -345,6 +345,8 @@ mod tests {
             McpRequest::CallTool(CallToolParams {
                 name: "fs/list_directory".to_string(),
                 arguments: serde_json::json!({"recursive": true}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -415,6 +417,8 @@ mod tests {
             McpRequest::CallTool(CallToolParams {
                 name: "fs/list_directory".to_string(),
                 arguments: serde_json::json!({"path": "/tmp", "deep_search": true}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
@@ -610,6 +614,8 @@ mod tests {
             inner: McpRequest::CallTool(CallToolParams {
                 name: "fs/list_directory".to_string(),
                 arguments: serde_json::json!({"path": "/custom"}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),

@@ -1087,6 +1087,8 @@ mod scope_enforcement_tests {
             inner: McpRequest::CallTool(CallToolParams {
                 name: "fs/read".into(),
                 arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
                 meta: None,
                 task: None,
             }),
