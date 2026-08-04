@@ -5,55 +5,34 @@
 [![CI](https://github.com/joshrotenberg/mcp-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/joshrotenberg/mcp-proxy/actions/workflows/ci.yml)
 [![License](https://img.shields.io/crates/l/mcp-proxy.svg)](LICENSE-MIT)
 
-A config-driven [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) reverse proxy built in Rust. Aggregates multiple MCP backends behind a single endpoint with per-backend middleware, authentication, and observability.
+A Tower-native MCP traffic plane for teams that need resilient, policy-aware MCP routing without adopting a full platform.
 
-Built on [tower-mcp](https://github.com/joshrotenberg/tower-mcp) and the [tower](https://github.com/tower-rs/tower) middleware ecosystem.
+mcp-proxy is a config-driven [Model Context Protocol](https://modelcontextprotocol.io/) reverse proxy. It aggregates stdio, HTTP, and WebSocket MCP backends behind one endpoint and applies authentication, per-backend resilience, traffic management, and observability as composable middleware from the [tower](https://github.com/tower-rs/tower) ecosystem, via [tower-mcp](https://github.com/joshrotenberg/tower-mcp). Run it as a single binary or embed it in a Rust application.
 
 > **Project status:** maintained with an intentionally stable scope. mcp-proxy
 > is a tower-native gateway and reference deployment for aggregating MCP
 > backends. Maintenance focuses on security, dependency and protocol updates,
 > bug fixes, and documentation rather than speculative new features.
 
-## Features
+## Where it fits
 
-### Proxy
-- **Multi-backend proxy** -- connect stdio, HTTP, and WebSocket MCP servers behind one endpoint
-- **Capability filtering** -- allow/deny lists for tools, resources, and prompts per backend
-- **Tool aliasing** -- rename tools exposed by backends
-- **Argument injection** -- merge default or per-tool arguments into tool calls
-- **Hot reload** -- watch config file and add new backends without restart
-- **Tool discovery** -- BM25 search and an optional search-only exposure mode
-- **Composite tools** -- fan out one tool call across multiple backend tools
-- **Library mode** -- embed the proxy in your own Rust application
+- **Self-hosted internal MCP fleets** -- one authenticated, observable endpoint in front of the MCP servers a team already runs.
+- **Non-Kubernetes and mixed deployments** -- a single binary and a TOML file; no service mesh, operator, or container platform required.
+- **Rust applications that need a gateway** -- the same proxy is a library; mount it in an existing axum app or drive it from a builder.
 
-### Resilience
-- **Timeout** -- per-backend request timeouts
-- **Rate limiting** -- per-backend request rate limits
-- **Concurrency limiting** -- per-backend max concurrent requests
-- **Circuit breaker** -- trip open on failure rate threshold
-- **Retry** -- automatic retries with exponential backoff and optional budget
-- **Request hedging** -- parallel redundant requests to reduce tail latency
-- **Outlier detection** -- passive health checks that eject unhealthy backends
+## What it does
 
-### Traffic Management
-- **Traffic mirroring** -- shadow traffic to a canary backend (fire-and-forget)
-- **Canary routing and failover** -- weighted rollouts and ordered fallback backends
-- **Response caching** -- in-memory caching with optional Redis or SQLite storage
-- **Request coalescing** -- deduplicate identical concurrent requests
+**Aggregates many MCP servers behind one endpoint.** Backends speaking stdio, HTTP, or WebSocket are exposed under per-backend namespaces at a single HTTP endpoint. Tools, resources, and prompts can be allow/deny filtered and aliased per backend; default or per-tool arguments can be injected into calls; composite tools fan one call out across multiple backend tools; hot reload adds new backends from config changes without a restart; and optional BM25 discovery can expose search instead of full tool lists.
 
-### Security
-- **Bearer token auth** -- static token validation
-- **JWT/JWKS auth** -- token verification with RBAC (role-based access control)
-- **OAuth 2.1 auth** -- metadata discovery and token introspection
-- **Token passthrough** -- forward client auth tokens to backends
-- **Request validation** -- argument size limits
+**Contains backend failures.** Each backend gets its own resilience chain: timeouts, rate limits, concurrency caps, retries with exponential backoff and budgets, circuit breakers, request hedging, and outlier detection that temporarily ejects unhealthy backends.
 
-### Observability
-- **Prometheus metrics** -- request counts and duration histograms
-- **OpenTelemetry tracing** -- distributed trace export via OTLP
-- **Audit logging** -- structured logging of all MCP requests
-- **Admin API** -- health checks, backend status, cache stats
-- **Admin MCP tools** -- introspection tools under `proxy/` namespace
+**Manages traffic for rollouts and load.** Traffic mirroring shadows a percentage of requests to a canary backend; canary routing and ordered failover control weighted rollouts; response caching (in-memory, Redis, or SQLite) and request coalescing cut duplicate work.
+
+**Applies policy at the front door.** Bearer token, JWT/JWKS, and OAuth 2.1 authentication; role-based tool visibility (RBAC); token passthrough to backends; and request argument validation.
+
+**Reports what is happening.** Prometheus metrics, OpenTelemetry trace export, structured audit logging, an admin HTTP API for health, backend status, and cache stats, and admin MCP tools under the `proxy/` namespace.
+
+Every option is documented in [`config.example.toml`](config.example.toml), deployment shapes in [`docs/architectures.md`](docs/architectures.md), and runnable configurations in [`examples/`](examples/).
 
 ## Installation
 
