@@ -226,6 +226,30 @@ impl Proxy {
 /// Circuit breaker handle type alias.
 pub type CbHandle = tower_resilience::circuitbreaker::CircuitBreakerHandle;
 
+/// Build the circuit breaker layer for one backend from its config.
+///
+/// The count-based breaker only evaluates once its sliding window is full,
+/// and the window defaults to 100 calls. Aligning the window with
+/// `minimum_calls` makes the failure rate cover the most recent
+/// `minimum_calls` calls and evaluation begin exactly at the documented
+/// threshold (#220).
+fn build_breaker_layer(
+    cb: &crate::config::CircuitBreakerConfig,
+    backend_name: &str,
+) -> (
+    tower_resilience::circuitbreaker::CircuitBreakerLayer,
+    CbHandle,
+) {
+    tower_resilience::circuitbreaker::CircuitBreakerLayer::builder()
+        .failure_rate_threshold(cb.failure_rate_threshold)
+        .minimum_number_of_calls(cb.minimum_calls)
+        .sliding_window_size(cb.minimum_calls)
+        .wait_duration_in_open(Duration::from_secs(cb.wait_duration_seconds))
+        .permitted_calls_in_half_open(cb.permitted_calls_in_half_open)
+        .name(format!("{backend_name}-cb"))
+        .build_with_handle()
+}
+
 type InfallibleService = BoxCloneService<RouterRequest, RouterResponse, Infallible>;
 type MwService = BoxCloneService<RouterRequest, RouterResponse, tower::BoxError>;
 type MwStage = Box<dyn Fn(MwService) -> MwService + Send + Sync>;
@@ -504,13 +528,7 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
                 wait_seconds = cb.wait_duration_seconds,
                 "Applying circuit breaker"
             );
-            let (layer, handle) = tower_resilience::circuitbreaker::CircuitBreakerLayer::builder()
-                .failure_rate_threshold(cb.failure_rate_threshold)
-                .minimum_number_of_calls(cb.minimum_calls)
-                .wait_duration_in_open(Duration::from_secs(cb.wait_duration_seconds))
-                .permitted_calls_in_half_open(cb.permitted_calls_in_half_open)
-                .name(format!("{}-cb", backend.name))
-                .build_with_handle();
+            let (layer, handle) = build_breaker_layer(cb, &backend.name);
             cb_handles.insert(backend.name.clone(), handle);
             mw.stage(layer);
         }
@@ -1457,5 +1475,42 @@ mod middleware_stack_tests {
         let resp = drive(&mut svc).await;
         assert!(resp.inner.is_ok());
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    /// Regression for #220: a breaker built through the production config
+    /// mapping opens after exactly `minimum_calls` failing calls, not after
+    /// the tower-resilience default 100-call window fills.
+    #[tokio::test]
+    async fn config_mapped_breaker_opens_at_minimum_calls() {
+        let (backend, hits, slow, _fail) = FlakyBackend::new();
+        slow.store(true, Ordering::SeqCst);
+
+        let cfg = crate::config::CircuitBreakerConfig {
+            failure_rate_threshold: 0.5,
+            minimum_calls: 4,
+            wait_duration_seconds: 60,
+            permitted_calls_in_half_open: 1,
+        };
+        let (breaker, _handle) = build_breaker_layer(&cfg, "test");
+
+        let mut mw = BackendMiddlewareLayer::default();
+        mw.stage(TimeoutLayer::new(Duration::from_millis(10)));
+        mw.stage(breaker);
+
+        let mut svc = mw.layer(backend);
+
+        for i in 1..=4 {
+            let resp = drive(&mut svc).await;
+            assert!(resp.inner.is_err(), "call {i} should time out");
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 4);
+
+        let resp = drive(&mut svc).await;
+        assert!(resp.inner.is_err(), "open breaker rejects");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            4,
+            "rejected call must not reach the backend"
+        );
     }
 }
