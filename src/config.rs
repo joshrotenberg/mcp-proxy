@@ -3189,9 +3189,7 @@ mod tests {
         assert!(err.to_string().contains("unknown cache backend"));
     }
 
-    #[test]
-    fn test_cache_backend_redis_with_url() {
-        let toml = r#"
+    const REDIS_CACHE_CONFIG: &str = r#"
         [proxy]
         name = "test"
         [proxy.listen]
@@ -3205,10 +3203,56 @@ mod tests {
         transport = "stdio"
         command = "echo"
         "#;
-        let config = ProxyConfig::parse(toml).unwrap();
+
+    #[cfg(feature = "redis-cache")]
+    #[test]
+    fn test_cache_backend_redis_with_url() {
+        let config = ProxyConfig::parse(REDIS_CACHE_CONFIG).unwrap();
         assert_eq!(config.cache.backend, "redis");
         assert_eq!(config.cache.url.as_deref(), Some("redis://localhost:6379"));
         assert_eq!(config.cache.prefix, "myapp:");
+    }
+
+    #[cfg(not(feature = "redis-cache"))]
+    #[test]
+    fn test_cache_backend_redis_rejected_without_feature() {
+        let err = ProxyConfig::parse(REDIS_CACHE_CONFIG).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("requires the 'redis-cache' feature")
+        );
+    }
+
+    const SQLITE_CACHE_CONFIG: &str = r#"
+        [proxy]
+        name = "test"
+        [proxy.listen]
+        [cache]
+        backend = "sqlite"
+        url = "cache.db"
+
+        [[backends]]
+        name = "echo"
+        transport = "stdio"
+        command = "echo"
+        "#;
+
+    #[cfg(feature = "sqlite-cache")]
+    #[test]
+    fn test_cache_backend_sqlite_with_url() {
+        let config = ProxyConfig::parse(SQLITE_CACHE_CONFIG).unwrap();
+        assert_eq!(config.cache.backend, "sqlite");
+        assert_eq!(config.cache.url.as_deref(), Some("cache.db"));
+    }
+
+    #[cfg(not(feature = "sqlite-cache"))]
+    #[test]
+    fn test_cache_backend_sqlite_rejected_without_feature() {
+        let err = ProxyConfig::parse(SQLITE_CACHE_CONFIG).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("requires the 'sqlite-cache' feature")
+        );
     }
 
     #[test]
