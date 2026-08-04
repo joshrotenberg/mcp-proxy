@@ -85,8 +85,8 @@ max_backoff_ms = 5000
 name = "cloud"
 transport = "http"
 url = "http://cloud-mcp.internal:8080"
+# Allowlist only; everything else (create/delete/resize instances) stays hidden
 expose_tools = ["list_instances", "get_costs", "get_metrics"]
-hide_tools = ["create_instance", "delete_instance", "resize_instance"]
 
 [backends.rate_limit]
 requests = 2
