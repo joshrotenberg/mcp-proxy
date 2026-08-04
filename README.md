@@ -243,7 +243,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mcp-proxy = "0.5"
+mcp-proxy = "0.4"
 ```
 
 ```rust
