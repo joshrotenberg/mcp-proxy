@@ -718,3 +718,184 @@ async fn outlier_ejection_expires_and_traffic_resumes() {
     assert_eq!(detector.ejected_count(), 0, "uneject recorded");
     assert_eq!(hits.load(Ordering::SeqCst), 4);
 }
+
+// ---------------------------------------------------------------------------
+// Hedging (#209)
+// ---------------------------------------------------------------------------
+//
+// Hedging is latency-triggered: a duplicate fires only when the original is
+// still in flight after the hedge delay. Failures that return quickly never
+// hedge; slowness does. In the production zone order hedging sits outside
+// retry, so a hedged call duplicates a whole retry chain, bounding attempts
+// at (1 + max_hedges) * (1 + max_retries).
+
+/// The hedge construction from src/proxy.rs, including the
+/// `max_hedged_attempts = max_hedges + 1` translation.
+fn hedge_layer(
+    name: &str,
+    delay: Duration,
+    max_hedges: u32,
+) -> tower_resilience::hedge::HedgeLayer {
+    tower_resilience::hedge::HedgeLayer::builder()
+        .delay(delay)
+        .max_hedged_attempts((max_hedges + 1) as usize)
+        .name(format!("{name}-hedge"))
+        .build()
+}
+
+/// A request slower than the hedge delay fires a duplicate; the first
+/// response wins and the client sees exactly one response.
+#[tokio::test]
+async fn hedge_fires_on_slow_request_and_first_response_wins() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let slow = Arc::new(AtomicBool::new(true));
+
+    let mut proxy = McpProxy::builder("chaos-proxy", "1.0.0")
+        .separator("/")
+        .backend(
+            "laggy",
+            ChannelTransport::new(ping_router(hits.clone(), slow)),
+        )
+        .await
+        .backend_layer(hedge_layer("laggy", Duration::from_millis(20), 1))
+        .build_strict()
+        .await
+        .expect("proxy should build");
+
+    let resp = call(&mut proxy, tool_call("laggy/ping", serde_json::json!({}))).await;
+    assert_eq!(ok_text(&resp), "pong", "client sees one winning response");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        2,
+        "the slow original plus exactly one hedge reach the backend"
+    );
+}
+
+/// Fast responses never hedge.
+#[tokio::test]
+async fn hedge_does_not_fire_on_fast_requests() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let slow = Arc::new(AtomicBool::new(false));
+
+    let mut proxy = McpProxy::builder("chaos-proxy", "1.0.0")
+        .separator("/")
+        .backend(
+            "snappy",
+            ChannelTransport::new(ping_router(hits.clone(), slow)),
+        )
+        .await
+        .backend_layer(hedge_layer("snappy", Duration::from_millis(50), 2))
+        .build_strict()
+        .await
+        .expect("proxy should build");
+
+    for _ in 0..3 {
+        let resp = call(&mut proxy, tool_call("snappy/ping", serde_json::json!({}))).await;
+        assert_eq!(ok_text(&resp), "pong");
+    }
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        3,
+        "no hedges fire for fast responses"
+    );
+}
+
+/// No more than `max_hedges` duplicates fire for a single call.
+#[tokio::test]
+async fn hedge_respects_max_hedges() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let slow = Arc::new(AtomicBool::new(true));
+
+    let mut proxy = McpProxy::builder("chaos-proxy", "1.0.0")
+        .separator("/")
+        .backend(
+            "laggy",
+            ChannelTransport::new(ping_router(hits.clone(), slow)),
+        )
+        .await
+        .backend_layer(hedge_layer("laggy", Duration::from_millis(10), 2))
+        .build_strict()
+        .await
+        .expect("proxy should build");
+
+    let resp = call(&mut proxy, tool_call("laggy/ping", serde_json::json!({}))).await;
+    assert_eq!(ok_text(&resp), "pong");
+    let attempts = hits.load(Ordering::SeqCst);
+    assert!(
+        (2..=3).contains(&attempts),
+        "at least one and at most max_hedges duplicates fire (got {attempts} attempts)"
+    );
+}
+
+/// Hedge outside retry (the production zone order): fast failures exercise
+/// only the retry chain; slowness activates hedging on top, and attempts
+/// stay within (1 + max_hedges) * (1 + max_retries).
+#[tokio::test]
+async fn hedge_composes_with_retry_without_amplification() {
+    // Case 1: fast persistent failures. Hedging is latency-triggered, so
+    // only retry runs: exactly 1 + max_retries attempts.
+    let hits = Arc::new(AtomicUsize::new(0));
+    let failures = Arc::new(AtomicUsize::new(usize::MAX));
+    let cfg = retry_config(1, None, 10);
+
+    let stack = ServiceBuilder::new()
+        .layer(hedge_layer("flaky", Duration::from_millis(20), 1))
+        .layer(mcp_proxy::retry::build_retry_layer(&cfg, "flaky"))
+        .layer(transient_failure_layer(failures));
+
+    let mut proxy = McpProxy::builder("chaos-proxy", "1.0.0")
+        .separator("/")
+        .backend(
+            "flaky",
+            ChannelTransport::new(ping_router(hits.clone(), Arc::new(AtomicBool::new(false)))),
+        )
+        .await
+        .backend_layer(stack)
+        .build_strict()
+        .await
+        .expect("proxy should build");
+
+    let resp = call(&mut proxy, tool_call("flaky/ping", serde_json::json!({}))).await;
+    assert!(resp.inner.is_err(), "sustained failure surfaces");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        2,
+        "fast failures never hedge: initial attempt plus one retry"
+    );
+
+    // Case 2: slow persistent failures. The hedge fires and duplicates the
+    // retry chain; attempts stay within (1 + max_hedges) * (1 + max_retries).
+    let hits = Arc::new(AtomicUsize::new(0));
+    let failures = Arc::new(AtomicUsize::new(usize::MAX));
+
+    let stack = ServiceBuilder::new()
+        .layer(hedge_layer("slowflaky", Duration::from_millis(20), 1))
+        .layer(mcp_proxy::retry::build_retry_layer(&cfg, "slowflaky"))
+        .layer(transient_failure_layer(failures));
+
+    let mut proxy = McpProxy::builder("chaos-proxy", "1.0.0")
+        .separator("/")
+        .backend(
+            "slowflaky",
+            ChannelTransport::new(ping_router(hits.clone(), Arc::new(AtomicBool::new(true)))),
+        )
+        .await
+        .backend_layer(stack)
+        .build_strict()
+        .await
+        .expect("proxy should build");
+
+    let resp = call(
+        &mut proxy,
+        tool_call("slowflaky/ping", serde_json::json!({})),
+    )
+    .await;
+    assert!(resp.inner.is_err(), "sustained failure surfaces");
+    // Give the losing hedge chain a moment to finish its attempts.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let attempts = hits.load(Ordering::SeqCst);
+    assert!(
+        (2..=4).contains(&attempts),
+        "attempts bounded by (1 + max_hedges) * (1 + max_retries) (got {attempts})"
+    );
+}
