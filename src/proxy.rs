@@ -9,11 +9,13 @@ use axum::Router;
 use tokio::process::Command;
 use tower::timeout::TimeoutLayer;
 use tower::util::BoxCloneService;
+use tower::{Layer, ServiceExt};
 use tower_mcp::SessionHandle;
 use tower_mcp::auth::{AuthLayer, StaticBearerValidator};
 use tower_mcp::client::StdioClientTransport;
 use tower_mcp::proxy::McpProxy;
 use tower_mcp::{RouterRequest, RouterResponse};
+use tower_resilience::retry::RetryLayer;
 
 use crate::admin::BackendMeta;
 use crate::alias;
@@ -224,6 +226,113 @@ impl Proxy {
 /// Circuit breaker handle type alias.
 pub type CbHandle = tower_resilience::circuitbreaker::CircuitBreakerHandle;
 
+type InfallibleService = BoxCloneService<RouterRequest, RouterResponse, Infallible>;
+type MwService = BoxCloneService<RouterRequest, RouterResponse, tower::BoxError>;
+type MwStage = Box<dyn Fn(MwService) -> MwService + Send + Sync>;
+
+/// Every configured per-backend middleware composed into ONE tower-mcp
+/// backend layer. tower-mcp's `backend_layer` replaces the previously applied
+/// layer rather than stacking (joshrotenberg/tower-mcp#1173), so handing it
+/// the middlewares one call at a time silently keeps only the last.
+///
+/// Composition happens in three zones matching the middlewares' type
+/// contracts: retry and hedging operate on the raw `Error = Infallible`
+/// backend service (both classify failures from the response, and hedging
+/// requires a `Clone` error type); concurrency, rate limit, timeout, and
+/// circuit breaker operate in a widened `BoxError` plane where they can
+/// produce service-level errors; a `CatchError` fold then converts those
+/// errors into JSON-RPC error responses, and outlier detection sits on top,
+/// observing the response plane (its `Service` impl requires
+/// `Error = Infallible`).
+#[derive(Default)]
+struct BackendMiddlewareLayer {
+    /// Innermost: retries against the raw backend service.
+    retry: Option<RetryLayer<RouterRequest, RouterResponse, Infallible>>,
+    /// Outside retry, still in the Infallible zone.
+    hedge: Option<tower_resilience::hedge::HedgeLayer>,
+    /// BoxError zone, applied outward in push order: concurrency, rate
+    /// limit, timeout, circuit breaker.
+    stages: Vec<MwStage>,
+    /// Outermost, after the error fold: observes response-plane errors.
+    outlier: Option<crate::outlier::OutlierDetectionLayer>,
+}
+
+impl BackendMiddlewareLayer {
+    fn is_empty(&self) -> bool {
+        self.retry.is_none()
+            && self.hedge.is_none()
+            && self.stages.is_empty()
+            && self.outlier.is_none()
+    }
+
+    fn stage<L>(&mut self, layer: L)
+    where
+        L: Layer<MwService> + Send + Sync + 'static,
+        L::Service:
+            tower::Service<RouterRequest, Response = RouterResponse> + Clone + Send + 'static,
+        <L::Service as tower::Service<RouterRequest>>::Error: std::fmt::Display,
+        <L::Service as tower::Service<RouterRequest>>::Future: Send + 'static,
+    {
+        self.stages.push(Box::new(move |inner| {
+            BoxCloneService::new(
+                layer
+                    .layer(inner)
+                    .map_err(|e| -> tower::BoxError { e.to_string().into() }),
+            )
+        }));
+    }
+}
+
+impl<S> Layer<S> for BackendMiddlewareLayer
+where
+    S: tower::Service<RouterRequest, Response = RouterResponse, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+{
+    type Service = InfallibleService;
+
+    fn layer(&self, base: S) -> InfallibleService {
+        fn widen(e: Infallible) -> tower::BoxError {
+            match e {}
+        }
+
+        // Zone A: retry classifies failures from responses over the
+        // Infallible base (hedging also needs a Clone inner error, which
+        // Infallible satisfies).
+        let after_retry: InfallibleService = match &self.retry {
+            Some(retry) => BoxCloneService::new(retry.layer(base)),
+            None => BoxCloneService::new(base),
+        };
+
+        // Zone B: error-producing middlewares in the BoxError plane. Hedging
+        // wraps the inner error type (`HedgeError<Infallible>`), so it forms
+        // the floor of this zone.
+        let mut svc: MwService = match &self.hedge {
+            Some(hedge) => BoxCloneService::new(
+                hedge
+                    .layer(after_retry)
+                    .map_err(|e| -> tower::BoxError { e.to_string().into() }),
+            ),
+            None => BoxCloneService::new(after_retry.map_err(widen)),
+        };
+        for stage in &self.stages {
+            svc = stage(svc);
+        }
+
+        // Fold middleware errors into JSON-RPC error responses.
+        let folded: InfallibleService =
+            BoxCloneService::new(tower_mcp::transport::CatchError::new(svc));
+
+        // Zone C: outlier detection observes the response plane.
+        match &self.outlier {
+            Some(outlier) => BoxCloneService::new(outlier.layer(folded)),
+            None => folded,
+        }
+    }
+}
+
 /// Build the McpProxy with all backends and per-backend middleware.
 /// Returns the proxy and a map of backend name -> circuit breaker handle.
 async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<String, CbHandle>)> {
@@ -308,7 +417,10 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
             }
         }
 
-        // Per-backend middleware stack (applied in order: inner -> outer)
+        // Per-backend middleware stack (applied in order: inner -> outer).
+        // Collected into one BackendMiddlewareLayer and handed to tower-mcp
+        // as a single backend_layer call; see the type's doc comment.
+        let mut mw = BackendMiddlewareLayer::default();
 
         // Retry (innermost -- retries happen before other middleware)
         if let Some(retry_cfg) = &backend.retry {
@@ -319,8 +431,7 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
                 max_backoff_ms = retry_cfg.max_backoff_ms,
                 "Applying retry policy"
             );
-            let layer = crate::retry::build_retry_layer(retry_cfg, &backend.name);
-            builder = builder.backend_layer(layer);
+            mw.retry = Some(crate::retry::build_retry_layer(retry_cfg, &backend.name));
         }
 
         // Hedging (after retry, before concurrency -- hedges are separate requests)
@@ -346,7 +457,7 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
                     .name(format!("{}-hedge", backend.name))
                     .build()
             };
-            builder = builder.backend_layer(layer);
+            mw.hedge = Some(layer);
         }
 
         // Concurrency limit
@@ -356,8 +467,7 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
                 max = cc.max_concurrent,
                 "Applying concurrency limit"
             );
-            builder =
-                builder.backend_layer(tower::limit::ConcurrencyLimitLayer::new(cc.max_concurrent));
+            mw.stage(tower::limit::ConcurrencyLimitLayer::new(cc.max_concurrent));
         }
 
         // Rate limit
@@ -373,7 +483,7 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
                 .refresh_period(Duration::from_secs(rl.period_seconds))
                 .name(format!("{}-ratelimit", backend.name))
                 .build();
-            builder = builder.backend_layer(layer);
+            mw.stage(layer);
         }
 
         // Timeout
@@ -383,8 +493,7 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
                 seconds = timeout.seconds,
                 "Applying timeout"
             );
-            builder =
-                builder.backend_layer(TimeoutLayer::new(Duration::from_secs(timeout.seconds)));
+            mw.stage(TimeoutLayer::new(Duration::from_secs(timeout.seconds)));
         }
 
         // Circuit breaker
@@ -403,7 +512,7 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
                 .name(format!("{}-cb", backend.name))
                 .build_with_handle();
             cb_handles.insert(backend.name.clone(), handle);
-            builder = builder.backend_layer(layer);
+            mw.stage(layer);
         }
 
         // Outlier detection (outermost -- observes errors after all other middleware)
@@ -422,7 +531,11 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
                 od.clone(),
                 detector.clone(),
             );
-            builder = builder.backend_layer(layer);
+            mw.outlier = Some(layer);
+        }
+
+        if !mw.is_empty() {
+            builder = builder.backend_layer(mw);
         }
     }
 
@@ -1136,5 +1249,213 @@ mod scope_enforcement_tests {
             resp.inner.is_ok(),
             "token carrying all required scopes should be allowed"
         );
+    }
+}
+
+#[cfg(test)]
+mod middleware_stack_tests {
+    //! Regression tests for #218: the per-backend middleware chain must
+    //! compose as one stack. Under tower-mcp's last-wins `backend_layer`
+    //! semantics (joshrotenberg/tower-mcp#1173), only the final middleware
+    //! survived and the first test here fails at "call 1 should time out".
+
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::task::{Context, Poll};
+
+    use tower::Service;
+    use tower_mcp::CallToolResult;
+    use tower_mcp::protocol::{CallToolParams, McpRequest, McpResponse, RequestId};
+    use tower_mcp::router::Extensions;
+    use tower_mcp_types::JsonRpcError;
+
+    use super::*;
+
+    /// Infallible backend with a hit counter, switchable slowness, and a
+    /// countdown of response-plane failures to emit before succeeding.
+    #[derive(Clone)]
+    struct FlakyBackend {
+        hits: Arc<AtomicUsize>,
+        slow: Arc<AtomicBool>,
+        fail_responses: Arc<AtomicUsize>,
+    }
+
+    impl FlakyBackend {
+        fn new() -> (Self, Arc<AtomicUsize>, Arc<AtomicBool>, Arc<AtomicUsize>) {
+            let hits = Arc::new(AtomicUsize::new(0));
+            let slow = Arc::new(AtomicBool::new(false));
+            let fail_responses = Arc::new(AtomicUsize::new(0));
+            (
+                Self {
+                    hits: hits.clone(),
+                    slow: slow.clone(),
+                    fail_responses: fail_responses.clone(),
+                },
+                hits,
+                slow,
+                fail_responses,
+            )
+        }
+    }
+
+    impl tower::Service<RouterRequest> for FlakyBackend {
+        type Response = RouterResponse;
+        type Error = Infallible;
+        type Future = Pin<Box<dyn Future<Output = Result<RouterResponse, Infallible>> + Send>>;
+
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, req: RouterRequest) -> Self::Future {
+            let hits = self.hits.clone();
+            let slow = self.slow.clone();
+            let fail_responses = self.fail_responses.clone();
+            Box::pin(async move {
+                hits.fetch_add(1, Ordering::SeqCst);
+                if slow.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                let inner = if fail_responses
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .is_ok()
+                {
+                    Err(JsonRpcError::internal_error("transient backend failure"))
+                } else {
+                    Ok(McpResponse::CallTool(CallToolResult::text("pong")))
+                };
+                Ok(RouterResponse { id: req.id, inner })
+            })
+        }
+    }
+
+    fn req() -> RouterRequest {
+        RouterRequest {
+            id: RequestId::Number(1),
+            inner: McpRequest::CallTool(CallToolParams {
+                name: "ping".to_string(),
+                arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
+                meta: None,
+                task: None,
+            }),
+            extensions: Extensions::new(),
+        }
+    }
+
+    async fn drive(svc: &mut InfallibleService) -> RouterResponse {
+        svc.ready()
+            .await
+            .expect("infallible")
+            .call(req())
+            .await
+            .expect("infallible")
+    }
+
+    fn test_breaker(
+        minimum_calls: usize,
+        wait_in_open: Duration,
+        permitted_in_half_open: usize,
+    ) -> tower_resilience::circuitbreaker::CircuitBreakerLayer {
+        let (layer, _handle) = tower_resilience::circuitbreaker::CircuitBreakerLayer::builder()
+            .failure_rate_threshold(0.5)
+            .minimum_number_of_calls(minimum_calls)
+            // The count-based window must be full before the breaker
+            // evaluates; align it with minimum_calls (see #220 for the
+            // production-side mapping fix).
+            .sliding_window_size(minimum_calls)
+            .wait_duration_in_open(wait_in_open)
+            .permitted_calls_in_half_open(permitted_in_half_open)
+            .name("test-cb")
+            .build_with_handle();
+        layer
+    }
+
+    /// Timeout and circuit breaker both apply; timeouts count as failures,
+    /// the breaker opens, rejects without reaching the backend, and closes
+    /// again through half-open probes once the fault clears.
+    #[tokio::test]
+    async fn timeout_and_breaker_compose_and_breaker_trips() {
+        let (backend, hits, slow, _fail) = FlakyBackend::new();
+        slow.store(true, Ordering::SeqCst);
+
+        let mut mw = BackendMiddlewareLayer::default();
+        mw.stage(TimeoutLayer::new(Duration::from_millis(10)));
+        mw.stage(test_breaker(4, Duration::from_millis(200), 2));
+
+        let mut svc = mw.layer(backend);
+
+        for i in 1..=4 {
+            let resp = drive(&mut svc).await;
+            assert!(resp.inner.is_err(), "call {i} should time out");
+        }
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            4,
+            "all four calls reach the backend"
+        );
+
+        let resp = drive(&mut svc).await;
+        assert!(resp.inner.is_err(), "open breaker rejects");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            4,
+            "rejected call must not reach the backend"
+        );
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        slow.store(false, Ordering::SeqCst);
+        for i in 1..=3 {
+            let resp = drive(&mut svc).await;
+            assert!(resp.inner.is_ok(), "recovered call {i} succeeds");
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 7);
+    }
+
+    /// Retry (Infallible zone) and timeout (BoxError zone) coexist: the
+    /// retry policy absorbs transient response-plane failures while the
+    /// timeout stays armed above it.
+    #[tokio::test]
+    async fn retry_and_timeout_compose() {
+        let (backend, hits, _slow, fail) = FlakyBackend::new();
+        fail.store(2, Ordering::SeqCst);
+
+        let cfg = crate::config::RetryConfig {
+            max_retries: 3,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 5,
+            budget_percent: None,
+            min_retries_per_sec: 10,
+        };
+        let mut mw = BackendMiddlewareLayer {
+            retry: Some(crate::retry::build_retry_layer(&cfg, "test")),
+            ..Default::default()
+        };
+        mw.stage(TimeoutLayer::new(Duration::from_millis(500)));
+
+        let mut svc = mw.layer(backend);
+
+        let resp = drive(&mut svc).await;
+        assert!(resp.inner.is_ok(), "retries absorb the transient failures");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            3,
+            "two failures plus the successful attempt"
+        );
+    }
+
+    /// The empty layer is the identity.
+    #[tokio::test]
+    async fn empty_middleware_layer_is_identity() {
+        let (backend, hits, _slow, _fail) = FlakyBackend::new();
+        let mw = BackendMiddlewareLayer::default();
+        assert!(mw.is_empty());
+
+        let mut svc = mw.layer(backend);
+        let resp = drive(&mut svc).await;
+        assert!(resp.inner.is_ok());
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 }
