@@ -45,13 +45,25 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
-    name: Test
+    name: Test (${{ matrix.features }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - features: all
+            flags: --all-features
+          - features: default
+            flags: ""
+          - features: none
+            flags: --no-default-features
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-features
+        with:
+          key: ${{ matrix.features }}
+      - run: cargo test ${{ matrix.flags }}
 
   msrv:
     name: MSRV (1.90)
