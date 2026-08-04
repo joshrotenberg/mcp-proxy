@@ -30,6 +30,8 @@ use tower::Service;
 use tower::ServiceBuilder;
 use tower::timeout::TimeoutLayer;
 
+use mcp_proxy::config::OutlierDetectionConfig;
+use mcp_proxy::outlier::{OutlierDetectionLayer, OutlierDetector};
 use tower_mcp::client::ChannelTransport;
 use tower_mcp::protocol::{CallToolParams, McpRequest, McpResponse, RequestId};
 use tower_mcp::proxy::McpProxy;
@@ -472,4 +474,247 @@ async fn retry_budget_caps_attempts_under_sustained_failure() {
         "attempts stay within the ~10-token budget plus slack, no retry storm \
          (got {total_attempts})"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Outlier detection (#208)
+// ---------------------------------------------------------------------------
+//
+// Outlier detection observes the response plane (`inner = Err` with internal
+// or server error codes), so the same response-rewriting fault layer used
+// for retry stands in for an unhealthy backend. Each `OutlierDetectionLayer`
+// registers its backend with the shared `OutlierDetector` on construction;
+// ejection quota is total * max_ejection_percent / 100 with a floor of one.
+
+fn outlier_config(consecutive_errors: u32, base_ejection_seconds: u64) -> OutlierDetectionConfig {
+    OutlierDetectionConfig {
+        consecutive_errors,
+        interval_seconds: 10,
+        base_ejection_seconds,
+        max_ejection_percent: 50,
+    }
+}
+
+/// Reaching `consecutive_errors` ejects the backend: calls fail fast without
+/// reaching it. Below the threshold nothing is ejected.
+#[tokio::test]
+async fn outlier_ejects_after_consecutive_errors_and_fails_fast() {
+    let detector = OutlierDetector::new(50);
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let failures = Arc::new(AtomicUsize::new(usize::MAX));
+
+    let stack = ServiceBuilder::new()
+        .layer(OutlierDetectionLayer::new(
+            "sick".to_string(),
+            outlier_config(3, 60),
+            detector.clone(),
+        ))
+        .layer(transient_failure_layer(failures));
+
+    let mut proxy = McpProxy::builder("chaos-proxy", "1.0.0")
+        .separator("/")
+        .backend(
+            "sick",
+            ChannelTransport::new(ping_router(hits.clone(), Arc::new(AtomicBool::new(false)))),
+        )
+        .await
+        .backend_layer(stack)
+        .build_strict()
+        .await
+        .expect("proxy should build");
+
+    // Three consecutive errors: each reaches the backend, then ejection.
+    for i in 1..=3 {
+        let resp = call(&mut proxy, tool_call("sick/ping", serde_json::json!({}))).await;
+        assert!(resp.inner.is_err(), "call {i} fails at the response plane");
+    }
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        3,
+        "all three reach the backend"
+    );
+    assert_eq!(detector.ejected_count(), 1, "backend is ejected");
+
+    // Ejected: fail fast, backend untouched.
+    let resp = call(&mut proxy, tool_call("sick/ping", serde_json::json!({}))).await;
+    assert!(resp.inner.is_err(), "ejected backend fails fast");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        3,
+        "ejected call must not reach the backend"
+    );
+}
+
+/// A success resets the consecutive-error streak: alternating failures never
+/// eject.
+#[tokio::test]
+async fn outlier_success_resets_the_error_streak() {
+    let detector = OutlierDetector::new(50);
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let failures = Arc::new(AtomicUsize::new(2));
+
+    let stack = ServiceBuilder::new()
+        .layer(OutlierDetectionLayer::new(
+            "wobbly".to_string(),
+            outlier_config(3, 60),
+            detector.clone(),
+        ))
+        .layer(transient_failure_layer(failures.clone()));
+
+    let mut proxy = McpProxy::builder("chaos-proxy", "1.0.0")
+        .separator("/")
+        .backend(
+            "wobbly",
+            ChannelTransport::new(ping_router(hits.clone(), Arc::new(AtomicBool::new(false)))),
+        )
+        .await
+        .backend_layer(stack)
+        .build_strict()
+        .await
+        .expect("proxy should build");
+
+    // Two failures, then a success (injector exhausted), then two more
+    // failures: the streak never reaches three.
+    for _ in 0..2 {
+        let resp = call(&mut proxy, tool_call("wobbly/ping", serde_json::json!({}))).await;
+        assert!(resp.inner.is_err());
+    }
+    let resp = call(&mut proxy, tool_call("wobbly/ping", serde_json::json!({}))).await;
+    assert_eq!(ok_text(&resp), "pong", "streak broken by a success");
+
+    failures.store(2, Ordering::SeqCst);
+    for _ in 0..2 {
+        let resp = call(&mut proxy, tool_call("wobbly/ping", serde_json::json!({}))).await;
+        assert!(resp.inner.is_err());
+    }
+    assert_eq!(detector.ejected_count(), 0, "never ejected");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        5,
+        "every call reached the backend"
+    );
+}
+
+/// `max_ejection_percent` caps how much of the fleet can be ejected: with a
+/// 50 percent cap and one of two backends already out, the second failing
+/// backend keeps receiving traffic.
+#[tokio::test]
+async fn outlier_max_ejection_percent_caps_ejections() {
+    let detector = OutlierDetector::new(50);
+
+    let hits_a = Arc::new(AtomicUsize::new(0));
+    let hits_b = Arc::new(AtomicUsize::new(0));
+    let failures_a = Arc::new(AtomicUsize::new(usize::MAX));
+    let failures_b = Arc::new(AtomicUsize::new(usize::MAX));
+
+    let stack_a = ServiceBuilder::new()
+        .layer(OutlierDetectionLayer::new(
+            "a".to_string(),
+            outlier_config(3, 60),
+            detector.clone(),
+        ))
+        .layer(transient_failure_layer(failures_a));
+    let stack_b = ServiceBuilder::new()
+        .layer(OutlierDetectionLayer::new(
+            "b".to_string(),
+            outlier_config(3, 60),
+            detector.clone(),
+        ))
+        .layer(transient_failure_layer(failures_b));
+
+    let mut proxy = McpProxy::builder("chaos-proxy", "1.0.0")
+        .separator("/")
+        .backend(
+            "a",
+            ChannelTransport::new(ping_router(
+                hits_a.clone(),
+                Arc::new(AtomicBool::new(false)),
+            )),
+        )
+        .await
+        .backend_layer(stack_a)
+        .backend(
+            "b",
+            ChannelTransport::new(ping_router(
+                hits_b.clone(),
+                Arc::new(AtomicBool::new(false)),
+            )),
+        )
+        .await
+        .backend_layer(stack_b)
+        .build_strict()
+        .await
+        .expect("proxy should build");
+
+    // Eject A (1 of 2 = 50 percent, at the cap).
+    for _ in 0..3 {
+        let resp = call(&mut proxy, tool_call("a/ping", serde_json::json!({}))).await;
+        assert!(resp.inner.is_err());
+    }
+    assert_eq!(detector.ejected_count(), 1, "A is ejected");
+
+    // B fails just as hard, but ejecting it would exceed the cap: it keeps
+    // receiving traffic.
+    for _ in 0..5 {
+        let resp = call(&mut proxy, tool_call("b/ping", serde_json::json!({}))).await;
+        assert!(resp.inner.is_err());
+    }
+    assert_eq!(detector.ejected_count(), 1, "B is not ejected (cap)");
+    assert_eq!(
+        hits_b.load(Ordering::SeqCst),
+        5,
+        "B keeps reaching the backend"
+    );
+}
+
+/// After `base_ejection_seconds` the backend is unejected and traffic
+/// resumes. Ignored by default: the config granularity is whole seconds, so
+/// this needs 1s+ of wall clock. Run with --ignored.
+#[tokio::test]
+#[ignore = "needs 1s+ wall clock (base_ejection_seconds granularity)"]
+async fn outlier_ejection_expires_and_traffic_resumes() {
+    let detector = OutlierDetector::new(50);
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let failures = Arc::new(AtomicUsize::new(3));
+
+    let stack = ServiceBuilder::new()
+        .layer(OutlierDetectionLayer::new(
+            "healing".to_string(),
+            outlier_config(3, 1),
+            detector.clone(),
+        ))
+        .layer(transient_failure_layer(failures));
+
+    let mut proxy = McpProxy::builder("chaos-proxy", "1.0.0")
+        .separator("/")
+        .backend(
+            "healing",
+            ChannelTransport::new(ping_router(hits.clone(), Arc::new(AtomicBool::new(false)))),
+        )
+        .await
+        .backend_layer(stack)
+        .build_strict()
+        .await
+        .expect("proxy should build");
+
+    for _ in 0..3 {
+        let resp = call(&mut proxy, tool_call("healing/ping", serde_json::json!({}))).await;
+        assert!(resp.inner.is_err());
+    }
+    assert_eq!(detector.ejected_count(), 1);
+
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+
+    // Fault injector is exhausted: the unejected backend serves again.
+    let resp = call(&mut proxy, tool_call("healing/ping", serde_json::json!({}))).await;
+    assert_eq!(
+        ok_text(&resp),
+        "pong",
+        "traffic resumes after ejection expires"
+    );
+    assert_eq!(detector.ejected_count(), 0, "uneject recorded");
+    assert_eq!(hits.load(Ordering::SeqCst), 4);
 }
