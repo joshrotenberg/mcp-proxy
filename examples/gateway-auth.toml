@@ -1,10 +1,10 @@
 # Test config with bearer auth
 
-[gateway]
+[proxy]
 name = "auth-gateway"
 version = "0.1.0"
 
-[gateway.listen]
+[proxy.listen]
 host = "127.0.0.1"
 port = 8081
 

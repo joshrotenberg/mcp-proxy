@@ -1,11 +1,11 @@
 # Test config with capability filtering
 
-[gateway]
+[proxy]
 name = "filter-gateway"
 version = "0.1.0"
 separator = "/"
 
-[gateway.listen]
+[proxy.listen]
 host = "127.0.0.1"
 port = 8082
 
