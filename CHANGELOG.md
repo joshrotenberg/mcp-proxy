@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.2] - 2026-08-04
+
+### Bug Fixes
+
+- Compose per-backend middleware into one layer stack ([#219](https://github.com/joshrotenberg/mcp-proxy/pull/219))
+- Align breaker sliding window with minimum_calls ([#221](https://github.com/joshrotenberg/mcp-proxy/pull/221))
+- Reject weight and mirror_percent above 100 ([#227](https://github.com/joshrotenberg/mcp-proxy/pull/227))
+
+### Documentation
+
+- Lead with the MCP traffic-plane positioning ([#198](https://github.com/joshrotenberg/mcp-proxy/pull/198))
+- Add a fit-and-alternatives comparison ([#199](https://github.com/joshrotenberg/mcp-proxy/pull/199))
+- Add a production gateway showcase ([#201](https://github.com/joshrotenberg/mcp-proxy/pull/201))
+
+### Miscellaneous Tasks
+
+- Test default and no-default-features builds ([#215](https://github.com/joshrotenberg/mcp-proxy/pull/215))
+
+### Testing
+
+- Gate feature-dependent tests behind their features ([#214](https://github.com/joshrotenberg/mcp-proxy/pull/214))
+- Validate example configs and fix schema drift ([#216](https://github.com/joshrotenberg/mcp-proxy/pull/216))
+- Circuit breaker lifecycle under injected faults ([#217](https://github.com/joshrotenberg/mcp-proxy/pull/217))
+- Retry budget enforcement under sustained backend failure ([#222](https://github.com/joshrotenberg/mcp-proxy/pull/222))
+- Outlier detection ejection and recovery ([#223](https://github.com/joshrotenberg/mcp-proxy/pull/223))
+- Hedging under latency injection and composition with retry ([#224](https://github.com/joshrotenberg/mcp-proxy/pull/224))
+- Property tests for config parse and validation ([#225](https://github.com/joshrotenberg/mcp-proxy/pull/225))
+
+### Bench
+
+- Add an end-to-end HTTP overhead benchmark with a documented baseline ([#228](https://github.com/joshrotenberg/mcp-proxy/pull/228))
+
+
+
 ## [0.4.1] - 2026-08-04
 
 ### Bug Fixes
