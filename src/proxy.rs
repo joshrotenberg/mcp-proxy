@@ -44,6 +44,8 @@ impl Proxy {
     pub async fn from_config(config: ProxyConfig) -> Result<Self> {
         let (mcp_proxy, cb_handles) = build_mcp_proxy(&config).await?;
         let proxy_for_admin = mcp_proxy.clone();
+        // Only the discovery index build mutates this clone.
+        #[cfg_attr(not(feature = "discovery"), allow(unused_mut))]
         let mut proxy_for_caller = mcp_proxy.clone();
         let proxy_for_management = mcp_proxy.clone();
 

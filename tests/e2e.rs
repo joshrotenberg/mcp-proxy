@@ -1106,9 +1106,7 @@ mod config_tests {
         );
     }
 
-    #[test]
-    fn config_tool_exposure_search_parses() {
-        let toml = r#"
+    const TOOL_EXPOSURE_SEARCH_CONFIG: &str = r#"
         [proxy]
         name = "test"
         tool_exposure = "search"
@@ -1119,11 +1117,22 @@ mod config_tests {
         transport = "stdio"
         command = "echo"
         "#;
-        let config = ProxyConfig::parse(toml).unwrap();
+
+    #[cfg(feature = "discovery")]
+    #[test]
+    fn config_tool_exposure_search_parses() {
+        let config = ProxyConfig::parse(TOOL_EXPOSURE_SEARCH_CONFIG).unwrap();
         assert_eq!(
             config.proxy.tool_exposure,
             mcp_proxy::config::ToolExposure::Search
         );
+    }
+
+    #[cfg(not(feature = "discovery"))]
+    #[test]
+    fn config_tool_exposure_search_rejected_without_feature() {
+        let err = ProxyConfig::parse(TOOL_EXPOSURE_SEARCH_CONFIG).unwrap_err();
+        assert!(err.to_string().contains("requires the 'discovery' feature"));
     }
 
     #[test]
