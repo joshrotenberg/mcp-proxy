@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1] - 2026-08-04
+
+### Bug Fixes
+
+- Prepare v0.4.1 release automation ([#194](https://github.com/joshrotenberg/mcp-proxy/pull/194))
+
+### Features
+
+- Refresh protocol and maintenance baseline ([#191](https://github.com/joshrotenberg/mcp-proxy/pull/191))
+
+
+
 ## [0.4.0] - 2026-06-10
 
 ### Bug Fixes
