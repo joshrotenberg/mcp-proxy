@@ -980,7 +980,7 @@ mod config_tests {
         weight = 0
         "#;
         let err = ProxyConfig::parse(toml).unwrap_err();
-        assert!(err.to_string().contains("weight must be > 0"));
+        assert!(err.to_string().contains("weight must be 1-100"));
     }
 
     #[test]
