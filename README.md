@@ -93,6 +93,8 @@ All tools from the filesystem server are now available under the `files/` namesp
 
 See [`config.example.toml`](config.example.toml) for the full configuration reference with all options documented.
 
+For a complete production example (ten backends behind one endpoint, with JWT/RBAC, per-backend resilience, a mirrored canary, selective caching, and metrics), see [docs/production-gateway.md](docs/production-gateway.md) and [`examples/production-gateway.toml`](examples/production-gateway.toml).
+
 ### Per-backend middleware
 
 ```toml
