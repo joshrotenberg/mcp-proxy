@@ -1,0 +1,279 @@
+# Production gateway showcase
+#
+# Ten internal MCP services behind one authenticated endpoint, with
+# per-backend resilience, a canary receiving mirrored traffic, selective
+# caching, request coalescing, and Prometheus metrics.
+#
+# Walkthrough: docs/production-gateway.md
+# Validate:    mcp-proxy --config examples/production-gateway.toml --check
+
+[proxy]
+name = "gateway"
+version = "1.0.0"
+separator = "/"
+instructions = "Company MCP gateway. Tools are namespaced by service. Access is role-based; ask #platform for a scope."
+
+[proxy.listen]
+host = "0.0.0.0"
+port = 8080
+
+# =============================================================================
+# Authentication: JWT via the corporate IdP, roles from the scope claim
+# =============================================================================
+
+[auth]
+type = "jwt"
+issuer = "https://idp.corp.example"
+audience = "mcp-proxy"
+jwks_uri = "https://idp.corp.example/.well-known/jwks.json"
+
+# Role-based tool visibility. A role lists the tools it may see and call;
+# an empty role means all tools.
+[[auth.roles]]
+name = "developer"
+allow_tools = ["github/*", "jira/*", "docs/*", "search/*"]
+
+[[auth.roles]]
+name = "analyst"
+allow_tools = ["docs/*", "search/*", "db-analytics/*", "reports/*"]
+
+[[auth.roles]]
+name = "operator"
+allow_tools = [
+    "orders-api/*",
+    "payments/refund_status",
+    "payments/create_refund",
+    "legacy-crm/*",
+    "search/*",
+]
+
+[[auth.roles]]
+name = "admin"
+# all tools
+
+[auth.role_mapping]
+claim = "scope"
+mapping = { "mcp:dev" = "developer", "mcp:analyst" = "analyst", "mcp:ops" = "operator", "mcp:admin" = "admin" }
+
+# =============================================================================
+# Backends
+# =============================================================================
+
+# Third-party API via stdio. Rate-limited to respect GitHub's API limits,
+# circuit breaker and budgeted retries for flaky network days.
+[[backends]]
+name = "github"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+hide_tools = ["delete_repository", "delete_branch"]
+
+[backends.env]
+GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}"
+
+[backends.timeout]
+seconds = 60
+
+[backends.rate_limit]
+requests = 30
+period_seconds = 1
+
+[backends.circuit_breaker]
+failure_rate_threshold = 0.5
+minimum_calls = 10
+wait_duration_seconds = 30
+
+[backends.retry]
+max_retries = 3
+initial_backoff_ms = 100
+max_backoff_ms = 5000
+budget_percent = 20.0
+
+# Internal issue tracker. Mixed read/write tools, so no cache and no hedging.
+[[backends]]
+name = "jira"
+transport = "http"
+url = "http://jira-mcp.internal:8080"
+
+[backends.timeout]
+seconds = 30
+
+[backends.concurrency]
+max_concurrent = 20
+
+# Documentation search. Read-only by construction (expose_tools), which makes
+# caching and hedging safe.
+[[backends]]
+name = "docs"
+transport = "http"
+url = "http://confluence-mcp.internal:8080"
+expose_tools = ["search", "get_page", "list_spaces"]
+
+[backends.timeout]
+seconds = 30
+
+[backends.cache]
+tool_ttl_seconds = 60
+resource_ttl_seconds = 300
+max_entries = 1000
+
+[backends.hedging]
+delay_ms = 200
+max_hedges = 1
+
+# Internal code/knowledge search. Read-only; hedged for tail latency.
+[[backends]]
+name = "search"
+transport = "http"
+url = "http://search-mcp.internal:8080"
+expose_tools = ["query", "similar"]
+
+[backends.timeout]
+seconds = 10
+
+[backends.hedging]
+delay_ms = 150
+max_hedges = 1
+
+# Read replica of the analytics database. Connection count capped, queries
+# cached for a minute.
+[[backends]]
+name = "db-analytics"
+transport = "stdio"
+command = "/usr/local/bin/db-mcp-server"
+args = ["--read-only", "--connection-string", "${ANALYTICS_DB_URL}"]
+expose_tools = ["query"]
+
+[backends.timeout]
+seconds = 10
+
+[backends.concurrency]
+max_concurrent = 5
+
+[backends.cache]
+tool_ttl_seconds = 60
+max_entries = 500
+
+# Order service, current production version. The canary below mirrors it.
+[[backends]]
+name = "orders-api"
+transport = "http"
+url = "http://orders-v1.internal:8080"
+
+[backends.timeout]
+seconds = 15
+
+[backends.retry]
+max_retries = 2
+initial_backoff_ms = 50
+max_backoff_ms = 1000
+budget_percent = 10.0
+
+[backends.circuit_breaker]
+failure_rate_threshold = 0.5
+minimum_calls = 10
+wait_duration_seconds = 20
+
+[backends.outlier_detection]
+consecutive_errors = 5
+base_ejection_seconds = 30
+max_ejection_percent = 50
+
+# Order service v2 canary. Receives a fire-and-forget copy of 10% of
+# orders-api traffic; responses are discarded and clients never see it.
+# It points at STAGING state: mirrored tool calls really execute.
+[[backends]]
+name = "orders-canary"
+transport = "http"
+url = "http://orders-v2.staging.internal:8080"
+mirror_of = "orders-api"
+mirror_percent = 10
+
+# Payment operations. Deliberately spartan: no cache, no retries, no hedging,
+# tight limits. Only two tools are exposed at all.
+[[backends]]
+name = "payments"
+transport = "http"
+url = "http://payments-mcp.internal:8080"
+expose_tools = ["refund_status", "create_refund"]
+
+[backends.timeout]
+seconds = 20
+
+[backends.rate_limit]
+requests = 5
+period_seconds = 1
+
+[backends.concurrency]
+max_concurrent = 2
+
+# Reporting warehouse. Slow queries, long timeout, aggressive caching,
+# low request rate.
+[[backends]]
+name = "reports"
+transport = "http"
+url = "http://warehouse-mcp.internal:8080"
+expose_tools = ["run_report", "list_reports"]
+
+[backends.timeout]
+seconds = 120
+
+[backends.rate_limit]
+requests = 2
+period_seconds = 1
+
+[backends.cache]
+tool_ttl_seconds = 600
+resource_ttl_seconds = 900
+max_entries = 200
+
+# Vendor CRM with a history of bad days. Breaker trips fast, unhealthy
+# instances are ejected, one cautious retry.
+[[backends]]
+name = "legacy-crm"
+transport = "http"
+url = "http://crm-bridge.internal:8080"
+
+[backends.timeout]
+seconds = 45
+
+[backends.retry]
+max_retries = 1
+initial_backoff_ms = 500
+max_backoff_ms = 500
+
+[backends.circuit_breaker]
+failure_rate_threshold = 0.3
+minimum_calls = 5
+wait_duration_seconds = 60
+
+[backends.outlier_detection]
+consecutive_errors = 3
+base_ejection_seconds = 60
+max_ejection_percent = 100
+
+# =============================================================================
+# Global middleware
+# =============================================================================
+
+# Collapse identical concurrent tool calls into one backend execution.
+[performance]
+coalesce_requests = true
+
+[security]
+max_argument_size = 1048576
+# Required when auth.type is jwt: the /admin API needs its own token.
+admin_token = "${ADMIN_TOKEN}"
+
+[observability]
+audit = true
+log_level = "info"
+json_logs = true
+
+[observability.metrics]
+enabled = true
+
+[observability.tracing]
+enabled = true
+endpoint = "http://otel-collector.internal:4317"
+service_name = "mcp-proxy"
