@@ -1634,6 +1634,13 @@ impl ProxyConfig {
                         backend.name
                     );
                 }
+                if backend.mirror_percent > 100 {
+                    anyhow::bail!(
+                        "backend '{}': mirror_percent must be 0-100, got {}",
+                        backend.name,
+                        backend.mirror_percent
+                    );
+                }
             }
         }
 
@@ -1691,8 +1698,12 @@ impl ProxyConfig {
                         backend.name
                     );
                 }
-                if backend.weight == 0 {
-                    anyhow::bail!("backend '{}': weight must be > 0", backend.name);
+                if backend.weight == 0 || backend.weight > 100 {
+                    anyhow::bail!(
+                        "backend '{}': weight must be 1-100, got {}",
+                        backend.name,
+                        backend.weight
+                    );
                 }
             }
         }
@@ -2564,6 +2575,58 @@ mod tests {
         let err = ProxyConfig::parse(toml).unwrap_err();
         assert!(
             format!("{err}").contains("mirror_of references unknown backend"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_mirror_percent_over_100() {
+        let toml = r#"
+        [proxy]
+        name = "bad"
+        [proxy.listen]
+
+        [[backends]]
+        name = "primary"
+        transport = "stdio"
+        command = "echo"
+
+        [[backends]]
+        name = "mirror"
+        transport = "stdio"
+        command = "echo"
+        mirror_of = "primary"
+        mirror_percent = 101
+        "#;
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("mirror_percent must be 0-100"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_canary_weight_over_100() {
+        let toml = r#"
+        [proxy]
+        name = "bad"
+        [proxy.listen]
+
+        [[backends]]
+        name = "primary"
+        transport = "stdio"
+        command = "echo"
+
+        [[backends]]
+        name = "canary"
+        transport = "stdio"
+        command = "echo"
+        canary_of = "primary"
+        weight = 101
+        "#;
+        let err = ProxyConfig::parse(toml).unwrap_err();
+        assert!(
+            format!("{err}").contains("weight must be 1-100"),
             "unexpected error: {err}"
         );
     }
