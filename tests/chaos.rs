@@ -319,3 +319,157 @@ async fn mcp_error_results_do_not_trip_the_breaker() {
     assert!(resp.inner.is_ok(), "breaker must not have opened");
     assert_eq!(hits.load(Ordering::SeqCst), before + 1);
 }
+
+// ---------------------------------------------------------------------------
+// Retry budget (#207)
+// ---------------------------------------------------------------------------
+//
+// Plane note: a tool handler error becomes `CallToolResult { is_error }`, an
+// Ok response, per MCP semantics; the retry predicate deliberately does not
+// retry those (the tool executed). Retriable failures
+// (`RouterResponse.inner = Err` with code -32603 or -32000..-32099) arise
+// below the retry layer from transport-level faults. These tests inject at
+// that plane with a response-rewriting layer between retry and the backend.
+
+/// Layer that rewrites successful responses into retriable internal errors
+/// (-32603) while `failures_remaining` is nonzero. Sits under retry, standing
+/// in for a flaky transport.
+fn transient_failure_layer(
+    failures_remaining: Arc<AtomicUsize>,
+) -> impl tower::Layer<
+    tower_mcp::proxy::BackendService,
+    Service = tower::util::BoxCloneService<RouterRequest, RouterResponse, Infallible>,
+> {
+    tower::layer::layer_fn(move |inner: tower_mcp::proxy::BackendService| {
+        let failures = failures_remaining.clone();
+        tower::util::BoxCloneService::new(tower::ServiceExt::map_response(
+            inner,
+            move |resp: RouterResponse| {
+                if failures
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .is_ok()
+                {
+                    RouterResponse {
+                        id: resp.id,
+                        inner: Err(tower_mcp_types::JsonRpcError::internal_error(
+                            "transient transport failure",
+                        )),
+                    }
+                } else {
+                    resp
+                }
+            },
+        ))
+    })
+}
+
+fn retry_config(
+    max_retries: u32,
+    budget_percent: Option<f64>,
+    min_retries_per_sec: u32,
+) -> mcp_proxy::config::RetryConfig {
+    mcp_proxy::config::RetryConfig {
+        max_retries,
+        initial_backoff_ms: 1,
+        max_backoff_ms: 5,
+        budget_percent,
+        min_retries_per_sec,
+    }
+}
+
+async fn build_transient_proxy(
+    cfg: &mcp_proxy::config::RetryConfig,
+    hits: Arc<AtomicUsize>,
+    failures: Arc<AtomicUsize>,
+) -> McpProxy {
+    // One composed layer: production retry over the response-plane fault
+    // injector, which stands in for a flaky transport under the retry seam.
+    let stack = ServiceBuilder::new()
+        .layer(mcp_proxy::retry::build_retry_layer(cfg, "flaky"))
+        .layer(transient_failure_layer(failures));
+
+    McpProxy::builder("chaos-proxy", "1.0.0")
+        .separator("/")
+        .backend(
+            "flaky",
+            ChannelTransport::new(ping_router(hits, Arc::new(AtomicBool::new(false)))),
+        )
+        .await
+        .backend_layer(stack)
+        .build_strict()
+        .await
+        .expect("proxy should build")
+}
+
+/// A transient failure is retried through the production retry mapping and
+/// succeeds within `max_retries`.
+#[tokio::test]
+async fn retry_absorbs_transient_failures() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let failures = Arc::new(AtomicUsize::new(2));
+    let cfg = retry_config(3, None, 10);
+    let mut proxy = build_transient_proxy(&cfg, hits.clone(), failures).await;
+
+    let resp = call(&mut proxy, tool_call("flaky/ping", serde_json::json!({}))).await;
+    assert_eq!(ok_text(&resp), "pong");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        3,
+        "two failed attempts plus the success"
+    );
+}
+
+/// With the failure persisting past `max_retries`, the caller gets the error
+/// back after exactly 1 + max_retries attempts; retries never run away.
+#[tokio::test]
+async fn retry_gives_up_after_max_retries() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let failures = Arc::new(AtomicUsize::new(usize::MAX));
+    let cfg = retry_config(2, None, 10);
+    let mut proxy = build_transient_proxy(&cfg, hits.clone(), failures).await;
+
+    let resp = call(&mut proxy, tool_call("flaky/ping", serde_json::json!({}))).await;
+    let err = resp.inner.as_ref().expect_err("failure surfaces");
+    assert_eq!(err.code, -32603, "the backend error is returned as-is");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        3,
+        "initial attempt plus exactly max_retries"
+    );
+}
+
+/// Under sustained total failure, the retry budget caps attempt volume: the
+/// token bucket (budget_percent with min_retries_per_sec = 0, so burst-only)
+/// stops retries once spent, and later requests fail fast with a single
+/// attempt instead of amplifying the outage.
+#[tokio::test]
+async fn retry_budget_caps_attempts_under_sustained_failure() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let failures = Arc::new(AtomicUsize::new(usize::MAX));
+    // budget_percent = 1.0 maps to a 10-token burst with zero refill in the
+    // production mapping (see build_retry_layer).
+    let cfg = retry_config(3, Some(1.0), 0);
+    let mut proxy = build_transient_proxy(&cfg, hits.clone(), failures).await;
+
+    let requests = 30;
+    for _ in 0..requests {
+        let resp = call(&mut proxy, tool_call("flaky/ping", serde_json::json!({}))).await;
+        assert!(resp.inner.is_err(), "sustained failure surfaces every time");
+    }
+
+    let total_attempts = hits.load(Ordering::SeqCst);
+    // Unbudgeted this would be requests * (1 + max_retries) = 120 attempts.
+    assert!(
+        total_attempts >= requests,
+        "every request attempts at least once (got {total_attempts})"
+    );
+    assert!(
+        total_attempts > requests,
+        "the budget allows some retries before it is spent (got {total_attempts})"
+    );
+    assert!(
+        total_attempts <= requests + 15,
+        "attempts stay within the ~10-token budget plus slack, no retry storm \
+         (got {total_attempts})"
+    );
+}
