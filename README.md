@@ -20,6 +20,8 @@ mcp-proxy is a config-driven [Model Context Protocol](https://modelcontextprotoc
 - **Non-Kubernetes and mixed deployments** -- a single binary and a TOML file; no service mesh, operator, or container platform required.
 - **Rust applications that need a gateway** -- the same proxy is a library; mount it in an existing axum app or drive it from a builder.
 
+For how mcp-proxy relates to other MCP gateways (Docker MCP Gateway, IBM ContextForge, Microsoft MCP Gateway, Kong), see [docs/comparison.md](docs/comparison.md).
+
 ## What it does
 
 **Aggregates many MCP servers behind one endpoint.** Backends speaking stdio, HTTP, or WebSocket are exposed under per-backend namespaces at a single HTTP endpoint. Tools, resources, and prompts can be allow/deny filtered and aliased per backend; default or per-tool arguments can be injected into calls; composite tools fan one call out across multiple backend tools; hot reload adds new backends from config changes without a restart; and optional BM25 discovery can expose search instead of full tool lists.
