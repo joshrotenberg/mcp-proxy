@@ -1708,6 +1708,21 @@ impl ProxyConfig {
             }
         }
 
+        // Validate websocket transport requires the websocket feature, so
+        // --check predicts the startup failure instead of passing configs
+        // the binary will refuse to run (#229). Startup keeps its own bail
+        // as a second line of defense.
+        #[cfg(not(feature = "websocket"))]
+        for backend in &self.backends {
+            if matches!(backend.transport, TransportType::Websocket) {
+                anyhow::bail!(
+                    "backend '{}': transport = \"websocket\" requires the 'websocket' feature. \
+                     Rebuild with: cargo install mcp-proxy --features websocket",
+                    backend.name
+                );
+            }
+        }
+
         // Validate tool_exposure = "search" requires the discovery feature
         #[cfg(not(feature = "discovery"))]
         if self.proxy.tool_exposure == ToolExposure::Search {
@@ -3318,6 +3333,25 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "websocket"))]
+    const WEBSOCKET_BACKEND_CONFIG: &str = r#"
+        [proxy]
+        name = "test"
+        [proxy.listen]
+
+        [[backends]]
+        name = "ws"
+        transport = "websocket"
+        url = "ws://localhost:9000"
+        "#;
+
+    #[cfg(not(feature = "websocket"))]
+    #[test]
+    fn test_websocket_transport_rejected_without_feature() {
+        let err = ProxyConfig::parse(WEBSOCKET_BACKEND_CONFIG).unwrap_err();
+        assert!(err.to_string().contains("requires the 'websocket' feature"));
+    }
+
     #[test]
     fn test_parse_bearer_scoped_tokens() {
         let toml = r#"
@@ -3471,6 +3505,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "websocket")]
     #[test]
     fn test_parse_websocket_transport() {
         let toml = r#"
@@ -3515,6 +3550,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "websocket")]
     #[test]
     fn test_websocket_with_bearer_token() {
         let toml = r#"
