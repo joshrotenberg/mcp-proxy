@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.3] - 2026-08-05
+
+### Bug Fixes
+
+- Reject websocket transport at parse time without the feature ([#230](https://github.com/joshrotenberg/mcp-proxy/pull/230))
+
+
+
 ## [0.4.2] - 2026-08-04
 
 ### Bug Fixes
