@@ -388,9 +388,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.6.5"
+version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "301b56658598e48f3648647ac6fc887be7e7108eddfa4e9b63fcf3ec58c0cadf"
+checksum = "473c7e07f409a8d772161724aa8db6a765a2532a70f9667eeb7b49d3d02fbdca"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -398,9 +398,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.6.5"
+version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94a65403d1a1bd28f7dc68eb8506e8874808ee5eecb59298de588e2e1407a078"
+checksum = "7b48fea5a88e9ae728a2dcbedbfc0e730f7d60da42e1cb049a83c9fb8b789889"
 dependencies = [
  "anstream",
  "anstyle",
@@ -3231,6 +3231,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -3852,14 +3853,15 @@ checksum = "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e"
 
 [[package]]
 name = "tower-mcp"
-version = "0.18.0"
+version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6860d907fae884db609ea47b20eb5e1f64d5cdd4ba65cb5b9f820ff584c31513"
+checksum = "e976b70ee5745e963cd24d23ec799ec9b29591414d31e32328fe847efb68a56c"
 dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.0",
  "futures",
+ "futures-util",
  "getrandom 0.4.3",
  "http",
  "http-body-util",
@@ -3875,6 +3877,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "tokio-tungstenite 0.30.0",
  "tokio-util",
  "tower",
  "tower-mcp-types",
@@ -3886,11 +3889,12 @@ dependencies = [
 
 [[package]]
 name = "tower-mcp-types"
-version = "0.18.0"
+version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1f86651c5b5cf5a813b151b26e84f56f17b46e8033b921491dd75a424f4db6f"
+checksum = "d9b36b321c205bf1cb5d5f32055ddf5a258eadca77f23b2e694687589c70c9a7"
 dependencies = [
  "base64 0.23.0",
+ "indexmap",
  "serde",
  "serde_json",
  "thiserror",
