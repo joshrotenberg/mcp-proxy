@@ -12,9 +12,10 @@
 //!   service-level failures are manufactured with chaos *latency* injection
 //!   plus a timeout, mirroring the production failure path (slow backend,
 //!   `[backends.timeout]`, `[backends.circuit_breaker]`).
-//! - tower-mcp's `backend_layer` replaces rather than stacks
-//!   (joshrotenberg/tower-mcp#1173), so each test hands it ONE composed
-//!   layer, exactly as the fixed `build_mcp_proxy` does.
+//! - tower-mcp's `backend_layer` used to replace rather than stack
+//!   (joshrotenberg/tower-mcp#1173, fixed upstream in 0.22.0). Each test
+//!   still hands it ONE composed layer, exactly as `build_mcp_proxy` does,
+//!   independent of that fix.
 //!
 //! Failure-counting contract pinned here: the circuit breaker counts
 //! service-level errors (injected latency tripping the timeout). An MCP
@@ -339,30 +340,32 @@ async fn mcp_error_results_do_not_trip_the_breaker() {
 fn transient_failure_layer(
     failures_remaining: Arc<AtomicUsize>,
 ) -> impl tower::Layer<
-    tower_mcp::proxy::BackendService,
+    tower::util::BoxCloneService<RouterRequest, RouterResponse, Infallible>,
     Service = tower::util::BoxCloneService<RouterRequest, RouterResponse, Infallible>,
 > {
-    tower::layer::layer_fn(move |inner: tower_mcp::proxy::BackendService| {
-        let failures = failures_remaining.clone();
-        tower::util::BoxCloneService::new(tower::ServiceExt::map_response(
-            inner,
-            move |resp: RouterResponse| {
-                if failures
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                    .is_ok()
-                {
-                    RouterResponse {
-                        id: resp.id,
-                        inner: Err(tower_mcp_types::JsonRpcError::internal_error(
-                            "transient transport failure",
-                        )),
+    tower::layer::layer_fn(
+        move |inner: tower::util::BoxCloneService<RouterRequest, RouterResponse, Infallible>| {
+            let failures = failures_remaining.clone();
+            tower::util::BoxCloneService::new(tower::ServiceExt::map_response(
+                inner,
+                move |resp: RouterResponse| {
+                    if failures
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                        .is_ok()
+                    {
+                        RouterResponse {
+                            id: resp.id,
+                            inner: Err(tower_mcp_types::JsonRpcError::internal_error(
+                                "transient transport failure",
+                            )),
+                        }
+                    } else {
+                        resp
                     }
-                } else {
-                    resp
-                }
-            },
-        ))
-    })
+                },
+            ))
+        },
+    )
 }
 
 fn retry_config(
