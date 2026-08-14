@@ -37,8 +37,8 @@ sqlite-cache = ["dep:rusqlite"]
 protocol-2026-07-28 = ["tower-mcp/protocol-2026-07-28"]
 
 [dependencies]
-tower-mcp = { version = "0.18.0", features = ["http", "http-client", "proxy"] }
-tower-mcp-types = "0.18.0"
+tower-mcp = { version = "0.22.0", features = ["http", "http-client", "proxy"] }
+tower-mcp-types = "0.22.0"
 axum = "0.8"
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 tower-resilience = { version = "0.10.1", default-features = false, features = ["circuitbreaker", "ratelimiter", "hedge", "retry"] }
@@ -78,7 +78,7 @@ rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 reqwest = { version = "0.13", features = ["json"] }
 tokio-stream = "0.1"
 tower-resilience-chaos = "0.10"
-tower-mcp = { version = "0.18.0", features = ["http", "http-client", "proxy", "websocket"] }
+tower-mcp = { version = "0.22.0", features = ["http", "http-client", "proxy", "websocket"] }
 futures-util = "0.3"
 docker-wrapper = { version = "0.11.1", features = ["testing", "templates"] }
 uuid = { version = "1", features = ["v4"] }
