@@ -249,6 +249,9 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
             if let Some(token) = &backend.bearer_token {
                 transport = transport.bearer_token(token);
             }
+            for (name, value) in &backend.headers {
+                transport = transport.header(name, value);
+            }
 
             if has_middleware {
                 let layer = build_backend_layer(backend);

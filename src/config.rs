@@ -62,6 +62,7 @@
 //! transport = "http"
 //! url = "http://mcp-server:8080"
 //! bearer_token = "${API_TOKEN}"    # ${VAR} syntax for env vars
+//! headers = { "X-API-Key" = "${API_KEY}", "X-Tenant" = "acme" }  # custom outbound headers
 //! forward_auth = true              # Forward client's auth token
 //!
 //! # WebSocket server
@@ -428,6 +429,11 @@ pub struct BackendConfig {
     /// Static bearer token for authenticating to this backend (HTTP only).
     /// Supports `${ENV_VAR}` syntax for env var resolution.
     pub bearer_token: Option<String>,
+    /// Custom headers sent on every request to this backend (HTTP/WebSocket only).
+    /// Values support `${ENV_VAR}` syntax for env var resolution.
+    /// An explicit `Authorization` header takes precedence over `bearer_token`.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     /// Forward the client's inbound auth token to this backend.
     /// Only works with HTTP backends when the proxy has auth enabled.
     #[serde(default)]
@@ -1798,6 +1804,13 @@ impl ProxyConfig {
             {
                 *token = env_val;
             }
+            for value in backend.headers.values_mut() {
+                if let Some(var_name) = value.strip_prefix("${").and_then(|s| s.strip_suffix('}'))
+                    && let Ok(env_val) = std::env::var(var_name)
+                {
+                    *value = env_val;
+                }
+            }
         }
 
         // Resolve env vars in auth config
@@ -1890,6 +1903,15 @@ impl ProxyConfig {
                     "backend '{}': bearer_token references unset env var '{}'",
                     backend.name, var
                 ));
+            }
+            // backend.headers values
+            for (key, value) in &backend.headers {
+                if let Some(var) = is_unset_env_ref(value) {
+                    warnings.push(format!(
+                        "backend '{}': headers.{} references unset env var '{}'",
+                        backend.name, key, var
+                    ));
+                }
             }
             // backend.env values
             for (key, value) in &backend.env {
@@ -2409,6 +2431,74 @@ mod tests {
 
         // SAFETY: same as above
         unsafe { std::env::remove_var("MCP_GW_TEST_TOKEN") };
+    }
+
+    #[test]
+    fn test_parse_backend_headers() {
+        let toml = r#"
+        [proxy]
+        name = "hdr-gw"
+        [proxy.listen]
+
+        [[backends]]
+        name = "signoz"
+        transport = "http"
+        url = "http://localhost:3000"
+        bearer_token = "tok"
+
+        [backends.headers]
+        "X-API-Key" = "key123"
+        "X-Tenant" = "acme"
+        "#;
+
+        let config = ProxyConfig::parse(toml).unwrap();
+        let headers = &config.backends[0].headers;
+        assert_eq!(headers.get("X-API-Key").map(String::as_str), Some("key123"));
+        assert_eq!(headers.get("X-Tenant").map(String::as_str), Some("acme"));
+        assert!(config.backends[0].bearer_token.is_some());
+        // backends without a headers block default to empty
+        let empty = ProxyConfig::parse(
+            r#"
+        [proxy]
+        name = "g"
+        [proxy.listen]
+
+        [[backends]]
+        name = "db"
+        transport = "http"
+        url = "http://localhost:1"
+        "#,
+        )
+        .unwrap();
+        assert!(empty.backends[0].headers.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_headers_env_var() {
+        unsafe { std::env::set_var("MCP_GW_TEST_HEADER", "resolved-value") };
+        let toml = r#"
+        [proxy]
+        name = "hdr-env-gw"
+        [proxy.listen]
+
+        [[backends]]
+        name = "signoz"
+        transport = "http"
+        url = "http://localhost:3000"
+
+        [backends.headers]
+        "X-API-Key" = "${MCP_GW_TEST_HEADER}"
+        "X-Literal" = "plain"
+        "#;
+        let mut config = ProxyConfig::parse(toml).unwrap();
+        config.resolve_env_vars();
+        unsafe { std::env::remove_var("MCP_GW_TEST_HEADER") };
+        let headers = &config.backends[0].headers;
+        assert_eq!(
+            headers.get("X-API-Key").map(String::as_str),
+            Some("resolved-value")
+        );
+        assert_eq!(headers.get("X-Literal").map(String::as_str), Some("plain"));
     }
 
     #[test]

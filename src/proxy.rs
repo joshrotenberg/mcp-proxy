@@ -410,6 +410,9 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
                 if let Some(token) = &backend.bearer_token {
                     transport = transport.bearer_token(token);
                 }
+                for (name, value) in &backend.headers {
+                    transport = transport.header(name, value);
+                }
 
                 builder = builder.backend(&backend.name, transport).await;
             }
