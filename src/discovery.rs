@@ -83,7 +83,10 @@ pub type SharedDiscoveryIndex = Arc<RwLock<DiscoveryRegistry>>;
 ///
 /// Sends a `ListTools` request through the proxy to collect all registered
 /// tools, then indexes them using jpx-engine's BM25 search.
-pub async fn build_index(proxy: &mut McpProxy, separator: &str) -> SharedDiscoveryIndex {
+pub async fn build_index(
+    proxy: &mut McpProxy,
+    separator: &str,
+) -> (SharedDiscoveryIndex, SchemaStore) {
     use tower::Service;
     use tower_mcp::protocol::{ListToolsParams, McpRequest, McpResponse, RequestId};
     use tower_mcp::router::{Extensions, RouterRequest};
@@ -108,16 +111,21 @@ pub async fn build_index(proxy: &mut McpProxy, separator: &str) -> SharedDiscove
     let mut registry = DiscoveryRegistry::new();
     index_tools(&mut registry, &tools, separator);
 
+    let schemas = SchemaStore::new();
+    for tool in &tools {
+        schemas.insert(tool.name.replace(separator, ":"), tool.input_schema.clone()).await;
+    }
+
     tracing::info!(tools_indexed = tools.len(), "Built tool discovery index");
 
-    Arc::new(RwLock::new(registry))
+    (Arc::new(RwLock::new(registry)), schemas)
 }
 
 /// Re-index all tools into an existing shared discovery index.
 ///
 /// Called after hot reload adds, removes, or replaces backends to keep
 /// the search index in sync with the proxy's current tool set.
-pub async fn reindex(index: &SharedDiscoveryIndex, proxy: &mut McpProxy, separator: &str) {
+pub async fn reindex(index: &SharedDiscoveryIndex, schemas: &SchemaStore, proxy: &mut McpProxy, separator: &str) {
     use tower::Service;
     use tower_mcp::protocol::{ListToolsParams, McpRequest, McpResponse, RequestId};
     use tower_mcp::router::{Extensions, RouterRequest};
@@ -138,6 +146,13 @@ pub async fn reindex(index: &SharedDiscoveryIndex, proxy: &mut McpProxy, separat
 
     let mut registry = DiscoveryRegistry::new();
     index_tools(&mut registry, &tools, separator);
+    {
+        let mut store = schemas.0.write().await;
+        store.clear();
+        for tool in &tools {
+            store.insert(tool.name.replace(separator, ":"), tool.input_schema.clone());
+        }
+    }
 
     let mut guard = index.write().await;
     *guard = registry;
@@ -281,6 +296,12 @@ fn default_top_k() -> usize {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct GetToolInput {
+    /// Tool ID from a search_tools/similar_tools result (e.g. "signoz:signoz_query_metrics")
+    tool_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct SimilarInput {
     /// Tool ID to find similar tools for (e.g. "math:add")
     tool_id: String,
@@ -325,7 +346,31 @@ struct CategoriesResult {
 }
 
 /// Build the discovery tools and return them for inclusion in the admin router.
+/// Sidecar map of tool id ("server:tool") -> original input JSON Schema,
+/// populated at index build/reindex time and exposed via `proxy/get_tool`.
+#[derive(Clone, Default)]
+pub struct SchemaStore(pub std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, serde_json::Value>>>);
+
+impl SchemaStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub async fn insert(&self, id: String, schema: serde_json::Value) {
+        self.0.write().await.insert(id, schema);
+    }
+    pub async fn get(&self, id: &str) -> Option<serde_json::Value> {
+        self.0.read().await.get(id).cloned()
+    }
+}
+
 pub fn build_discovery_tools(index: SharedDiscoveryIndex) -> Vec<tower_mcp::Tool> {
+    build_discovery_tools_with_schemas(index, SchemaStore::new())
+}
+
+pub fn build_discovery_tools_with_schemas(
+    index: SharedDiscoveryIndex,
+    schemas: SchemaStore,
+) -> Vec<tower_mcp::Tool> {
     let index_for_search = Arc::clone(&index);
     let search_tools = ToolBuilder::new("search_tools")
         .description(
@@ -342,6 +387,35 @@ pub fn build_discovery_tools(index: SharedDiscoveryIndex) -> Vec<tower_mcp::Tool
                 Ok(CallToolResult::text(
                     serde_json::to_string_pretty(&entries).unwrap(),
                 ))
+            }
+        })
+        .build();
+
+    let schemas_for_get = schemas.clone();
+    let get_tool = ToolBuilder::new("get_tool")
+        .description(
+            "Get the full input JSON Schema and description for a tool by its id \
+             (e.g. \"signoz:signoz_query_metrics\"). Call this after search_tools \
+             before invoking an unfamiliar tool through proxy/call_tool.",
+        )
+        .handler(move |input: GetToolInput| {
+            let store = schemas_for_get.clone();
+            async move {
+                match store.get(&input.tool_id).await {
+                    Some(schema) => {
+                        let out = serde_json::json!({
+                            "id": input.tool_id,
+                            "input_schema": schema,
+                        });
+                        Ok(CallToolResult::text(
+                            serde_json::to_string_pretty(&out).unwrap(),
+                        ))
+                    }
+                    None => Ok(CallToolResult::text(format!(
+                        "Unknown tool id '{}' \u{2014} run proxy/search_tools first and use its \"id\" field",
+                        input.tool_id
+                    ))),
+                }
             }
         })
         .build();
@@ -390,7 +464,7 @@ pub fn build_discovery_tools(index: SharedDiscoveryIndex) -> Vec<tower_mcp::Tool
         })
         .build();
 
-    vec![search_tools, similar_tools, tool_categories]
+    vec![search_tools, get_tool, similar_tools, tool_categories]
 }
 
 #[cfg(test)]

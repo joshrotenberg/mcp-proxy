@@ -23,6 +23,7 @@ pub fn spawn_config_watcher(
     proxy: McpProxy,
     #[cfg(feature = "discovery")] discovery_index: Option<(
         crate::discovery::SharedDiscoveryIndex,
+        crate::discovery::SchemaStore,
         String,
     )>,
 ) {
@@ -45,6 +46,7 @@ async fn watch_loop(
     proxy: McpProxy,
     #[cfg(feature = "discovery")] discovery_index: Option<(
         crate::discovery::SharedDiscoveryIndex,
+        crate::discovery::SchemaStore,
         String,
     )>,
 ) {
@@ -187,9 +189,9 @@ async fn watch_loop(
 
         // Re-index discovery if enabled
         #[cfg(feature = "discovery")]
-        if let Some((ref index, ref separator)) = discovery_index {
+        if let Some((ref index, ref schemas, ref separator)) = discovery_index {
             let mut proxy_clone = proxy.clone();
-            crate::discovery::reindex(index, &mut proxy_clone, separator).await;
+            crate::discovery::reindex(index, schemas, &mut proxy_clone, separator).await;
         }
     }
 }
