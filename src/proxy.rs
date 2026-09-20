@@ -12,7 +12,7 @@ use tower::util::BoxCloneService;
 use tower::{Layer, ServiceExt};
 use tower_mcp::SessionHandle;
 use tower_mcp::auth::{AuthLayer, StaticBearerValidator};
-use tower_mcp::client::StdioClientTransport;
+use tower_mcp::client::{HttpClientConfig, HttpClientTransport, StdioClientTransport};
 use tower_mcp::proxy::McpProxy;
 use tower_mcp::{RouterRequest, RouterResponse};
 use tower_resilience::retry::RetryLayer;
@@ -21,7 +21,7 @@ use crate::admin::BackendMeta;
 use crate::alias;
 use crate::cache;
 use crate::coalesce;
-use crate::config::{AuthConfig, ProxyConfig, TransportType};
+use crate::config::{AuthConfig, BackendConfig, ProxyConfig, TransportType};
 use crate::filter::CapabilityFilterService;
 #[cfg(feature = "oauth")]
 use crate::rbac::{RbacConfig, RbacService};
@@ -357,6 +357,32 @@ where
     }
 }
 
+/// Build the HTTP client config for a backend.
+///
+/// [`HttpClientTransport`] defaults to a 30 second `request_timeout`. Left at
+/// that default it caps every HTTP backend request at 30 seconds no matter how
+/// large `[backends.timeout]` is, because the configured backend timeout is
+/// applied separately as a [`TimeoutLayer`] above the transport. Carrying the
+/// configured timeout into the transport keeps the Tower layer the effective
+/// deadline. Backends with no configured timeout keep the transport default.
+pub(crate) fn http_client_config(backend: &BackendConfig) -> HttpClientConfig {
+    let mut config = HttpClientConfig::default();
+    if let Some(timeout) = &backend.timeout {
+        config.request_timeout = Duration::from_secs(timeout.seconds);
+    }
+    config
+}
+
+/// Build an HTTP client transport for `backend`, applying its configured
+/// request timeout and bearer token.
+pub(crate) fn build_http_transport(url: &str, backend: &BackendConfig) -> HttpClientTransport {
+    let mut transport = HttpClientTransport::with_config(url, http_client_config(backend));
+    if let Some(token) = &backend.bearer_token {
+        transport = transport.bearer_token(token);
+    }
+    transport
+}
+
 /// Build the McpProxy with all backends and per-backend middleware.
 /// Returns the proxy and a map of backend name -> circuit breaker handle.
 async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<String, CbHandle>)> {
@@ -403,10 +429,7 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
             }
             TransportType::Http => {
                 let url = backend.url.as_deref().unwrap();
-                let mut transport = tower_mcp::client::HttpClientTransport::new(url);
-                if let Some(token) = &backend.bearer_token {
-                    transport = transport.bearer_token(token);
-                }
+                let transport = build_http_transport(url, backend);
 
                 builder = builder.backend(&backend.name, transport).await;
             }
@@ -1512,5 +1535,68 @@ mod middleware_stack_tests {
             4,
             "rejected call must not reach the backend"
         );
+    }
+}
+
+#[cfg(test)]
+mod http_transport_tests {
+    //! Regression tests for #245: an HTTP backend's configured timeout must
+    //! reach the transport, whose own `request_timeout` otherwise caps every
+    //! request at 30 seconds.
+
+    use super::*;
+
+    fn backend(toml_src: &str) -> BackendConfig {
+        // Parse from TOML so every unrelated field gets its default.
+        toml::from_str(toml_src).unwrap()
+    }
+
+    #[test]
+    fn configured_timeout_reaches_the_transport() {
+        let backend = backend(
+            r#"
+            name = "api"
+            transport = "http"
+            url = "http://localhost:8080"
+
+            [timeout]
+            seconds = 900
+            "#,
+        );
+
+        let config = http_client_config(&backend);
+        assert_eq!(config.request_timeout, Duration::from_secs(900));
+    }
+
+    #[test]
+    fn no_configured_timeout_keeps_the_transport_default() {
+        let backend = backend(
+            r#"
+            name = "api"
+            transport = "http"
+            url = "http://localhost:8080"
+            "#,
+        );
+
+        let config = http_client_config(&backend);
+        assert_eq!(config.request_timeout, Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn transport_builds_with_timeout_and_bearer_token() {
+        let backend = backend(
+            r#"
+            name = "api"
+            transport = "http"
+            url = "http://localhost:8080"
+            bearer_token = "sk-test"
+
+            [timeout]
+            seconds = 120
+            "#,
+        );
+
+        // Construction only; no request is made.
+        let _transport = build_http_transport(backend.url.as_deref().unwrap(), &backend);
     }
 }
