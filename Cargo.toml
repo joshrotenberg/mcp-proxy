@@ -41,7 +41,7 @@ tower-mcp = { version = "0.22.0", features = ["http", "http-client", "proxy"] }
 tower-mcp-types = "0.22.0"
 axum = "0.8"
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
-tower-resilience = { version = "0.10.1", default-features = false, features = ["circuitbreaker", "ratelimiter", "hedge", "retry"] }
+tower-resilience = { version = "0.13.0", default-features = false, features = ["circuitbreaker", "ratelimiter", "hedge", "retry"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -52,10 +52,10 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 metrics = { version = "0.24.3", optional = true }
 metrics-exporter-prometheus = { version = "0.18.1", optional = true }
-opentelemetry = { version = "0.32", optional = true }
-opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"], optional = true }
-opentelemetry-otlp = { version = "0.32", optional = true }
-tracing-opentelemetry = { version = "0.33", optional = true }
+opentelemetry = { version = "0.33", optional = true }
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.33", optional = true }
+tracing-opentelemetry = { version = "0.34", optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 schemars = "1"
 moka = { version = "0.12.14", features = ["future"] }
@@ -63,8 +63,8 @@ notify = { version = "8", default-features = false, features = ["macos_fsevent"]
 glob-match = "0.2"
 regex = "1"
 notify-debouncer-mini = "0.7"
-utoipa = { version = "5", features = ["chrono"], optional = true }
-utoipa-axum = { version = "0.2", optional = true }
+utoipa = { version = "6", features = ["chrono"], optional = true }
+utoipa-axum = { version = "0.3", optional = true }
 tokio-tungstenite = { version = "0.30", features = ["connect", "rustls-tls-webpki-roots"], optional = true }
 async-trait = { version = "0.1", optional = true }
 futures-util = { version = "0.3", optional = true }
@@ -77,7 +77,7 @@ rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json"] }
 tokio-stream = "0.1"
-tower-resilience-chaos = "0.10"
+tower-resilience-chaos = "0.13"
 tower-mcp = { version = "0.22.0", features = ["http", "http-client", "proxy", "websocket"] }
 futures-util = "0.3"
 docker-wrapper = { version = "0.11.1", features = ["testing", "templates"] }
