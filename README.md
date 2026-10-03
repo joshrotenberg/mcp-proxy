@@ -193,6 +193,8 @@ headers = { "X-API-Key" = "${API_KEY}" }
 ```
 
 An explicit `Authorization` header overrides `bearer_token` regardless of casing.
+Rust callers upgrading from 0.4 to 0.5 who construct `BackendConfig` literals
+need to add `headers: Default::default()`; TOML and YAML configs can omit the map.
 Invalid or duplicate header names, unknown backend fields, and headers configured
 on stdio backends fail configuration validation.
 
@@ -249,7 +251,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mcp-proxy = "0.4"
+mcp-proxy = "0.5"
 ```
 
 ```rust
