@@ -24,7 +24,7 @@ name = "my-proxy"
 # Backends defined here take precedence over imported ones with the same name
 # import_backends = ".mcp.json"
 
-# BM25-based tool discovery (adds proxy/search_tools, proxy/similar_tools,
+# BM25-based tool discovery (adds proxy/search_tools, proxy/get_tool, proxy/similar_tools,
 # proxy/tool_categories). Useful when aggregating many backends.
 # tool_discovery = true
 
@@ -66,6 +66,10 @@ transport = "http"
 url = "http://mcp-server:8080"
 # Static bearer token for authenticating TO this backend
 # bearer_token = "${BACKEND_TOKEN}"
+# Custom outbound headers for HTTP (including SSE responses) and WebSocket handshakes.
+# Header values support ${ENV_VAR}; explicit Authorization overrides bearer_token.
+# headers = { "X-API-Key" = "${BACKEND_API_KEY}", "X-Tenant" = "acme" }
+# Unknown backend fields and headers on stdio backends are rejected.
 # Forward the client's inbound auth token to this backend
 # forward_auth = true
 

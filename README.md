@@ -179,6 +179,31 @@ mirror_of = "api"
 mirror_percent = 10
 ```
 
+### Backend headers and tool discovery
+
+HTTP backends (including SSE responses) and WebSocket handshakes can use custom
+outbound headers. Values support the same environment substitution as bearer tokens:
+
+```toml
+[[backends]]
+name = "api"
+transport = "http"
+url = "https://mcp.example.com"
+headers = { "X-API-Key" = "${API_KEY}" }
+```
+
+An explicit `Authorization` header overrides `bearer_token` regardless of casing.
+Rust callers upgrading from 0.4 to 0.5 who construct `BackendConfig` literals
+need to add `headers: Default::default()`; TOML and YAML configs can omit the map.
+Invalid or duplicate header names, unknown backend fields, and headers configured
+on stdio backends fail configuration validation.
+
+With `[proxy] tool_exposure = "search"`, discover a tool through
+`proxy/search_tools`, pass its returned `id` to `proxy/get_tool` to retrieve its
+name, description, and complete input schema, then invoke it through
+`proxy/call_tool`. This keeps full schemas out of search result lists while making
+nested parameters and enums available before execution.
+
 ### Authentication
 
 ```toml
@@ -226,7 +251,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mcp-proxy = "0.4"
+mcp-proxy = "0.5"
 ```
 
 ```rust
@@ -278,6 +303,8 @@ Client
 ```
 
 Global middleware wraps the entire proxy. Per-backend middleware is applied individually to each backend connection. All middleware is built with tower `Service` layers.
+
+For an application-owned decision service, see [external tool gates](docs/external-tool-gates.md) for interception points, policy ordering, and a bounded non-production pilot.
 
 ## Feature Flags
 
