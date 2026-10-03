@@ -88,7 +88,7 @@ Outlier Detection -> CatchError -> Circuit Breaker -> Timeout -> Rate Limit
 
 ### Key design pattern: Error = Infallible
 
-All services use `Error = Infallible`. Errors are represented inside the response:
+MCP-facing services use `Error = Infallible`. Errors are represented inside the response:
 `RouterResponse { id: RequestId, inner: Result<McpResponse, JsonRpcError> }`.
 
 tower-resilience and tower middleware produce typed errors (e.g., `CircuitBreakerError<E>`).

@@ -204,6 +204,21 @@ name, description, and complete input schema, then invoke it through
 `proxy/call_tool`. This keeps full schemas out of search result lists while making
 nested parameters and enums available before execution.
 
+### Upcoming 0.6 migration
+
+The next release uses tower-mcp 0.23. Library applications that exchange
+`SessionHandle`, `McpProxy`, router requests/responses, or protocol types with
+mcp-proxy should update their direct tower-mcp dependencies to 0.23 as well.
+
+HTTP backends follow same-origin redirects only. A redirect to another scheme,
+host, or port fails instead of forwarding custom headers or session identifiers;
+HTTPS-to-HTTP redirects also fail. Configure the backend's final URL directly
+if the previous deployment depended on a cross-origin redirect.
+
+The upgraded transport binds authenticated HTTP sessions to the principal that
+initialized them. Clients must initialize their own session and authenticate
+subsequent requests with that same principal.
+
 ### Authentication
 
 ```toml
