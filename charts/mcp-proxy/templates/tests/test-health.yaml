@@ -11,5 +11,5 @@ spec:
     - name: wget
       image: busybox
       command: ['wget']
-      args: ['--spider', '--timeout=5', 'http://{{ include "mcp-proxy.fullname" . }}:{{ .Values.service.port }}/admin/health']
+      args: ['--spider', '--timeout=5', 'http://{{ include "mcp-proxy.fullname" . }}:{{ .Values.service.port }}/readyz']
   restartPolicy: Never

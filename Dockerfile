@@ -19,7 +19,7 @@ COPY --from=builder /build/target/release/mcp-proxy /usr/local/bin/mcp-proxy
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-    CMD curl -f http://localhost:8080/admin/backends || exit 1
+    CMD curl -f http://localhost:8080/livez || exit 1
 
 ENTRYPOINT ["mcp-proxy"]
 CMD ["--config", "/etc/mcp-proxy/proxy.toml"]

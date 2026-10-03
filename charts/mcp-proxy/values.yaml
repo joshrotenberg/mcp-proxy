@@ -78,7 +78,8 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
-# Liveness and readiness probes use /admin/health
+# Credential-free process probes use /livez and /readyz.
+# Readiness indicates startup completed, not aggregate backend health.
 probes:
   liveness:
     initialDelaySeconds: 10

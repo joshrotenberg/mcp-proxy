@@ -114,6 +114,13 @@ impl Proxy {
         );
         tracing::info!("Admin API enabled at /admin/backends");
 
+        // These process probes expose no backend/configuration information and
+        // are added after authentication layers so orchestrators need no token.
+        // Readiness means construction completed, not that every backend is up.
+        let router = router
+            .route("/livez", axum::routing::get(|| async { "ok" }))
+            .route("/readyz", axum::routing::get(|| async { "ok" }));
+
         // Build discovery index if enabled (search mode implies discovery)
         #[cfg(feature = "discovery")]
         let discovery_enabled = config.proxy.tool_discovery
