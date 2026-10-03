@@ -13,7 +13,7 @@ A minimal docker-compose setup with the proxy proxying to an HTTP MCP backend.
 docker compose up --build
 ```
 
-The proxy is available at `http://localhost:8080/mcp` (MCP HTTP transport).
+The proxy is available at `http://localhost:8080/` (MCP HTTP transport).
 
 Admin endpoints:
 
@@ -32,3 +32,6 @@ curl http://localhost:8080/admin/metrics
 
 Edit `proxy.toml` to add more backends, enable auth, adjust rate limits, etc. See
 [`config.example.toml`](../../config.example.toml) for the full configuration reference.
+
+The upstream Everything server uses `/mcp`; that path is configured on the
+backend URL and is separate from the proxy's root MCP endpoint.
