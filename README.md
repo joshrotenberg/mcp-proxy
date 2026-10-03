@@ -206,7 +206,7 @@ name, description, and complete input schema, then invoke it through
 `proxy/call_tool`. This keeps full schemas out of search result lists while making
 nested parameters and enums available before execution.
 
-### Upcoming 0.6 migration
+### Upgrading to 0.6
 
 The next release uses tower-mcp 0.23. Library applications that exchange
 `SessionHandle`, `McpProxy`, router requests/responses, or protocol types with
@@ -217,9 +217,9 @@ host, or port fails instead of forwarding custom headers or session identifiers;
 HTTPS-to-HTTP redirects also fail. Configure the backend's final URL directly
 if the previous deployment depended on a cross-origin redirect.
 
-The upgraded transport binds authenticated HTTP sessions to the principal that
-initialized them. Clients must initialize their own session and authenticate
-subsequent requests with that same principal.
+JWT/OAuth-authenticated HTTP sessions carrying a `sub` claim are bound to that
+subject. Clients must initialize their own session and authenticate subsequent
+requests as the same subject.
 
 ### Authentication
 
@@ -268,7 +268,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mcp-proxy = "0.5"
+mcp-proxy = "0.6"
 ```
 
 ```rust
