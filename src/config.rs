@@ -1571,10 +1571,30 @@ impl ProxyConfig {
             }
 
             if let Some(cb) = &backend.circuit_breaker
-                && (cb.failure_rate_threshold <= 0.0 || cb.failure_rate_threshold > 1.0)
+                && (!cb.failure_rate_threshold.is_finite()
+                    || cb.failure_rate_threshold <= 0.0
+                    || cb.failure_rate_threshold > 1.0)
             {
                 anyhow::bail!(
                     "backend '{}': circuit_breaker.failure_rate_threshold must be in (0.0, 1.0]",
+                    backend.name
+                );
+            }
+
+            if let Some(cb) = &backend.circuit_breaker
+                && cb.minimum_calls == 0
+            {
+                anyhow::bail!(
+                    "backend '{}': circuit_breaker.minimum_calls must be > 0",
+                    backend.name
+                );
+            }
+
+            if let Some(rl) = &backend.rate_limit
+                && rl.period_seconds == 0
+            {
+                anyhow::bail!(
+                    "backend '{}': rate_limit.period_seconds must be > 0",
                     backend.name
                 );
             }
@@ -1957,6 +1977,18 @@ mod tests {
         transport = "stdio"
         command = "echo"
         "#
+    }
+
+    #[test]
+    fn reject_invalid_resilience_builder_config() {
+        let base = "[proxy]\nname = 'test'\n[proxy.listen]\n[[backends]]\nname = 'api'\ntransport = 'http'\nurl = 'http://localhost:1'\n";
+        for extra in [
+            "[backends.circuit_breaker]\nminimum_calls = 0",
+            "[backends.circuit_breaker]\nfailure_rate_threshold = nan",
+            "[backends.rate_limit]\nrequests = 1\nperiod_seconds = 0",
+        ] {
+            assert!(ProxyConfig::parse(&format!("{base}{extra}")).is_err());
+        }
     }
 
     #[test]

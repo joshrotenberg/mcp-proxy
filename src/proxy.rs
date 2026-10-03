@@ -236,10 +236,10 @@ pub type CbHandle = tower_resilience::circuitbreaker::CircuitBreakerHandle;
 fn build_breaker_layer(
     cb: &crate::config::CircuitBreakerConfig,
     backend_name: &str,
-) -> (
+) -> Result<(
     tower_resilience::circuitbreaker::CircuitBreakerLayer,
     CbHandle,
-) {
+)> {
     tower_resilience::circuitbreaker::CircuitBreakerLayer::builder()
         .failure_rate_threshold(cb.failure_rate_threshold)
         .minimum_number_of_calls(cb.minimum_calls)
@@ -248,6 +248,7 @@ fn build_breaker_layer(
         .permitted_calls_in_half_open(cb.permitted_calls_in_half_open)
         .name(format!("{backend_name}-cb"))
         .build_with_handle()
+        .map_err(Into::into)
 }
 
 type InfallibleService = BoxCloneService<RouterRequest, RouterResponse, Infallible>;
@@ -509,7 +510,7 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
                 .limit_for_period(rl.requests)
                 .refresh_period(Duration::from_secs(rl.period_seconds))
                 .name(format!("{}-ratelimit", backend.name))
-                .build();
+                .build()?;
             mw.stage(layer);
         }
 
@@ -531,7 +532,7 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
                 wait_seconds = cb.wait_duration_seconds,
                 "Applying circuit breaker"
             );
-            let (layer, handle) = build_breaker_layer(cb, &backend.name);
+            let (layer, handle) = build_breaker_layer(cb, &backend.name)?;
             cb_handles.insert(backend.name.clone(), handle);
             mw.stage(layer);
         }
@@ -975,7 +976,7 @@ fn build_middleware_stack(
             .limit_for_period(rl.requests)
             .refresh_period(Duration::from_secs(rl.period_seconds))
             .name("global-ratelimit")
-            .build();
+            .build()?;
         let limited = tower::Layer::layer(&layer, service);
         service = BoxCloneService::new(tower_mcp::CatchError::new(limited));
     }
@@ -1408,7 +1409,8 @@ mod middleware_stack_tests {
             .wait_duration_in_open(wait_in_open)
             .permitted_calls_in_half_open(permitted_in_half_open)
             .name("test-cb")
-            .build_with_handle();
+            .build_with_handle()
+            .unwrap();
         layer
     }
 
@@ -1512,7 +1514,7 @@ mod middleware_stack_tests {
             wait_duration_seconds: 60,
             permitted_calls_in_half_open: 1,
         };
-        let (breaker, _handle) = build_breaker_layer(&cfg, "test");
+        let (breaker, _handle) = build_breaker_layer(&cfg, "test").unwrap();
 
         let mut mw = BackendMiddlewareLayer::default();
         mw.stage(TimeoutLayer::new(Duration::from_millis(10)));
