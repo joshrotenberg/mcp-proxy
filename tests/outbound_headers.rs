@@ -40,7 +40,7 @@ async fn http_headers_reach_initialization_and_tool_calls() {
         [[backends]]
         name = "api"
         transport = "http"
-        url = "http://{addr}/mcp"
+        url = "http://{addr}"
         bearer_token = "unused-bearer"
         [backends.headers]
         "X-API-Key" = "secret-key"
@@ -84,6 +84,8 @@ async fn http_headers_reach_initialization_and_tool_calls() {
 }
 
 #[cfg(feature = "websocket")]
+// Tungstenite fixes the callback error type to an HTTP response.
+#[allow(clippy::result_large_err)]
 #[tokio::test]
 async fn websocket_headers_reach_handshake() {
     use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
