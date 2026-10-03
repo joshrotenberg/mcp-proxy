@@ -26,6 +26,25 @@ pub fn spawn_config_watcher(
         String,
     )>,
 ) {
+    spawn_config_watcher_with_schemas(
+        config_path,
+        proxy,
+        #[cfg(feature = "discovery")]
+        discovery_index
+            .map(|(index, separator)| (index, crate::discovery::SchemaStore::new(), separator)),
+    );
+}
+
+/// Spawn a config watcher that also refreshes retained discovery tool schemas.
+pub fn spawn_config_watcher_with_schemas(
+    config_path: PathBuf,
+    proxy: McpProxy,
+    #[cfg(feature = "discovery")] discovery_index: Option<(
+        crate::discovery::SharedDiscoveryIndex,
+        crate::discovery::SchemaStore,
+        String,
+    )>,
+) {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -45,6 +64,7 @@ async fn watch_loop(
     proxy: McpProxy,
     #[cfg(feature = "discovery")] discovery_index: Option<(
         crate::discovery::SharedDiscoveryIndex,
+        crate::discovery::SchemaStore,
         String,
     )>,
 ) {
@@ -187,9 +207,10 @@ async fn watch_loop(
 
         // Re-index discovery if enabled
         #[cfg(feature = "discovery")]
-        if let Some((ref index, ref separator)) = discovery_index {
+        if let Some((ref index, ref schemas, ref separator)) = discovery_index {
             let mut proxy_clone = proxy.clone();
-            crate::discovery::reindex(index, &mut proxy_clone, separator).await;
+            crate::discovery::reindex_with_schemas(index, schemas, &mut proxy_clone, separator)
+                .await;
         }
     }
 }
@@ -245,10 +266,7 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
                 .url
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("http backend requires 'url'"))?;
-            let mut transport = tower_mcp::client::HttpClientTransport::new(url);
-            if let Some(token) = &backend.bearer_token {
-                transport = transport.bearer_token(token);
-            }
+            let transport = crate::proxy::build_http_transport(url, backend);
 
             if has_middleware {
                 let layer = build_backend_layer(backend);
