@@ -120,9 +120,15 @@ impl Proxy {
             || config.proxy.tool_exposure == crate::config::ToolExposure::Search;
         #[cfg(feature = "discovery")]
         let (discovery_index, discovery_schemas, discovery_tools) = if discovery_enabled {
-            let (index, schemas) =
-                crate::discovery::build_index(&mut proxy_for_caller, &config.proxy.separator).await;
-            let tools = crate::discovery::build_discovery_tools_with_schemas(index.clone(), schemas.clone());
+            let (index, schemas) = crate::discovery::build_index_with_schemas(
+                &mut proxy_for_caller,
+                &config.proxy.separator,
+            )
+            .await;
+            let tools = crate::discovery::build_discovery_tools_with_schemas(
+                index.clone(),
+                schemas.clone(),
+            );
             (Some(index), Some(schemas), Some(tools))
         } else {
             (None, None, None)
@@ -175,7 +181,7 @@ impl Proxy {
     /// without restarting the proxy.
     pub fn enable_hot_reload(&self, config_path: std::path::PathBuf) {
         tracing::info!("Hot reload enabled, watching config file for changes");
-        crate::reload::spawn_config_watcher(
+        crate::reload::spawn_config_watcher_with_schemas(
             config_path,
             self.inner.clone(),
             #[cfg(feature = "discovery")]

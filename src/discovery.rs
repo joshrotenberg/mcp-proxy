@@ -3,12 +3,13 @@
 //! When a proxy aggregates many backends, clients (and the LLMs behind them)
 //! need a way to find relevant tools without scanning a long flat list. This
 //! module builds a BM25 search index over all registered tools using
-//! [`jpx-engine`](jpx_engine) and exposes three discovery tools under the
+//! [`jpx-engine`](jpx_engine) and exposes four discovery tools under the
 //! `proxy/` namespace:
 //!
 //! | Tool | Description |
 //! |---|---|
 //! | `proxy/search_tools` | Full-text search across tool names, descriptions, parameters, and tags |
+//! | `proxy/get_tool` | Retrieve a tool description and complete input schema by search result ID |
 //! | `proxy/similar_tools` | Find tools related to a given tool by BM25 term similarity |
 //! | `proxy/tool_categories` | Browse tools grouped by backend namespace with counts |
 //!
@@ -25,7 +26,7 @@
 //! # ...
 //! ```
 //!
-//! The three `proxy/` discovery tools are added to the proxy's tool list
+//! The four `proxy/` discovery tools are added to the proxy's tool list
 //! alongside the backend tools.
 //!
 //! # Search mode (`tool_exposure = "search"`)
@@ -35,7 +36,8 @@
 //! `tool_exposure = "search"` hides individual backend tools from listings
 //! while keeping them invokable. Only the `proxy/` meta-tools appear in
 //! `tools/list`; clients use `proxy/search_tools` to discover and then call
-//! backend tools by name.
+//! backend tools by name. Use `proxy/get_tool` with a search result ID to inspect
+//! its input schema before calling it.
 //!
 //! ```toml
 //! [proxy]
@@ -83,7 +85,12 @@ pub type SharedDiscoveryIndex = Arc<RwLock<DiscoveryRegistry>>;
 ///
 /// Sends a `ListTools` request through the proxy to collect all registered
 /// tools, then indexes them using jpx-engine's BM25 search.
-pub async fn build_index(
+pub async fn build_index(proxy: &mut McpProxy, separator: &str) -> SharedDiscoveryIndex {
+    build_index_with_schemas(proxy, separator).await.0
+}
+
+/// Build a discovery index and retain tool definitions for `proxy/get_tool`.
+pub async fn build_index_with_schemas(
     proxy: &mut McpProxy,
     separator: &str,
 ) -> (SharedDiscoveryIndex, SchemaStore) {
@@ -113,7 +120,9 @@ pub async fn build_index(
 
     let schemas = SchemaStore::new();
     for tool in &tools {
-        schemas.insert(tool.name.replace(separator, ":"), tool.input_schema.clone()).await;
+        schemas
+            .insert(discovery_id(tool, separator), tool.clone())
+            .await;
     }
 
     tracing::info!(tools_indexed = tools.len(), "Built tool discovery index");
@@ -125,7 +134,17 @@ pub async fn build_index(
 ///
 /// Called after hot reload adds, removes, or replaces backends to keep
 /// the search index in sync with the proxy's current tool set.
-pub async fn reindex(index: &SharedDiscoveryIndex, schemas: &SchemaStore, proxy: &mut McpProxy, separator: &str) {
+pub async fn reindex(index: &SharedDiscoveryIndex, proxy: &mut McpProxy, separator: &str) {
+    reindex_with_schemas(index, &SchemaStore::new(), proxy, separator).await;
+}
+
+/// Refresh both discovery search results and retained tool definitions.
+pub async fn reindex_with_schemas(
+    index: &SharedDiscoveryIndex,
+    schemas: &SchemaStore,
+    proxy: &mut McpProxy,
+    separator: &str,
+) {
     use tower::Service;
     use tower_mcp::protocol::{ListToolsParams, McpRequest, McpResponse, RequestId};
     use tower_mcp::router::{Extensions, RouterRequest};
@@ -150,7 +169,7 @@ pub async fn reindex(index: &SharedDiscoveryIndex, schemas: &SchemaStore, proxy:
         let mut store = schemas.0.write().await;
         store.clear();
         for tool in &tools {
-            store.insert(tool.name.replace(separator, ":"), tool.input_schema.clone());
+            store.insert(discovery_id(tool, separator), tool.clone());
         }
     }
 
@@ -345,28 +364,41 @@ struct CategoriesResult {
     total_categories: usize,
 }
 
-/// Build the discovery tools and return them for inclusion in the admin router.
-/// Sidecar map of tool id ("server:tool") -> original input JSON Schema,
-/// populated at index build/reindex time and exposed via `proxy/get_tool`.
+/// Tool definitions keyed by the same `server:tool` ID used by search results.
 #[derive(Clone, Default)]
-pub struct SchemaStore(pub std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, serde_json::Value>>>);
+pub struct SchemaStore(Arc<RwLock<std::collections::HashMap<String, ToolDefinition>>>);
 
 impl SchemaStore {
+    /// Create an empty tool definition store.
     pub fn new() -> Self {
         Self::default()
     }
-    pub async fn insert(&self, id: String, schema: serde_json::Value) {
-        self.0.write().await.insert(id, schema);
+    /// Insert or replace the definition associated with a discovery ID.
+    pub async fn insert(&self, id: String, tool: ToolDefinition) {
+        self.0.write().await.insert(id, tool);
     }
-    pub async fn get(&self, id: &str) -> Option<serde_json::Value> {
+    /// Look up a retained tool definition by its discovery ID.
+    pub async fn get(&self, id: &str) -> Option<ToolDefinition> {
         self.0.read().await.get(id).cloned()
     }
 }
 
-pub fn build_discovery_tools(index: SharedDiscoveryIndex) -> Vec<tower_mcp::Tool> {
-    build_discovery_tools_with_schemas(index, SchemaStore::new())
+fn discovery_id(tool: &ToolDefinition, separator: &str) -> String {
+    let (namespace, local) = tool
+        .name
+        .split_once(separator)
+        .unwrap_or(("default", &tool.name));
+    format!("{namespace}:{local}")
 }
 
+/// Build the three search and category tools without schema retrieval.
+pub fn build_discovery_tools(index: SharedDiscoveryIndex) -> Vec<tower_mcp::Tool> {
+    let mut tools = build_discovery_tools_with_schemas(index, SchemaStore::new());
+    tools.retain(|tool| tool.name != "get_tool");
+    tools
+}
+
+/// Build all discovery tools, including retrieval of full tool definitions.
 pub fn build_discovery_tools_with_schemas(
     index: SharedDiscoveryIndex,
     schemas: SchemaStore,
@@ -402,16 +434,18 @@ pub fn build_discovery_tools_with_schemas(
             let store = schemas_for_get.clone();
             async move {
                 match store.get(&input.tool_id).await {
-                    Some(schema) => {
+                    Some(tool) => {
                         let out = serde_json::json!({
                             "id": input.tool_id,
-                            "input_schema": schema,
+                            "name": tool.name,
+                            "description": tool.description,
+                            "input_schema": tool.input_schema,
                         });
                         Ok(CallToolResult::text(
                             serde_json::to_string_pretty(&out).unwrap(),
                         ))
                     }
-                    None => Ok(CallToolResult::text(format!(
+                    None => Ok(CallToolResult::error(format!(
                         "Unknown tool id '{}' \u{2014} run proxy/search_tools first and use its \"id\" field",
                         input.tool_id
                     ))),

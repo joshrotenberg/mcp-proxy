@@ -23,6 +23,24 @@ pub fn spawn_config_watcher(
     proxy: McpProxy,
     #[cfg(feature = "discovery")] discovery_index: Option<(
         crate::discovery::SharedDiscoveryIndex,
+        String,
+    )>,
+) {
+    spawn_config_watcher_with_schemas(
+        config_path,
+        proxy,
+        #[cfg(feature = "discovery")]
+        discovery_index
+            .map(|(index, separator)| (index, crate::discovery::SchemaStore::new(), separator)),
+    );
+}
+
+/// Spawn a config watcher that also refreshes retained discovery tool schemas.
+pub fn spawn_config_watcher_with_schemas(
+    config_path: PathBuf,
+    proxy: McpProxy,
+    #[cfg(feature = "discovery")] discovery_index: Option<(
+        crate::discovery::SharedDiscoveryIndex,
         crate::discovery::SchemaStore,
         String,
     )>,
@@ -191,7 +209,8 @@ async fn watch_loop(
         #[cfg(feature = "discovery")]
         if let Some((ref index, ref schemas, ref separator)) = discovery_index {
             let mut proxy_clone = proxy.clone();
-            crate::discovery::reindex(index, schemas, &mut proxy_clone, separator).await;
+            crate::discovery::reindex_with_schemas(index, schemas, &mut proxy_clone, separator)
+                .await;
         }
     }
 }
