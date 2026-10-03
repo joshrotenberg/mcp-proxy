@@ -35,6 +35,8 @@ pub struct Proxy {
     config: ProxyConfig,
     #[cfg(feature = "discovery")]
     discovery_index: Option<crate::discovery::SharedDiscoveryIndex>,
+    #[cfg(feature = "discovery")]
+    discovery_schemas: Option<crate::discovery::SchemaStore>,
 }
 
 impl Proxy {
@@ -117,13 +119,19 @@ impl Proxy {
         let discovery_enabled = config.proxy.tool_discovery
             || config.proxy.tool_exposure == crate::config::ToolExposure::Search;
         #[cfg(feature = "discovery")]
-        let (discovery_index, discovery_tools) = if discovery_enabled {
-            let index =
-                crate::discovery::build_index(&mut proxy_for_caller, &config.proxy.separator).await;
-            let tools = crate::discovery::build_discovery_tools(index.clone());
-            (Some(index), Some(tools))
+        let (discovery_index, discovery_schemas, discovery_tools) = if discovery_enabled {
+            let (index, schemas) = crate::discovery::build_index_with_schemas(
+                &mut proxy_for_caller,
+                &config.proxy.separator,
+            )
+            .await;
+            let tools = crate::discovery::build_discovery_tools_with_schemas(
+                index.clone(),
+                schemas.clone(),
+            );
+            (Some(index), Some(schemas), Some(tools))
         } else {
-            (None, None)
+            (None, None, None)
         };
         #[cfg(not(feature = "discovery"))]
         let discovery_tools: Option<Vec<tower_mcp::Tool>> = None;
@@ -150,6 +158,8 @@ impl Proxy {
             config,
             #[cfg(feature = "discovery")]
             discovery_index,
+            #[cfg(feature = "discovery")]
+            discovery_schemas,
         })
     }
 
@@ -171,13 +181,20 @@ impl Proxy {
     /// without restarting the proxy.
     pub fn enable_hot_reload(&self, config_path: std::path::PathBuf) {
         tracing::info!("Hot reload enabled, watching config file for changes");
-        crate::reload::spawn_config_watcher(
+        crate::reload::spawn_config_watcher_with_schemas(
             config_path,
             self.inner.clone(),
             #[cfg(feature = "discovery")]
             self.discovery_index
                 .as_ref()
-                .map(|idx| (idx.clone(), self.config.proxy.separator.clone())),
+                .zip(self.discovery_schemas.as_ref())
+                .map(|(idx, schemas)| {
+                    (
+                        idx.clone(),
+                        schemas.clone(),
+                        self.config.proxy.separator.clone(),
+                    )
+                }),
         );
     }
 
