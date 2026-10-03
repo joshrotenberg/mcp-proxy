@@ -78,8 +78,9 @@ use crate::config::CompositeToolConfig;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use tower::ServiceBuilder;
+/// # let proxy = tower_mcp::McpRouter::new();
 /// use mcp_proxy::composite::CompositeLayer;
 /// use mcp_proxy::config::CompositeToolConfig;
 ///

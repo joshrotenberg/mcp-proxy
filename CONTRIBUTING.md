@@ -28,3 +28,9 @@ doc examples must continue to pass `cargo test --doc --all-features`.
 
 Please keep pull requests focused on one concern and explain the user-visible
 reason for the change.
+
+The all-feature integration suite requires a working Docker daemon and the
+`redis:7-alpine` image. Run `docker info` and `docker pull redis:7-alpine` before
+testing. Redis startup failures fail the suite rather than counting as passing
+tests. SQLite uses temporary files. The outlier recovery regression runs in the
+normal suite and takes approximately 1.2 seconds.

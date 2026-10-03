@@ -35,9 +35,11 @@ use tower_mcp_types::protocol::{McpRequest, McpResponse};
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use tower::ServiceBuilder;
+/// # let proxy = tower_mcp::McpRouter::new();
 /// use mcp_proxy::param_override::ParamOverrideLayer;
+/// let overrides = Vec::new(); // Supply ToolOverride rules for your tools.
 ///
 /// let service = ServiceBuilder::new()
 ///     .layer(ParamOverrideLayer::new(overrides))
