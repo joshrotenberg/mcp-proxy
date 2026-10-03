@@ -398,8 +398,16 @@ pub(crate) fn http_client_config(backend: &BackendConfig) -> HttpClientConfig {
 /// request timeout and bearer token.
 pub(crate) fn build_http_transport(url: &str, backend: &BackendConfig) -> HttpClientTransport {
     let mut transport = HttpClientTransport::with_config(url, http_client_config(backend));
-    if let Some(token) = &backend.bearer_token {
+    if let Some(token) = &backend.bearer_token
+        && !backend
+            .headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("authorization"))
+    {
         transport = transport.bearer_token(token);
+    }
+    for (name, value) in &backend.headers {
+        transport = transport.header(name, value);
     }
     transport
 }
@@ -458,21 +466,13 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
             TransportType::Websocket => {
                 let url = backend.url.as_deref().unwrap();
                 tracing::info!(url = %url, "Connecting to WebSocket backend");
-                let transport = if let Some(token) = &backend.bearer_token {
-                    crate::ws_transport::WebSocketClientTransport::connect_with_bearer_token(
-                        url, token,
+                let transport =
+                    crate::ws_transport::WebSocketClientTransport::connect_with_headers(
+                        url,
+                        backend.bearer_token.as_deref(),
+                        &backend.headers,
                     )
-                    .await
-                    .with_context(|| {
-                        format!("connecting to WebSocket backend '{}'", backend.name)
-                    })?
-                } else {
-                    crate::ws_transport::WebSocketClientTransport::connect(url)
-                        .await
-                        .with_context(|| {
-                            format!("connecting to WebSocket backend '{}'", backend.name)
-                        })?
-                };
+                    .await?;
 
                 builder = builder.backend(&backend.name, transport).await;
             }

@@ -61,20 +61,31 @@ impl WebSocketClientTransport {
     ///
     /// The token is sent in the `Authorization` header during the handshake.
     pub async fn connect_with_bearer_token(url: &str, token: &str) -> anyhow::Result<Self> {
-        use tokio_tungstenite::tungstenite::http::Request;
+        Self::connect_with_headers(url, Some(token), &Default::default()).await
+    }
 
-        let request = Request::builder()
-            .uri(url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Connection", "Upgrade")
-            .header("Upgrade", "websocket")
-            .header("Sec-WebSocket-Version", "13")
-            .header(
-                "Sec-WebSocket-Key",
-                tokio_tungstenite::tungstenite::handshake::client::generate_key(),
-            )
-            .body(())
-            .map_err(|e| anyhow::anyhow!("invalid WebSocket request: {e}"))?;
+    /// Connect with custom handshake headers. An explicit Authorization header
+    /// overrides the optional bearer token, regardless of header name casing.
+    pub async fn connect_with_headers(
+        url: &str,
+        token: Option<&str>,
+        headers: &std::collections::HashMap<String, String>,
+    ) -> anyhow::Result<Self> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
+        let mut request = url.into_client_request()?;
+        if let Some(token) = token {
+            request.headers_mut().insert(
+                "authorization",
+                HeaderValue::try_from(format!("Bearer {token}"))?,
+            );
+        }
+        for (name, value) in headers {
+            request.headers_mut().insert(
+                HeaderName::try_from(name.as_str())?,
+                HeaderValue::try_from(value.as_str())?,
+            );
+        }
 
         let (ws_stream, _response) = tokio_tungstenite::connect_async(request)
             .await
