@@ -105,6 +105,7 @@ fn server_to_backend(name: String, server: McpJsonServer) -> Result<BackendConfi
         url,
         env: server.env,
         bearer_token: None,
+        headers: std::collections::HashMap::new(),
         forward_auth: false,
         timeout: None,
         circuit_breaker: None,

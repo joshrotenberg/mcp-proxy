@@ -186,6 +186,7 @@ impl ProxyBuilder {
             command: None,
             url: Some(url.into()),
             bearer_token: Some(token.into()),
+            headers: std::collections::HashMap::new(),
             ..default_backend()
         });
         self
@@ -494,6 +495,7 @@ fn default_backend() -> BackendConfig {
         url: None,
         env: HashMap::new(),
         bearer_token: None,
+        headers: std::collections::HashMap::new(),
         forward_auth: false,
         timeout: None,
         circuit_breaker: None,
