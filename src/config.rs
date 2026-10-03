@@ -389,6 +389,7 @@ pub struct ListenConfig {
 
 /// Configuration for a single backend MCP server.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackendConfig {
     /// Unique backend name, used as the namespace prefix for its tools/resources.
     pub name: String,
@@ -1552,6 +1553,31 @@ impl ProxyConfig {
         }
 
         for backend in &self.backends {
+            if !backend.headers.is_empty() && matches!(backend.transport, TransportType::Stdio) {
+                anyhow::bail!(
+                    "backend '{}': headers require HTTP or WebSocket transport",
+                    backend.name
+                );
+            }
+            let mut header_names = HashSet::new();
+            for (name, value) in &backend.headers {
+                axum::http::HeaderName::try_from(name.as_str())
+                    .with_context(|| format!("backend '{}': invalid header name", backend.name))?;
+                if !header_names.insert(name.to_ascii_lowercase()) {
+                    anyhow::bail!(
+                        "backend '{}': duplicate header name '{}'",
+                        backend.name,
+                        name
+                    );
+                }
+                axum::http::HeaderValue::try_from(value.as_str()).map_err(|_| {
+                    anyhow::anyhow!(
+                        "backend '{}': invalid value for header '{}'",
+                        backend.name,
+                        name
+                    )
+                })?;
+            }
             match backend.transport {
                 TransportType::Stdio => {
                     if backend.command.is_none() {
@@ -2431,6 +2457,24 @@ mod tests {
 
         // SAFETY: same as above
         unsafe { std::env::remove_var("MCP_GW_TEST_TOKEN") };
+    }
+
+    #[test]
+    fn reject_invalid_or_unsupported_headers() {
+        let base = "[proxy]\nname = 'test'\n[proxy.listen]\n[[backends]]\nname = 'api'\ntransport = 'http'\nurl = 'http://localhost:1'\n";
+        for extra in [
+            "headres = {}",
+            "[backends.headers]\n'bad name' = 'value'",
+            "[backends.headers]\nX = 'value'\nx = 'other'",
+            "[backends.headers]\nX = \"line\\nvalue\"",
+        ] {
+            assert!(
+                ProxyConfig::parse(&format!("{base}{extra}")).is_err(),
+                "accepted: {extra}"
+            );
+        }
+        let stdio = "[proxy]\nname = 'test'\n[proxy.listen]\n[[backends]]\nname = 'local'\ntransport = 'stdio'\ncommand = 'echo'\nheaders = { X = 'value' }";
+        assert!(ProxyConfig::parse(stdio).is_err());
     }
 
     #[test]

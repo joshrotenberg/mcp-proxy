@@ -246,7 +246,12 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("http backend requires 'url'"))?;
             let mut transport = tower_mcp::client::HttpClientTransport::new(url);
-            if let Some(token) = &backend.bearer_token {
+            if let Some(token) = &backend.bearer_token
+                && !backend
+                    .headers
+                    .keys()
+                    .any(|name| name.eq_ignore_ascii_case("authorization"))
+            {
                 transport = transport.bearer_token(token);
             }
             for (name, value) in &backend.headers {
@@ -272,12 +277,12 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
                 .url
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("websocket backend requires 'url'"))?;
-            let transport = if let Some(token) = &backend.bearer_token {
-                crate::ws_transport::WebSocketClientTransport::connect_with_bearer_token(url, token)
-                    .await?
-            } else {
-                crate::ws_transport::WebSocketClientTransport::connect(url).await?
-            };
+            let transport = crate::ws_transport::WebSocketClientTransport::connect_with_headers(
+                url,
+                backend.bearer_token.as_deref(),
+                &backend.headers,
+            )
+            .await?;
 
             if has_middleware {
                 let layer = build_backend_layer(backend);
