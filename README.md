@@ -87,7 +87,9 @@ Run:
 mcp-proxy --config proxy.toml
 ```
 
-All tools from the filesystem server are now available under the `files/` namespace at `http://127.0.0.1:8080/mcp`.
+All tools from the filesystem server are now available under the `files/` namespace at `http://127.0.0.1:8080/`.
+The standalone MCP endpoint is `/`; external backends may expose their own
+endpoint at a different path, such as `/mcp`, which belongs in that backend's `url`.
 
 ## Configuration
 

@@ -44,7 +44,7 @@ async fn probes_do_not_bypass_admin_or_mcp_authentication() {
             .unwrap();
         assert_eq!(body.as_ref(), b"ok");
     }
-    for path in ["/admin/health", "/admin/config", "/mcp"] {
+    for path in ["/admin/health", "/admin/config", "/"] {
         let response = router
             .clone()
             .oneshot(
@@ -62,6 +62,7 @@ async fn probes_do_not_bypass_admin_or_mcp_authentication() {
         );
     }
     let response = router
+        .clone()
         .oneshot(
             axum::http::Request::builder()
                 .uri("/admin/health")
@@ -72,5 +73,18 @@ async fn probes_do_not_bypass_admin_or_mcp_authentication() {
         .await
         .unwrap();
     assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let initialized = router.oneshot(
+        axum::http::Request::builder().method("POST").uri("/")
+            .header("authorization", "Bearer mcp-token")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(axum::body::Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"probe-client","version":"1"}}}"#)).unwrap()
+    ).await.unwrap();
+    assert_eq!(initialized.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(initialized.into_body(), 16384)
+        .await
+        .unwrap();
+    let reply: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(reply["result"]["protocolVersion"], "2025-11-25");
     server.abort();
 }
