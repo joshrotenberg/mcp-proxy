@@ -2,8 +2,8 @@ apiVersion: v2
 name: mcp-proxy
 description: Config-driven MCP reverse proxy with auth, resilience, and observability
 type: application
-version: 0.2.0
-appVersion: "0.5.0"
+version: 0.2.1
+appVersion: "0.6.0"
 home: https://github.com/joshrotenberg/mcp-proxy
 sources:
   - https://github.com/joshrotenberg/mcp-proxy

@@ -206,7 +206,7 @@ name, description, and complete input schema, then invoke it through
 `proxy/call_tool`. This keeps full schemas out of search result lists while making
 nested parameters and enums available before execution.
 
-### Upcoming 0.6 migration
+### Upgrading to 0.6
 
 The next release uses tower-mcp 0.23. Library applications that exchange
 `SessionHandle`, `McpProxy`, router requests/responses, or protocol types with
@@ -268,7 +268,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mcp-proxy = "0.5"
+mcp-proxy = "0.6"
 ```
 
 ```rust

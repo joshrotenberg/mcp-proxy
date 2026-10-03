@@ -2,26 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.5.1] - 2026-10-03
+## [0.6.0] - 2026-10-03
 
-### Bug Fixes
+### Migration
 
-- Make deployment probes work with authenticated admin APIs ([#259](https://github.com/joshrotenberg/mcp-proxy/pull/259))
+- Library applications that exchange tower-mcp types with mcp-proxy must use
+  tower-mcp/tower-mcp-types 0.23. The transport dependency upgrade changes type
+  compatibility even though the proxy's own configuration API is preserved.
+- HTTP backends now follow same-origin redirects only and reject HTTPS-to-HTTP
+  downgrades. Configure the final backend URL directly when a deployment
+  previously relied on cross-origin redirects. Authenticated HTTP sessions are
+  bound to the principal that initializes them.
 
-### Documentation
+### Deployment fixes
 
-- Enforce public API documentation and refresh contributor guidance ([#263](https://github.com/joshrotenberg/mcp-proxy/pull/263))
-- Correct standalone endpoint and verify authenticated initialization ([#267](https://github.com/joshrotenberg/mcp-proxy/pull/267))
+- Add credential-free `/livez` and `/readyz` process probes while preserving
+  authentication on MCP and admin routes. Kubernetes and Docker healthchecks
+  now work with admin authentication enabled ([#259](https://github.com/joshrotenberg/mcp-proxy/pull/259)).
+- Update the Helm image default to this release and validate default and
+  authenticated chart rendering in CI. Chart version is 0.2.1.
+- Correct standalone client URLs to `/`, distinguishing upstream `/mcp` paths
+  from the proxy endpoint ([#267](https://github.com/joshrotenberg/mcp-proxy/pull/267)).
 
-### Miscellaneous Tasks
+### Dependencies
 
-- Publish coverage reports and check every MSRV feature configuration ([#262](https://github.com/joshrotenberg/mcp-proxy/pull/262))
+- Upgrade tower-mcp/types to 0.23.2, tokio to 1.53.2, uuid to 1.27.0, and the
+  development chaos middleware to 0.14.0; add redirect policy regressions
+  ([#265](https://github.com/joshrotenberg/mcp-proxy/pull/265)).
+- Replace deprecated serde_yaml with the YAML organization's maintained
+  yaml_serde 0.10.7 fork and add configuration compatibility tests
+  ([#266](https://github.com/joshrotenberg/mcp-proxy/pull/266)).
 
-### Testing
+### Testing and documentation
 
-- Require Redis execution and check previously ignored examples ([#260](https://github.com/joshrotenberg/mcp-proxy/pull/260))
-
-
+- Redis startup/readiness failures now fail integration tests; all chaos
+  regressions and Rust examples run in the checked suite
+  ([#260](https://github.com/joshrotenberg/mcp-proxy/pull/260)).
+- Publish LCOV, HTML, and text coverage artifacts; verify default/all/no-default
+  features on Rust 1.90 ([#262](https://github.com/joshrotenberg/mcp-proxy/pull/262)).
+- Enforce public API documentation and refresh contributor and discovery
+  guidance ([#263](https://github.com/joshrotenberg/mcp-proxy/pull/263)).
 
 ## [0.5.0] - 2026-10-03
 
