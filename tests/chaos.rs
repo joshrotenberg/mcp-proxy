@@ -120,7 +120,8 @@ fn breaker_layer(
         .wait_duration_in_open(wait_in_open)
         .permitted_calls_in_half_open(permitted_in_half_open)
         .name(format!("{name}-cb"))
-        .build_with_handle();
+        .build_with_handle()
+        .unwrap();
     layer
 }
 

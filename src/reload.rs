@@ -249,7 +249,7 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
                 tower_mcp::client::StdioClientTransport::spawn_command(&mut cmd).await?;
 
             if has_middleware {
-                let layer = build_backend_layer(backend);
+                let layer = build_backend_layer(backend)?;
                 proxy
                     .add_backend_with_layer(&backend.name, transport, layer)
                     .await
@@ -269,7 +269,7 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
             let transport = crate::proxy::build_http_transport(url, backend);
 
             if has_middleware {
-                let layer = build_backend_layer(backend);
+                let layer = build_backend_layer(backend)?;
                 proxy
                     .add_backend_with_layer(&backend.name, transport, layer)
                     .await
@@ -295,7 +295,7 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
             .await?;
 
             if has_middleware {
-                let layer = build_backend_layer(backend);
+                let layer = build_backend_layer(backend)?;
                 proxy
                     .add_backend_with_layer(&backend.name, transport, layer)
                     .await
@@ -352,27 +352,40 @@ impl tower::Layer<BackendService> for BackendMiddlewareLayer {
 ///
 /// Layers are applied inner to outer:
 /// retry -> concurrency -> rate limit -> timeout -> circuit breaker -> outlier detection.
-fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
+fn build_backend_layer(backend: &BackendConfig) -> anyhow::Result<BackendMiddlewareLayer> {
     let retry_config = backend.retry.clone();
     let concurrency = backend.concurrency.as_ref().map(|cc| cc.max_concurrent);
     let rate_limit = backend
         .rate_limit
         .as_ref()
-        .map(|rl| (rl.requests, rl.period_seconds));
+        .map(|rl| {
+            tower_resilience::ratelimiter::RateLimiterLayer::builder()
+                .limit_for_period(rl.requests)
+                .refresh_period(Duration::from_secs(rl.period_seconds))
+                .name(format!("{}-ratelimit", backend.name))
+                .build()
+        })
+        .transpose()?;
     let timeout_secs = backend.timeout.as_ref().map(|t| t.seconds);
-    let circuit_breaker = backend.circuit_breaker.as_ref().map(|cb| {
-        (
-            cb.failure_rate_threshold,
-            cb.minimum_calls,
-            cb.wait_duration_seconds,
-            cb.permitted_calls_in_half_open,
-        )
-    });
+    let circuit_breaker = backend
+        .circuit_breaker
+        .as_ref()
+        .map(|cb| {
+            tower_resilience::circuitbreaker::CircuitBreakerLayer::builder()
+                .failure_rate_threshold(cb.failure_rate_threshold)
+                .minimum_number_of_calls(cb.minimum_calls)
+                .sliding_window_size(cb.minimum_calls)
+                .wait_duration_in_open(Duration::from_secs(cb.wait_duration_seconds))
+                .permitted_calls_in_half_open(cb.permitted_calls_in_half_open)
+                .name(format!("{}-cb", backend.name))
+                .build()
+        })
+        .transpose()?;
     let hedging = backend.hedging.clone();
     let outlier = backend.outlier_detection.clone();
     let name = backend.name.clone();
 
-    BackendMiddlewareLayer {
+    Ok(BackendMiddlewareLayer {
         build_fn: Box::new(move |inner: BackendService| {
             let mut svc: BoxCloneService<RouterRequest, RouterResponse, Infallible> =
                 BoxCloneService::new(inner);
@@ -413,13 +426,8 @@ fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
             }
 
             // Rate limit
-            if let Some((requests, period_seconds)) = rate_limit {
-                let layer = tower_resilience::ratelimiter::RateLimiterLayer::builder()
-                    .limit_for_period(requests)
-                    .refresh_period(Duration::from_secs(period_seconds))
-                    .name(format!("{}-ratelimit", name))
-                    .build();
-                let limited = tower::Layer::layer(&layer, svc);
+            if let Some(ref layer) = rate_limit {
+                let limited = tower::Layer::layer(layer, svc);
                 svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
             }
 
@@ -433,15 +441,8 @@ fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
             }
 
             // Circuit breaker
-            if let Some((failure_rate, min_calls, wait_secs, half_open)) = circuit_breaker {
-                let layer = tower_resilience::circuitbreaker::CircuitBreakerLayer::builder()
-                    .failure_rate_threshold(failure_rate)
-                    .minimum_number_of_calls(min_calls)
-                    .wait_duration_in_open(Duration::from_secs(wait_secs))
-                    .permitted_calls_in_half_open(half_open)
-                    .name(format!("{}-cb", name))
-                    .build();
-                let limited = tower::Layer::layer(&layer, svc);
+            if let Some(ref layer) = circuit_breaker {
+                let limited = tower::Layer::layer(layer, svc);
                 svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
             }
 
@@ -461,7 +462,7 @@ fn build_backend_layer(backend: &BackendConfig) -> BackendMiddlewareLayer {
 
             svc
         }),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -478,6 +479,19 @@ mod tests {
             "#,
         );
         toml::from_str(&toml).unwrap()
+    }
+
+    #[test]
+    fn invalid_reload_middleware_returns_error() {
+        let mut backend = http_backend("api", "http://localhost:1");
+        backend.rate_limit = Some(crate::config::RateLimitConfig {
+            requests: 1,
+            period_seconds: 0,
+        });
+        assert!(build_backend_layer(&backend).is_err());
+        backend.rate_limit = None;
+        backend.circuit_breaker = Some(toml::from_str("minimum_calls = 0").unwrap());
+        assert!(build_backend_layer(&backend).is_err());
     }
 
     #[test]
