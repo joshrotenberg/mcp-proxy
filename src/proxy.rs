@@ -1353,10 +1353,24 @@ mod middleware_stack_tests {
                 if slow.load(Ordering::SeqCst) {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-                let inner = if fail_responses
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                    .is_ok()
-                {
+                let should_fail = {
+                    let mut remaining = fail_responses.load(Ordering::SeqCst);
+                    loop {
+                        if remaining == 0 {
+                            break false;
+                        }
+                        match fail_responses.compare_exchange_weak(
+                            remaining,
+                            remaining - 1,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        ) {
+                            Ok(_) => break true,
+                            Err(current) => remaining = current,
+                        }
+                    }
+                };
+                let inner = if should_fail {
                     Err(JsonRpcError::internal_error("transient backend failure"))
                 } else {
                     Ok(McpResponse::CallTool(CallToolResult::text("pong")))
