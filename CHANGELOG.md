@@ -11,8 +11,8 @@ All notable changes to this project will be documented in this file.
   compatibility even though the proxy's own configuration API is preserved.
 - HTTP backends now follow same-origin redirects only and reject HTTPS-to-HTTP
   downgrades. Configure the final backend URL directly when a deployment
-  previously relied on cross-origin redirects. Authenticated HTTP sessions are
-  bound to the principal that initializes them.
+  previously relied on cross-origin redirects. JWT/OAuth HTTP sessions carrying
+  a `sub` claim are bound to that subject.
 
 ### Deployment fixes
 

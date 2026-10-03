@@ -217,9 +217,9 @@ host, or port fails instead of forwarding custom headers or session identifiers;
 HTTPS-to-HTTP redirects also fail. Configure the backend's final URL directly
 if the previous deployment depended on a cross-origin redirect.
 
-The upgraded transport binds authenticated HTTP sessions to the principal that
-initialized them. Clients must initialize their own session and authenticate
-subsequent requests with that same principal.
+JWT/OAuth-authenticated HTTP sessions carrying a `sub` claim are bound to that
+subject. Clients must initialize their own session and authenticate subsequent
+requests as the same subject.
 
 ### Authentication
 
