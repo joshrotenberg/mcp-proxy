@@ -688,10 +688,9 @@ async fn outlier_max_ejection_percent_caps_ejections() {
 }
 
 /// After `base_ejection_seconds` the backend is unejected and traffic
-/// resumes. Ignored by default: the config granularity is whole seconds, so
-/// this needs 1s+ of wall clock. Run with --ignored.
+/// resumes. Config granularity is whole seconds, so this regression takes
+/// approximately 1.2 seconds and runs in the normal test suite.
 #[tokio::test]
-#[ignore = "needs 1s+ wall clock (base_ejection_seconds granularity)"]
 async fn outlier_ejection_expires_and_traffic_resumes() {
     let detector = OutlierDetector::new(50);
 

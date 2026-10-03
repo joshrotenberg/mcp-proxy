@@ -209,12 +209,15 @@ impl Proxy {
     ///
     /// Use this to embed the proxy in an existing axum application:
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// use axum::{Router, routing::get};
+    /// # fn embed(proxy: mcp_proxy::Proxy) {
     /// let (proxy_router, session_handle) = proxy.into_router();
     ///
     /// let app = Router::new()
-    ///     .nest("/mcp", proxy_router)
-    ///     .route("/health", get(|| async { "ok" }));
+    ///     .merge(proxy_router)
+    ///     .route("/app-health", get(|| async { "ok" }));
+    /// # }
     /// ```
     pub fn into_router(self) -> (Router, SessionHandle) {
         (self.router, self.session_handle)

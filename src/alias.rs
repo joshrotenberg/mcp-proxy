@@ -71,8 +71,9 @@ use tower_mcp_types::protocol::{McpRequest, McpResponse};
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use tower::ServiceBuilder;
+/// # let proxy = tower_mcp::McpRouter::new();
 /// use mcp_proxy::alias::{AliasLayer, AliasMap};
 ///
 /// let aliases = AliasMap::new(vec![

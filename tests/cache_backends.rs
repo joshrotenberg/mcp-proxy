@@ -189,19 +189,11 @@ mod redis_tests {
     async fn test_redis_cache_hit_miss() {
         let port = next_port();
         let name = unique_name("mcp-cache-test");
-        let guard = match ContainerGuard::new(RedisTemplate::new(&name).port(port))
+        let guard = ContainerGuard::new(RedisTemplate::new(&name).port(port))
+            .wait_for_ready(true)
             .start()
             .await
-        {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("Skipping Redis test (Docker not available): {e}");
-                return;
-            }
-        };
-
-        // Wait for Redis to be ready
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            .expect("Redis integration tests require a working Docker daemon and redis:7-alpine");
 
         let conn_str = guard.connection_string();
         let backend_cfg = CacheBackendConfig {
@@ -243,18 +235,11 @@ mod redis_tests {
     async fn test_redis_cache_clear() {
         let port = next_port();
         let name = unique_name("mcp-cache-clear");
-        let guard = match ContainerGuard::new(RedisTemplate::new(&name).port(port))
+        let guard = ContainerGuard::new(RedisTemplate::new(&name).port(port))
+            .wait_for_ready(true)
             .start()
             .await
-        {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("Skipping Redis test (Docker not available): {e}");
-                return;
-            }
-        };
-
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            .expect("Redis integration tests require a working Docker daemon and redis:7-alpine");
 
         let conn_str = guard.connection_string();
         let backend_cfg = CacheBackendConfig {

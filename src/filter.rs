@@ -117,9 +117,11 @@ use crate::config::BackendFilter;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use tower::ServiceBuilder;
+/// # let proxy = tower_mcp::McpRouter::new();
 /// use mcp_proxy::filter::CapabilityFilterLayer;
+/// let filters = Vec::new(); // Supply BackendFilter rules for your backends.
 ///
 /// let service = ServiceBuilder::new()
 ///     .layer(CapabilityFilterLayer::new(filters))

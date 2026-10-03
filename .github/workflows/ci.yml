@@ -63,6 +63,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.features }}
+      - name: Prepare required Redis integration runtime
+        if: matrix.features == 'all'
+        run: |
+          docker info
+          docker pull redis:7-alpine
       - run: cargo test ${{ matrix.flags }}
 
   msrv:
