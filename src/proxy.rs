@@ -255,9 +255,12 @@ type MwService = BoxCloneService<RouterRequest, RouterResponse, tower::BoxError>
 type MwStage = Box<dyn Fn(MwService) -> MwService + Send + Sync>;
 
 /// Every configured per-backend middleware composed into ONE tower-mcp
-/// backend layer. tower-mcp's `backend_layer` replaces the previously applied
-/// layer rather than stacking (joshrotenberg/tower-mcp#1173), so handing it
-/// the middlewares one call at a time silently keeps only the last.
+/// backend layer, built from the backend's full middleware configuration in
+/// one place. tower-mcp's `backend_layer` used to replace the previously
+/// applied layer rather than stack (joshrotenberg/tower-mcp#1173, fixed
+/// upstream in 0.22.0); single-call composition predates that fix and
+/// remains correct, producing one `CatchError` fold across all zones instead
+/// of one per configured middleware.
 ///
 /// Composition happens in three zones matching the middlewares' type
 /// contracts: retry and hedging operate on the raw `Error = Infallible`
@@ -1296,9 +1299,13 @@ mod scope_enforcement_tests {
 #[cfg(test)]
 mod middleware_stack_tests {
     //! Regression tests for #218: the per-backend middleware chain must
-    //! compose as one stack. Under tower-mcp's last-wins `backend_layer`
-    //! semantics (joshrotenberg/tower-mcp#1173), only the final middleware
-    //! survived and the first test here fails at "call 1 should time out".
+    //! compose as one stack. Written against tower-mcp's pre-0.22 last-wins
+    //! `backend_layer` semantics (joshrotenberg/tower-mcp#1173, fixed
+    //! upstream in 0.22.0): naively calling `backend_layer()` once per
+    //! middleware would have silently kept only the last one, and the first
+    //! test here would fail at "call 1 should time out". These tests pin
+    //! `BackendMiddlewareLayer`'s single-call composition independent of
+    //! upstream's stacking behavior.
 
     use std::pin::Pin;
     use std::sync::Arc;
@@ -1358,10 +1365,24 @@ mod middleware_stack_tests {
                 if slow.load(Ordering::SeqCst) {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-                let inner = if fail_responses
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                    .is_ok()
-                {
+                let should_fail = {
+                    let mut remaining = fail_responses.load(Ordering::SeqCst);
+                    loop {
+                        if remaining == 0 {
+                            break false;
+                        }
+                        match fail_responses.compare_exchange_weak(
+                            remaining,
+                            remaining - 1,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        ) {
+                            Ok(_) => break true,
+                            Err(current) => remaining = current,
+                        }
+                    }
+                };
+                let inner = if should_fail {
                     Err(JsonRpcError::internal_error("transient backend failure"))
                 } else {
                     Ok(McpResponse::CallTool(CallToolResult::text("pong")))
