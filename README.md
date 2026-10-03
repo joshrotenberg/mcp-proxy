@@ -269,6 +269,11 @@ proxy.serve().await?;
 
 ## Admin API
 
+Process probes at `GET /livez` and `GET /readyz` return `ok` without credentials.
+Readiness indicates startup completed; detailed backend health remains at the
+protected `/admin/health` endpoint. For Kubernetes deployment and release version
+maintenance, see the [Helm chart guide](charts/mcp-proxy/README.md).
+
 HTTP endpoints:
 
 - `GET /admin/backends` -- list backends with health status and proxy info
