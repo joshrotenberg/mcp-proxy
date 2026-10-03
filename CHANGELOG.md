@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-10-03
+
+### Bug Fixes
+
+- Update vulnerable dependencies and keep Rust checks compatible ([#248](https://github.com/joshrotenberg/mcp-proxy/pull/248))
+- Pass the configured backend timeout to the HTTP transport ([#246](https://github.com/joshrotenberg/mcp-proxy/pull/246))
+
+### Documentation
+
+- Explain external tool gates and version 0.5 workflows ([#251](https://github.com/joshrotenberg/mcp-proxy/pull/251))
+
+### Features
+
+- **discovery:** Retrieve full tool schemas without breaking existing APIs ([#250](https://github.com/joshrotenberg/mcp-proxy/pull/250))
+- Validate custom outbound headers for HTTP and WebSocket backends ([#249](https://github.com/joshrotenberg/mcp-proxy/pull/249))
+
+### Miscellaneous Tasks
+
+- Bump tower-mcp and tower-mcp-types to 0.22.0 ([#233](https://github.com/joshrotenberg/mcp-proxy/pull/233))
+
+
+
 ## [0.4.3] - 2026-08-05
 
 ### Bug Fixes
