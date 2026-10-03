@@ -793,7 +793,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2571,7 +2571,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3008,7 +3008,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3066,7 +3066,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3556,10 +3556,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3658,9 +3658,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
 dependencies = [
  "bytes",
  "libc",
@@ -3864,9 +3864,9 @@ checksum = "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e"
 
 [[package]]
 name = "tower-mcp"
-version = "0.22.2"
+version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14f0054c19c326f4d317242af847e0a43a4fbd0bbeaa995f95f4ec6e0942f56a"
+checksum = "c854d71758ccdbde224ea9b8408026bcef94833e91f497be3c31cedc60b25ee3"
 dependencies = [
  "async-trait",
  "axum",
@@ -3900,9 +3900,9 @@ dependencies = [
 
 [[package]]
 name = "tower-mcp-types"
-version = "0.22.2"
+version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bafe456e348e69895f4d0f1731a8f3094075f0e5f0a3f7d5f3c2443a0412b035"
+checksum = "5a4b52e6634aa34d351382cac08b8cfd0355c01e386faaf8a790a69e8f7de59a"
 dependencies = [
  "base64 0.23.0",
  "indexmap",
@@ -3918,7 +3918,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54265ff304016b7ed75bb75dc8c57f23864b5d91f00157ed127aded6b67a4023"
 dependencies = [
  "tower-resilience-circuitbreaker",
- "tower-resilience-core",
+ "tower-resilience-core 0.13.0",
  "tower-resilience-hedge",
  "tower-resilience-ratelimiter",
  "tower-resilience-retry",
@@ -3926,16 +3926,16 @@ dependencies = [
 
 [[package]]
 name = "tower-resilience-chaos"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efcb9e05bc7a8321956591af6d97c01a7d0f9aa177c631767015141e1e3f0461"
+checksum = "e30121c9a2bd918cb9b96bd84ff9c5e4b07a9bd26a4bcafab29cc8ea3e85d6a3"
 dependencies = [
  "futures",
  "rand 0.9.5",
  "tokio",
  "tower",
  "tower-layer",
- "tower-resilience-core",
+ "tower-resilience-core 0.14.0",
  "tower-service",
 ]
 
@@ -3949,7 +3949,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tower",
- "tower-resilience-core",
+ "tower-resilience-core 0.13.0",
 ]
 
 [[package]]
@@ -3957,6 +3957,16 @@ name = "tower-resilience-core"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25eeb90521cdd34e4ed4ba21b5492311393eac927b015ca78c94658e13f5d137"
+dependencies = [
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "tower-resilience-core"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "306d58a4f3839070b6e3133d5a9479c475d6e8e5264eb10e79307f395383441a"
 dependencies = [
  "thiserror",
  "tokio",
@@ -3972,7 +3982,7 @@ dependencies = [
  "tokio",
  "tower",
  "tower-layer",
- "tower-resilience-core",
+ "tower-resilience-core 0.13.0",
 ]
 
 [[package]]
@@ -3985,7 +3995,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tower",
- "tower-resilience-core",
+ "tower-resilience-core 0.13.0",
 ]
 
 [[package]]
@@ -3999,7 +4009,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tower",
- "tower-resilience-core",
+ "tower-resilience-core 0.13.0",
 ]
 
 [[package]]
@@ -4262,9 +4272,9 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.26.1"
+version = "1.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
+checksum = "97277d36b9c3ace13e58fa6e753f8b0bbbf302a18dd193240d70f9e29681059a"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
@@ -4487,7 +4497,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
