@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.1] - 2026-10-03
+
+### Bug Fixes
+
+- Make deployment probes work with authenticated admin APIs ([#259](https://github.com/joshrotenberg/mcp-proxy/pull/259))
+
+### Documentation
+
+- Enforce public API documentation and refresh contributor guidance ([#263](https://github.com/joshrotenberg/mcp-proxy/pull/263))
+- Correct standalone endpoint and verify authenticated initialization ([#267](https://github.com/joshrotenberg/mcp-proxy/pull/267))
+
+### Miscellaneous Tasks
+
+- Publish coverage reports and check every MSRV feature configuration ([#262](https://github.com/joshrotenberg/mcp-proxy/pull/262))
+
+### Testing
+
+- Require Redis execution and check previously ignored examples ([#260](https://github.com/joshrotenberg/mcp-proxy/pull/260))
+
+
+
 ## [0.5.0] - 2026-10-03
 
 ### Bug Fixes
