@@ -71,15 +71,27 @@ jobs:
       - run: cargo test ${{ matrix.flags }}
 
   msrv:
-    name: MSRV (1.90)
+    name: MSRV (1.90, ${{ matrix.features }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - features: all
+            flags: --all-features
+          - features: default
+            flags: ""
+          - features: none
+            flags: --no-default-features
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.90"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets
+        with:
+          key: msrv-${{ matrix.features }}
+      - run: cargo check --locked --all-targets ${{ matrix.flags }}
 
   doc:
     name: Documentation
@@ -101,3 +113,36 @@ jobs:
         with:
           version: v3.19.0
       - run: ./scripts/check-chart.sh
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - name: Prepare required Redis integration runtime
+        run: |
+          docker info
+          docker pull redis:7-alpine
+      - name: Measure all-feature unit and integration coverage
+        run: |
+          mkdir -p target/coverage
+          cargo llvm-cov --locked --all-features --lib --tests --lcov --output-path target/coverage/lcov.info
+          cargo llvm-cov report --html --output-dir target/coverage
+          cargo llvm-cov report > target/coverage/summary.txt
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          cat target/coverage/summary.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: target/coverage/
+          if-no-files-found: error

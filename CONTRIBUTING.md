@@ -34,3 +34,30 @@ The all-feature integration suite requires a working Docker daemon and the
 testing. Redis startup failures fail the suite rather than counting as passing
 tests. SQLite uses temporary files. The outlier recovery regression runs in the
 normal suite and takes approximately 1.2 seconds.
+
+## Coverage and minimum Rust version
+
+CI checks all targets with default, all, and no default features on Rust 1.90:
+
+```sh
+cargo +1.90 check --locked --all-targets
+cargo +1.90 check --locked --all-targets --all-features
+cargo +1.90 check --locked --all-targets --no-default-features
+```
+
+To reproduce the coverage report, prepare Docker/Redis as above, then run:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --version 0.9.1 --locked
+mkdir -p target/coverage
+cargo llvm-cov --locked --all-features --lib --tests --lcov --output-path target/coverage/lcov.info
+cargo llvm-cov report --html --output-dir target/coverage
+cargo llvm-cov report > target/coverage/summary.txt
+```
+
+The CI `coverage-report` artifact contains LCOV, an HTML report, and a text
+summary. It measures unit and integration tests; stable Rust doctests run in the
+separate test matrix and are not included in this coverage report. Line coverage
+is a guide to missing tests, not proof of correctness. No percentage gate is set
+until there is a representative baseline and a reason for the chosen threshold.
