@@ -1275,7 +1275,7 @@ impl ProxyConfig {
 
         let mut config: Self = match path.extension().and_then(|e| e.to_str()) {
             #[cfg(feature = "yaml")]
-            Some("yaml" | "yml") => serde_yaml::from_str(&content)
+            Some("yaml" | "yml") => yaml_serde::from_str(&content)
                 .with_context(|| format!("parsing YAML {}", path.display()))?,
             #[cfg(not(feature = "yaml"))]
             Some("yaml" | "yml") => {
@@ -1422,7 +1422,7 @@ impl ProxyConfig {
     /// ```
     #[cfg(feature = "yaml")]
     pub fn parse_yaml(yaml: &str) -> Result<Self> {
-        let config: Self = serde_yaml::from_str(yaml).context("parsing YAML config")?;
+        let config: Self = yaml_serde::from_str(yaml).context("parsing YAML config")?;
         config.validate()?;
         Ok(config)
     }
@@ -4111,6 +4111,74 @@ backends:
             config.backends[0].expose_tools,
             vec!["read_file", "list_directory"]
         );
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn yaml_round_trip_preserves_auth_headers_and_middleware() {
+        let original = ProxyConfig::parse_yaml(
+            r#"
+proxy:
+  name: yaml-round-trip
+  listen: {}
+auth:
+  type: bearer
+  tokens: [test-token]
+backends:
+  - name: api
+    transport: http
+    url: https://example.com/mcp
+    headers:
+      X-API-Key: "${API_KEY}"
+      Authorization: "ApiKey literal"
+    timeout:
+      seconds: 90
+    rate_limit:
+      requests: 5
+      period_seconds: 2
+"#,
+        )
+        .unwrap();
+        let serialized = yaml_serde::to_string(&original).unwrap();
+        let restored = ProxyConfig::parse_yaml(&serialized).unwrap();
+        assert_eq!(
+            serde_json::to_value(&original).unwrap(),
+            serde_json::to_value(&restored).unwrap()
+        );
+        assert_eq!(restored.backends[0].headers["X-API-Key"], "${API_KEY}");
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn yaml_file_extensions_load_through_the_config_loader() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "proxy: {name: yaml-file, listen: {}}\nbackends:\n  - {name: api, transport: http, url: 'http://localhost:8080'}\n";
+        for extension in ["yaml", "yml"] {
+            let path = dir.path().join(format!("proxy.{extension}"));
+            std::fs::write(&path, content).unwrap();
+            let config = ProxyConfig::load(&path).unwrap();
+            assert_eq!(config.proxy.name, "yaml-file");
+            assert_eq!(config.source_path.as_ref(), Some(&path));
+            assert_eq!(
+                config.backends[0].url.as_deref(),
+                Some("http://localhost:8080")
+            );
+        }
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn yaml_rejects_malformed_duplicate_and_unknown_backend_fields() {
+        let malformed = ProxyConfig::parse_yaml("proxy: [unterminated").unwrap_err();
+        assert!(format!("{malformed:#}").contains("parsing YAML config"));
+        let prefix = "proxy: {name: invalid-yaml, listen: {}}\nbackends:\n  - name: api\n    transport: http\n    url: 'http://localhost:8080'\n";
+        for (suffix, expected) in [
+            ("    name: duplicate\n", "duplicate field"),
+            ("    typo: value\n", "unknown field"),
+        ] {
+            let error = ProxyConfig::parse_yaml(&format!("{prefix}{suffix}")).unwrap_err();
+            assert!(format!("{error:#}").contains(expected), "{error:#}");
+        }
     }
 
     #[test]
