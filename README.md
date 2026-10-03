@@ -338,7 +338,7 @@ Pre-built binaries and `cargo install` include the default features. If you're b
 | `openapi` | yes | OpenAPI schema and endpoint support |
 | `websocket` | yes | WebSocket backend transport |
 | `discovery` | yes | BM25 tool discovery and search exposure mode |
-| `yaml` | yes | YAML configuration files |
+| `yaml` | yes | YAML configuration files using the maintained `yaml_serde` parser |
 | `skills` | yes | agentskills.io prompts for proxy administration |
 | `redis-cache` | no | Shared Redis response cache |
 | `sqlite-cache` | no | Persistent SQLite response cache |
