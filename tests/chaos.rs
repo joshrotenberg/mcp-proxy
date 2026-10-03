@@ -349,10 +349,24 @@ fn transient_failure_layer(
             tower::util::BoxCloneService::new(tower::ServiceExt::map_response(
                 inner,
                 move |resp: RouterResponse| {
-                    if failures
-                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                        .is_ok()
-                    {
+                    let should_fail = {
+                        let mut remaining = failures.load(Ordering::SeqCst);
+                        loop {
+                            if remaining == 0 {
+                                break false;
+                            }
+                            match failures.compare_exchange_weak(
+                                remaining,
+                                remaining - 1,
+                                Ordering::SeqCst,
+                                Ordering::SeqCst,
+                            ) {
+                                Ok(_) => break true,
+                                Err(current) => remaining = current,
+                            }
+                        }
+                    };
+                    if should_fail {
                         RouterResponse {
                             id: resp.id,
                             inner: Err(tower_mcp_types::JsonRpcError::internal_error(
