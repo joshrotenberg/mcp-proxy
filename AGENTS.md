@@ -13,7 +13,12 @@ src/
   main.rs          # CLI entry point (clap), logging setup
   lib.rs           # Library root, re-exports Proxy and ProxyConfig
   proxy.rs         # Core: builds proxy, middleware stack, and axum router
-  config.rs        # TOML config parsing, all config types
+  config.rs        # TOML/YAML config parsing, validation, all config types
+  builder.rs       # Fluent programmatic configuration builder
+  discovery.rs     # Search index and complete tool schema store
+  mcp_json.rs      # Import Claude-style .mcp.json configurations
+  ws_transport.rs  # Outbound WebSocket transport
+  skills.rs        # Management prompts bundled from src/skills/
   admin.rs         # HTTP admin API (/admin/backends, /admin/health, etc.)
   admin_tools.rs   # MCP admin tools (proxy/ namespace, via ChannelTransport)
   reload.rs        # Hot reload: file watcher, dynamic backend addition
@@ -25,20 +30,34 @@ src/
   filter.rs        # Capability filtering -- allow/deny lists, glob patterns (CapabilityFilterService)
   inject.rs        # Argument injection into tool calls (InjectArgsService)
   mirror.rs        # Traffic mirroring to canary backends (MirrorService)
-  cache.rs         # Response caching with TTL (CacheService)
+  cache.rs         # Response caching with memory, Redis, or SQLite storage
   coalesce.rs      # Request deduplication (CoalesceService)
   validation.rs    # Argument size limits (ValidationService)
   metrics.rs       # Prometheus counters and histograms (MetricsService)
   rbac.rs          # Role-based access control (RbacService)
   token.rs         # Auth token passthrough to backends (TokenPassthroughService)
+  bearer_scope.rs  # Per-token tool scoping and claims
+  introspection.rs # OAuth token introspection and JWT fallback
+  param_override.rs # Tool parameter hiding, renaming, and defaults
+  composite.rs     # Composite tool fan-out
+  canary.rs        # Weighted canary routing
+  failover.rs      # Ordered backend failover
 
   # Per-backend middleware (applied per-backend in proxy.rs and reload.rs)
-  retry.rs         # Retry with exponential backoff (McpRetryPolicy)
+  retry.rs         # tower-resilience retry layer, exponential backoff, budgets
   outlier.rs       # Outlier detection and ejection (OutlierDetectionLayer)
 
 tests/
   integration.rs   # Middleware composition tests with in-process backends via ChannelTransport
-  e2e.rs           # Comprehensive E2E test suite (44 tests, 10 tiers)
+  e2e.rs           # Full proxy pipeline tests with in-process backends
+  http_e2e.rs      # Real HTTP transport and authentication tests
+  health_probes.rs # Configured proxy process probes and auth boundaries
+  outbound_headers.rs # Actual HTTP requests and WebSocket handshake headers
+  discovery_schemas.rs # Tool schema retrieval and reindex behavior
+  chaos.rs         # Fault injection and resilience recovery regressions
+  cache_backends.rs # Real Redis containers and temporary SQLite databases
+  config_properties.rs # Property tests for config validation
+  examples.rs      # Load and validate every example TOML config
 
 examples/
   *.toml           # Example proxy configs for different deployment patterns
@@ -54,16 +73,17 @@ The middleware stack is built in `proxy.rs::build_middleware_stack()`. Order mat
 **Global middleware** (wraps the entire proxy service):
 ```
 Request flow (outer to inner):
-Auth (axum layer) -> Audit -> Access Log -> Metrics -> Token Passthrough -> RBAC
-  -> Alias -> Filter -> Validation -> Coalesce -> Cache
-  -> Mirror -> Inject Args -> McpProxy
+Auth (axum layer) -> Global Rate Limit -> Audit -> Access Log -> Metrics
+  -> Token Passthrough -> Token Validation -> RBAC -> Bearer Scoping -> Composite -> Alias
+  -> Search Mode Filter -> Capability Filter -> Validation -> Coalesce -> Cache
+  -> Mirror -> Failover -> Canary -> Parameter Overrides -> Inject Args -> McpProxy
 ```
 
 **Per-backend middleware** (applied to each backend individually):
 ```
-Request flow (inner to outer, applied via builder.backend_layer()):
-Retry -> Hedge -> Concurrency Limit -> Rate Limit
-  -> Timeout -> Circuit Breaker -> Outlier Detection -> Backend
+Request flow (outer to inner):
+Outlier Detection -> CatchError -> Circuit Breaker -> Timeout -> Rate Limit
+  -> Concurrency Limit -> Hedge -> Retry -> Backend
 ```
 
 ### Key design pattern: Error = Infallible
@@ -79,7 +99,11 @@ let limited = tower::Layer::layer(&layer, svc);
 svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
 ```
 
-In `proxy.rs`, `builder.backend_layer(layer)` handles this internally.
+`BackendMiddlewareLayer` builds retry in the Infallible zone, then
+hedge/concurrency/rate/timeout/breaker in the BoxError zone, converts errors back into
+responses with `CatchError`, and applies outlier detection outside that boundary.
+Pass the composed layer to `builder.backend_layer()` once. The reload path
+constructs the same zones; changing either path requires checking the other.
 
 ### Adding a new middleware layer
 
@@ -147,6 +171,7 @@ Every feature gets tests. No exceptions.
 ### Documentation
 
 Rust docs are the single source of truth for both CLI users and library users.
+The library enables `missing_docs`; CI treats its warnings as errors.
 
 - All public APIs must have doc comments
 - Module-level docs explain purpose and usage patterns
@@ -159,7 +184,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --lib --all-features
 cargo test --test '*' --all-features
-cargo doc --no-deps --all-features       # catches missing/broken docs
+RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps --all-features # missing/broken docs
 cargo test --doc --all-features          # catches stale doc examples
 ```
 
@@ -171,3 +196,16 @@ cargo test --doc --all-features          # catches stale doc examples
 - All public APIs have doc comments
 - Metrics use `mcp_proxy_` prefix
 - Admin tools live under `proxy/` namespace
+
+## Compatibility, coverage, and deployment checks
+
+See `CONTRIBUTING.md` for the full Rust 1.90 feature matrix and coverage commands.
+All-feature integration tests require Docker and `redis:7-alpine`; startup or
+readiness failures are test failures. All Rust examples are checked, and the
+outlier recovery regression runs in the normal suite.
+
+CI publishes a `coverage-report` artifact and validates the Helm chart with
+`./scripts/check-chart.sh`. Release preparation must synchronize
+`charts/mcp-proxy/Chart.yaml` appVersion with Cargo.toml and bump the chart
+version. `/livez` and `/readyz` are credential-free process probes; detailed
+backend health is served by the authenticated `/admin/health` endpoint.

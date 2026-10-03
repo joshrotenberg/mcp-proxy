@@ -58,8 +58,8 @@
 //! | Transport | Config | Use Case |
 //! |-----------|--------|----------|
 //! | `stdio` | `command`, `args`, `env` | Local subprocess (npx, python, etc.) |
-//! | `http` | `url`, `bearer_token` | Remote HTTP+SSE MCP server |
-//! | `websocket` | `url`, `bearer_token` | Remote WebSocket MCP server |
+//! | `http` | `url`, `bearer_token`, `headers` | Remote HTTP+SSE MCP server |
+//! | `websocket` | `url`, `bearer_token`, `headers` | Remote WebSocket MCP server |
 //!
 //! Backends are namespaced: a backend named `"files"` exposes tools as
 //! `files/read_file`, `files/write_file`, etc.
@@ -112,11 +112,13 @@
 //! # Tool Discovery
 //!
 //! When `tool_discovery = true`, BM25 full-text search indexes all backend tools
-//! and exposes `proxy/search_tools`, `proxy/similar_tools`, and
+//! and exposes `proxy/search_tools`, `proxy/get_tool`, `proxy/similar_tools`, and
 //! `proxy/tool_categories` for finding tools across large deployments.
 //!
 //! Set `tool_exposure = "search"` to hide individual tools from listing and expose
-//! only meta-tools (search + call_tool), scaling to hundreds of backends.
+//! only meta-tools, scaling to hundreds of backends. Search for a tool, pass its
+//! returned ID to `proxy/get_tool` for the complete description and input schema,
+//! then invoke it through `proxy/call_tool`.
 //!
 //! # Agent Skills
 //!
@@ -150,6 +152,7 @@
 //! | `skills` | Yes | agentskills.io management prompts |
 //! | `redis-cache` | No | Redis cache backend |
 //! | `sqlite-cache` | No | SQLite cache backend |
+//! | `protocol-2026-07-28` | No | Released MCP 2026-07-28 protocol support |
 //!
 //! Minimal build: `cargo install mcp-proxy --no-default-features`
 //!
@@ -157,6 +160,8 @@
 //!
 //! Middleware stack overhead is sub-microsecond (~115ns per request). Cache hits
 //! are 33x faster than backend round-trips. See `benches/proxy_overhead.rs`.
+
+#![warn(missing_docs)]
 
 pub mod access_log;
 pub mod admin;
