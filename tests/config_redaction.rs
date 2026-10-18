@@ -65,9 +65,20 @@ fn config(backend_url: &str) -> ProxyConfig {
     .unwrap()
 }
 
+// Avoid Debug formatting the success value: it may contain credentials.
+fn expect_failure<T, E>(result: Result<T, E>) -> E {
+    match result {
+        Err(error) => error,
+        Ok(_) => panic!("expected failure; sensitive success value omitted"),
+    }
+}
+
 fn assert_redacted(text: &str) {
-    for secret in SECRETS {
-        assert!(!text.contains(secret), "credential disclosed: {secret}");
+    for (index, secret) in SECRETS.iter().enumerate() {
+        assert!(
+            !text.contains(secret),
+            "credential sentinel {index} was disclosed"
+        );
     }
     assert!(text.contains("[REDACTED]"));
     assert!(text.contains("redaction-test"));
@@ -78,7 +89,7 @@ fn assert_redacted(text: &str) {
 #[test]
 fn parser_errors_and_cli_stderr_do_not_quote_config_source() {
     let input = "[proxy]\nname = \"sentinel-inbound-token\" trailing-input\n";
-    let error = ProxyConfig::parse(input).unwrap_err();
+    let error = expect_failure(ProxyConfig::parse(input));
     for rendered in [format!("{error:#}"), format!("{error:?}")] {
         assert!(!rendered.contains("sentinel-inbound-token"));
         assert!(rendered.contains("byte"), "keep a useful error position");
@@ -101,13 +112,13 @@ fn parser_errors_and_cli_stderr_do_not_quote_config_source() {
 #[test]
 fn yaml_errors_do_not_quote_rejected_string_values() {
     let input = "proxy: sentinel-client-secret\n";
-    let error = ProxyConfig::parse_yaml(input).unwrap_err();
+    let error = expect_failure(ProxyConfig::parse_yaml(input));
     assert!(!format!("{error:#}").contains("sentinel-client-secret"));
     assert!(!format!("{error:?}").contains("sentinel-client-secret"));
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("proxy.yaml");
     std::fs::write(&path, input).unwrap();
-    let error = ProxyConfig::load(&path).unwrap_err();
+    let error = expect_failure(ProxyConfig::load(&path));
     assert!(!format!("{error:#}").contains("sentinel-client-secret"));
 }
 
@@ -242,8 +253,11 @@ async fn configured_mcp_sessions_never_expose_secrets_to_ordinary_or_scoped_call
             }
         } else {
             let serialized = serde_json::to_string(&result.unwrap()).unwrap();
-            for secret in SECRETS {
-                assert!(!serialized.contains(secret), "{secret}");
+            for (index, secret) in SECRETS.iter().enumerate() {
+                assert!(
+                    !serialized.contains(secret),
+                    "config tool exposed credential sentinel {index}"
+                );
             }
             assert!(serialized.contains("[REDACTED]"));
             assert!(serialized.contains("redaction-test"));
@@ -277,8 +291,11 @@ async fn configured_mcp_sessions_never_expose_secrets_to_ordinary_or_scoped_call
         for name in ["proxy/check_config", "proxy/explain_config"] {
             let prompt = client.get_prompt(name, None).await.unwrap();
             let text = serde_json::to_string(&prompt).unwrap();
-            for secret in SECRETS {
-                assert!(!text.contains(secret), "{name}: {secret}");
+            for (index, secret) in SECRETS.iter().enumerate() {
+                assert!(
+                    !text.contains(secret),
+                    "prompt exposed credential sentinel {index}"
+                );
             }
             assert!(text.contains("[REDACTED]"));
             assert!(text.contains("redaction-test"));
@@ -307,14 +324,15 @@ async fn configured_mcp_sessions_never_expose_secrets_to_ordinary_or_scoped_call
         captured.contains("MCP admin tools registered"),
         "capture must include application logs"
     );
-    for secret in SECRETS
+    for (index, secret) in SECRETS
         .iter()
         .copied()
         .chain(["sentinel-error-url", "sentinel-http-error-url"])
+        .enumerate()
     {
         assert!(
             !captured.contains(secret),
-            "credential in logs: {secret}\n{captured}"
+            "credential sentinel {index} appeared in logs"
         );
     }
     proxy_task.abort();

@@ -35,6 +35,25 @@ testing. Redis startup failures fail the suite rather than counting as passing
 tests. SQLite uses temporary files. The outlier recovery regression runs in the
 normal suite and takes approximately 1.2 seconds.
 
+## Temporary upstream fix and release prerequisite
+
+The current development tree pins `tower-mcp` and `tower-mcp-types` to an exact
+Git revision for the credential-safe HTTP and JWKS diagnostic fixes in
+[tower-mcp#1586](https://github.com/joshrotenberg/tower-mcp/pull/1586).
+Published version 0.24.0 does not contain that fix.
+
+Embedding applications that pass `tower-mcp` types across the proxy API must
+use the same Git revision for their `tower-mcp`/`tower-mcp-types` dependencies.
+A registry dependency has a different Rust crate identity, even at version
+0.24.0. The upgrade from the previously exposed 0.23 types requires a minor
+release of this pre-1.0 library.
+
+Before any release, replace these Git pins with published crate versions that
+contain the fix and rerun every required check. Cargo resolves versioned Git
+dependencies against the registry when publishing, so retaining `version =
+"0.24.0"` with a Git pin would lose the fix in the published crate. Release
+publication is on hold until this prerequisite and release approval are met.
+
 ## Coverage and minimum Rust version
 
 CI checks all targets with default, all, and no default features on Rust 1.90:

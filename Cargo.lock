@@ -3857,9 +3857,8 @@ checksum = "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e"
 
 [[package]]
 name = "tower-mcp"
-version = "0.23.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c854d71758ccdbde224ea9b8408026bcef94833e91f497be3c31cedc60b25ee3"
+version = "0.24.0"
+source = "git+https://github.com/joshrotenberg/tower-mcp?rev=1eb3e4ec5f004dfb884004b2be2b083fafdbe88c#1eb3e4ec5f004dfb884004b2be2b083fafdbe88c"
 dependencies = [
  "async-trait",
  "axum",
@@ -3871,6 +3870,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "jsonwebtoken",
+ "libc",
  "pin-project-lite",
  "regex",
  "reqwest 0.13.5",
@@ -3893,9 +3893,8 @@ dependencies = [
 
 [[package]]
 name = "tower-mcp-types"
-version = "0.23.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a4b52e6634aa34d351382cac08b8cfd0355c01e386faaf8a790a69e8f7de59a"
+version = "0.24.0"
+source = "git+https://github.com/joshrotenberg/tower-mcp?rev=1eb3e4ec5f004dfb884004b2be2b083fafdbe88c#1eb3e4ec5f004dfb884004b2be2b083fafdbe88c"
 dependencies = [
  "base64 0.23.0",
  "indexmap",

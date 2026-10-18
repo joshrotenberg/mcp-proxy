@@ -116,9 +116,8 @@ pub async fn discover_auth_server(issuer: &str) -> anyhow::Result<AuthServerMeta
         && let Ok(metadata) = resp.json::<AuthServerMetadata>().await
     {
         tracing::info!(
-            issuer = %metadata.issuer,
-            jwks_uri = ?metadata.jwks_uri,
-            introspection = ?metadata.introspection_endpoint,
+            has_jwks = metadata.jwks_uri.is_some(),
+            has_introspection = metadata.introspection_endpoint.is_some(),
             "Discovered auth server metadata (RFC 8414)"
         );
         return Ok(metadata);
@@ -130,25 +129,20 @@ pub async fn discover_auth_server(issuer: &str) -> anyhow::Result<AuthServerMeta
         .get(&oidc_url)
         .send()
         .await
-        .map_err(|e| anyhow::anyhow!("failed to discover auth server at {oidc_url}: {e}"))?;
+        .map_err(|_| anyhow::anyhow!("auth server discovery request failed"))?;
 
     if !resp.status().is_success() {
-        anyhow::bail!(
-            "auth server discovery failed: {} returned {}",
-            oidc_url,
-            resp.status()
-        );
+        anyhow::bail!("auth server discovery failed: HTTP {}", resp.status());
     }
 
     let metadata = resp
         .json::<AuthServerMetadata>()
         .await
-        .map_err(|e| anyhow::anyhow!("failed to parse auth server metadata: {e}"))?;
+        .map_err(|_| anyhow::anyhow!("failed to parse auth server metadata"))?;
 
     tracing::info!(
-        issuer = %metadata.issuer,
-        jwks_uri = ?metadata.jwks_uri,
-        introspection = ?metadata.introspection_endpoint,
+        has_jwks = metadata.jwks_uri.is_some(),
+        has_introspection = metadata.introspection_endpoint.is_some(),
         "Discovered auth server metadata (OIDC)"
     );
 
@@ -255,8 +249,8 @@ impl TokenValidator for IntrospectionValidator {
             .form(&[("token", token)])
             .send()
             .await
-            .map_err(|e| OAuthError::InvalidToken {
-                description: format!("introspection request failed: {e}"),
+            .map_err(|_| OAuthError::InvalidToken {
+                description: "introspection request failed".to_string(),
             })?;
 
         if !resp.status().is_success() {
@@ -266,8 +260,8 @@ impl TokenValidator for IntrospectionValidator {
         }
 
         let introspection: IntrospectionResponse =
-            resp.json().await.map_err(|e| OAuthError::InvalidToken {
-                description: format!("invalid introspection response: {e}"),
+            resp.json().await.map_err(|_| OAuthError::InvalidToken {
+                description: "invalid introspection response".to_string(),
             })?;
 
         if !introspection.active {

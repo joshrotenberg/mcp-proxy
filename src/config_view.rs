@@ -129,7 +129,15 @@ fn project(value: &Value, path: &str) -> Value {
                         } else {
                             format!("{path}.{key}")
                         };
-                        (key.clone(), project(value, &child))
+                        // Configuration keys are path segments, never path
+                        // expressions. A future renamed/flattened field must
+                        // not impersonate a public path such as `proxy.name`.
+                        let projected = if key.contains(['.', '[', ']']) {
+                            Value::String(REDACTED.into())
+                        } else {
+                            project(value, &child)
+                        };
+                        (key.clone(), projected)
                     })
                     .collect(),
             )
@@ -158,6 +166,8 @@ mod tests {
     fn new_fields_and_arbitrary_maps_are_redacted_by_default() {
         let input = serde_json::json!({
             "future_secret": {"innocent": "sentinel-future-root"},
+            "proxy.name": "sentinel-dotted-field",
+            "backends[].name": "sentinel-array-field",
             "proxy": {"name": "diagnostics", "future": "sentinel-future-proxy"},
             "backends": [{"name": "api", "future": "sentinel-future-backend",
                 "headers": {"ordinary": "sentinel-header"}}],

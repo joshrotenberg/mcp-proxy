@@ -1078,18 +1078,13 @@ async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
                 jwks_uri,
                 ..
             } => {
-                tracing::info!(
-                    issuer = %issuer,
-                    audience = %audience,
-                    jwks_uri = %jwks_uri,
-                    "Enabling JWT auth (JWKS)"
-                );
+                tracing::info!("Enabling JWT auth (JWKS)");
                 let validator = tower_mcp::oauth::JwksValidator::builder(jwks_uri)
                     .expected_audience(audience)
                     .expected_issuer(issuer)
                     .build()
                     .await
-                    .context("building JWKS validator")?;
+                    .map_err(|_| anyhow::anyhow!("building JWKS validator failed"))?;
 
                 let addr = format!(
                     "http://{}:{}",
@@ -1121,8 +1116,6 @@ async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
                 use crate::config::TokenValidationStrategy;
 
                 tracing::info!(
-                    issuer = %issuer,
-                    audience = %audience,
                     strategy = ?token_validation,
                     "Enabling OAuth 2.1 auth"
                 );
@@ -1160,7 +1153,7 @@ async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
                                 .expected_issuer(issuer)
                                 .build()
                                 .await
-                                .context("building JWKS validator")?;
+                                .map_err(|_| anyhow::anyhow!("building JWKS validator failed"))?;
                         let layer = tower_mcp::oauth::OAuthLayer::new(validator, metadata);
                         router.layer(layer)
                     }
@@ -1191,7 +1184,7 @@ async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
                                 .expected_issuer(issuer)
                                 .build()
                                 .await
-                                .context("building JWKS validator")?;
+                                .map_err(|_| anyhow::anyhow!("building JWKS validator failed"))?;
                         let introspection_validator =
                             crate::introspection::IntrospectionValidator::new(
                                 endpoint,

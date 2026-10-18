@@ -208,9 +208,15 @@ nested parameters and enums available before execution.
 
 ### Upgrading to 0.6
 
-The next release uses tower-mcp 0.23. Library applications that exchange
+Version 0.6 uses tower-mcp 0.23. Library applications that exchange
 `SessionHandle`, `McpProxy`, router requests/responses, or protocol types with
 mcp-proxy should update their direct tower-mcp dependencies to 0.23 as well.
+
+Development builds now use tower-mcp 0.24 from an exact Git revision for
+credential-safe diagnostics. Embedding applications must use the matching Git
+sources for both `tower-mcp` and `tower-mcp-types`; see the
+[dependency and release prerequisite](CONTRIBUTING.md#temporary-upstream-fix-and-release-prerequisite).
+This dependency change requires a new minor release before publication.
 
 HTTP backends follow same-origin redirects only. A redirect to another scheme,
 host, or port fails instead of forwarding custom headers or session identifiers;
@@ -320,7 +326,8 @@ updates; sending the redacted view to `PUT /admin/config` does not restore hidde
 values. Check private values locally when validating or explaining a snapshot.
 Configuration parser errors report positions without quoting input lines or
 rejected values. Backend management responses omit transport error details and
-URL values, which may contain credentials.
+URL values, which may contain credentials. OAuth discovery, introspection, and
+JWKS startup diagnostics also omit endpoint values and untrusted response data.
 
 ## Architecture
 
