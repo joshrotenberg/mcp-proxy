@@ -403,11 +403,12 @@ async fn handle_add_backend(
                 message: format!("Backend '{}' added", req.name),
             }),
         ),
-        Err(e) => (
+        Err(_) => (
             StatusCode::CONFLICT,
             Json(BackendOpResponse {
                 ok: false,
-                message: format!("Failed to add backend: {e}"),
+                message: "Failed to add backend; check backend reachability and configuration"
+                    .into(),
             }),
         ),
     }
@@ -522,11 +523,11 @@ async fn handle_update_backend(
                 message: format!("Backend '{name}' updated"),
             }),
         ),
-        Err(e) => (
+        Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(BackendOpResponse {
                 ok: false,
-                message: format!("Failed to re-add backend after removal: {e}"),
+                message: "Failed to re-add backend after removal; check backend reachability and configuration".into(),
             }),
         ),
     }
@@ -765,7 +766,7 @@ pub fn admin_router(
     config_path: Option<std::path::PathBuf>,
     cb_handles: std::collections::HashMap<String, crate::proxy::CbHandle>,
 ) -> Router {
-    let config_toml = std::sync::Arc::new(toml::to_string_pretty(config).unwrap_or_default());
+    let config_toml = std::sync::Arc::new(crate::config_view::redacted_config_toml(config));
 
     let router = Router::new()
         // Read-only endpoints

@@ -1,5 +1,11 @@
 You are validating an mcp-proxy configuration. Review the config below and check for:
 
+The supplied configuration is a redacted diagnostic snapshot, not a reusable
+configuration file. `[REDACTED]` means a value is private, not missing or invalid.
+Do not infer credential contents, ask for secrets, or claim to validate hidden
+URLs, commands, argument values, or whether credentials use environment variables.
+Report those checks as requiring local verification against the original file.
+
 ## Validation Checklist
 
 1. **Backend configuration**

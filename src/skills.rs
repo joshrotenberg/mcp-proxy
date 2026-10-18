@@ -14,6 +14,9 @@ use tower_mcp::protocol::{Content, GetPromptResult, PromptMessage, PromptRole};
 use tower_mcp::{Prompt, PromptBuilder};
 
 /// Build all agentskills.io prompts for the proxy.
+///
+/// `config_snapshot` must contain redacted diagnostic text, never resolved
+/// credentials. Built-in admin registration supplies the shared redacted view.
 pub fn build_skills(config_snapshot: Arc<String>) -> Vec<Prompt> {
     vec![
         build_setup_skill(),

@@ -1265,6 +1265,43 @@ impl BackendConfig {
 }
 
 impl ProxyConfig {
+    // Parser errors can include entire source lines or rejected string values.
+    // Keep positions, but never retain the original error in the anyhow chain.
+    fn deserialize_toml(input: &str) -> Result<Self> {
+        toml::from_str(input).map_err(|error: toml::de::Error| {
+            let position = error
+                .span()
+                .map(|span| format!(" at byte {}", span.start))
+                .unwrap_or_default();
+            anyhow::anyhow!("invalid TOML configuration{position}; input omitted")
+        })
+    }
+
+    #[cfg(feature = "yaml")]
+    fn deserialize_yaml(input: &str) -> Result<Self> {
+        yaml_serde::from_str(input).map_err(|error: yaml_serde::Error| {
+            // Preserve useful error categories without quoting the field name
+            // or rejected value (either may be supplied by the input).
+            let message = error.to_string();
+            let category = [
+                "duplicate field",
+                "unknown field",
+                "missing field",
+                "invalid type",
+            ]
+            .into_iter()
+            .find(|category| message.contains(category))
+            .unwrap_or("invalid syntax");
+            let position = error
+                .location()
+                .map(|location| {
+                    format!(" at line {}, column {}", location.line(), location.column())
+                })
+                .unwrap_or_default();
+            anyhow::anyhow!("invalid YAML configuration: {category}{position}; input omitted")
+        })
+    }
+
     /// Load and validate a config from a file path.
     ///
     /// If `import_backends` is set in the config, backends from the referenced
@@ -1275,7 +1312,7 @@ impl ProxyConfig {
 
         let mut config: Self = match path.extension().and_then(|e| e.to_str()) {
             #[cfg(feature = "yaml")]
-            Some("yaml" | "yml") => yaml_serde::from_str(&content)
+            Some("yaml" | "yml") => Self::deserialize_yaml(&content)
                 .with_context(|| format!("parsing YAML {}", path.display()))?,
             #[cfg(not(feature = "yaml"))]
             Some("yaml" | "yml") => {
@@ -1283,7 +1320,8 @@ impl ProxyConfig {
                     "YAML config requires the 'yaml' feature. Rebuild with: cargo install mcp-proxy --features yaml"
                 );
             }
-            _ => toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?,
+            _ => Self::deserialize_toml(&content)
+                .with_context(|| format!("parsing {}", path.display()))?,
         };
 
         // Import backends from .mcp.json if configured
@@ -1394,7 +1432,7 @@ impl ProxyConfig {
     /// assert_eq!(config.backends.len(), 1);
     /// ```
     pub fn parse(toml: &str) -> Result<Self> {
-        let config: Self = toml::from_str(toml).context("parsing config")?;
+        let config = Self::deserialize_toml(toml).context("parsing config")?;
         config.validate()?;
         Ok(config)
     }
@@ -1422,7 +1460,7 @@ impl ProxyConfig {
     /// ```
     #[cfg(feature = "yaml")]
     pub fn parse_yaml(yaml: &str) -> Result<Self> {
-        let config: Self = yaml_serde::from_str(yaml).context("parsing YAML config")?;
+        let config = Self::deserialize_yaml(yaml).context("parsing YAML config")?;
         config.validate()?;
         Ok(config)
     }

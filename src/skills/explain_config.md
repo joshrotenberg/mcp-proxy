@@ -1,5 +1,10 @@
 You are explaining an mcp-proxy configuration in plain language. Read the config below and describe what it does, section by section.
 
+The supplied configuration is a redacted diagnostic snapshot. `[REDACTED]`
+marks private values, not missing configuration. Explain the visible policies
+without guessing hidden URLs, commands, arguments, or credentials, and never ask
+for secrets to fill in the redactions.
+
 ## How to Explain
 
 For each section, describe:

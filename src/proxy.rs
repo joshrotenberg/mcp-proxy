@@ -475,7 +475,7 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
             #[cfg(feature = "websocket")]
             TransportType::Websocket => {
                 let url = backend.url.as_deref().unwrap();
-                tracing::info!(url = %url, "Connecting to WebSocket backend");
+                tracing::info!(backend = %backend.name, "Connecting to WebSocket backend");
                 let transport =
                     crate::ws_transport::WebSocketClientTransport::connect_with_headers(
                         url,

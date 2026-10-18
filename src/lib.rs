@@ -175,6 +175,7 @@ pub mod canary;
 pub mod coalesce;
 pub mod composite;
 pub mod config;
+mod config_view;
 #[cfg(feature = "discovery")]
 pub mod discovery;
 pub mod failover;

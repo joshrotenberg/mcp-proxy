@@ -305,7 +305,22 @@ MCP tools (under `proxy/` namespace):
 - `proxy/health_check` -- cached health check results
 - `proxy/session_count` -- active session count
 - `proxy/add_backend` -- dynamically add an HTTP backend
-- `proxy/config` -- dump current config
+- `proxy/config` -- redacted configuration diagnostics
+
+`GET /admin/config`, `proxy/config`, and the `proxy/check_config` and
+`proxy/explain_config` prompts share an allowlisted diagnostic view. Credentials,
+URLs, headers, environment values, commands, subprocess arguments, injected and
+default argument values, and other non-allowlisted fields appear as `[REDACTED]`,
+including for administrators. New fields stay redacted until explicitly reviewed.
+Proxy/backend names, transports, and resilience settings remain visible.
+
+This is a startup snapshot for diagnosis, not a configuration backup or an
+editable export. Use your original configuration file and secret source for
+updates; sending the redacted view to `PUT /admin/config` does not restore hidden
+values. Check private values locally when validating or explaining a snapshot.
+Configuration parser errors report positions without quoting input lines or
+rejected values. Backend management responses omit transport error details and
+URL values, which may contain credentials.
 
 ## Architecture
 

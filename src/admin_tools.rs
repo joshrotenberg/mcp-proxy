@@ -57,7 +57,7 @@ struct SessionResult {
 /// - `proxy/health_check` -- cached health check results
 /// - `proxy/session_count` -- active session count
 /// - `proxy/add_backend` -- dynamically add an HTTP backend
-/// - `proxy/config` -- dump current config (TOML)
+/// - `proxy/config` -- redacted configuration diagnostics (TOML)
 /// - `proxy/call_tool` -- (search mode only) invoke any backend tool by name
 pub async fn register_admin_tools(
     proxy: &McpProxy,
@@ -66,8 +66,7 @@ pub async fn register_admin_tools(
     config: &ProxyConfig,
     discovery_tools: Option<Vec<tower_mcp::Tool>>,
 ) -> Result<(), AddBackendError> {
-    let config_toml =
-        toml::to_string_pretty(config).unwrap_or_else(|e| format!("error serializing: {e}"));
+    let config_toml = crate::config_view::redacted_config_toml(config);
 
     let search_mode = config.proxy.tool_exposure == crate::config::ToolExposure::Search;
 
@@ -148,7 +147,7 @@ fn build_admin_router(
 
     let config_snapshot = Arc::clone(&state.config_snapshot);
     let config_tool = ToolBuilder::new("config")
-        .description("Dump the current proxy configuration")
+        .description("Show redacted proxy configuration diagnostics; not a reusable config file")
         .handler(move |_: NoParams| {
             let config = Arc::clone(&config_snapshot);
             async move { Ok(CallToolResult::text((*config).clone())) }
@@ -202,13 +201,13 @@ fn build_admin_router(
                 let transport = tower_mcp::client::HttpClientTransport::new(&input.url);
                 match s.proxy.add_backend(&input.name, transport).await {
                     Ok(()) => Ok(CallToolResult::text(format!(
-                        "Backend '{}' added successfully at {}",
-                        input.name, input.url
-                    ))),
-                    Err(e) => Ok(CallToolResult::text(format!(
-                        "Failed to add backend '{}': {e}",
+                        "Backend '{}' added successfully",
                         input.name
                     ))),
+                    // Transport errors may contain URL credentials or headers.
+                    Err(_) => Ok(CallToolResult::text(
+                        "Failed to add backend; check backend reachability and configuration",
+                    )),
                 }
             }
         })
