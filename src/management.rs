@@ -61,10 +61,18 @@ pub(crate) fn session_principal(extensions: &Extensions) -> Option<String> {
         });
     }
     #[cfg(feature = "oauth")]
-    if let Some(claims) = extensions.get::<tower_mcp::oauth::TokenClaims>()
-        && let Some(subject) = &claims.sub
-    {
-        return Some(serde_json::json!(["oauth", claims.iss, subject]).to_string());
+    if let Some(claims) = extensions.get::<tower_mcp::oauth::TokenClaims>() {
+        let (kind, owner) = if let Some(subject) = &claims.sub {
+            ("oauth", Some(subject))
+        } else {
+            ("oauth-client", claims.client_id.as_ref())
+        };
+        return Some(match owner.filter(|owner| !owner.trim().is_empty()) {
+            Some(owner) => serde_json::json!([kind, claims.iss, owner]).to_string(),
+            // The transport rejects an empty principal. Returning None would
+            // incorrectly collapse an authenticated caller to anonymous.
+            None => String::new(),
+        });
     }
     None
 }
@@ -396,6 +404,33 @@ mod tests {
             assert!(response.inner.is_err());
         }
         assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "oauth")]
+    #[test]
+    fn oauth_client_credentials_have_distinct_owners_and_missing_identity_fails_closed() {
+        fn principal(value: serde_json::Value) -> Option<String> {
+            let claims: tower_mcp::oauth::TokenClaims = serde_json::from_value(value).unwrap();
+            let mut extensions = Extensions::new();
+            extensions.insert(claims);
+            session_principal(&extensions)
+        }
+        let client_a = principal(json!({"iss":"issuer","client_id":"client-a"}));
+        let client_b = principal(json!({"iss":"issuer","client_id":"client-b"}));
+        assert!(client_a.as_ref().is_some_and(|owner| !owner.is_empty()));
+        assert_ne!(client_a, client_b);
+        assert_ne!(
+            client_a,
+            principal(json!({"iss":"other-issuer","client_id":"client-a"}))
+        );
+        assert_ne!(
+            client_a,
+            principal(json!({"iss":"issuer","sub":"client-a"}))
+        );
+        for claims in [json!({}), json!({"sub":" "}), json!({"client_id":""})] {
+            assert_eq!(principal(claims).as_deref(), Some(""));
+        }
+        assert!(session_principal(&Extensions::new()).is_none());
     }
 
     #[cfg(feature = "oauth")]

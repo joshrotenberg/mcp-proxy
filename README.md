@@ -316,11 +316,13 @@ Sessions are bound to their credential identity and management authority. Start
 a new session when switching static tokens or between management and ordinary
 credentials; a session ID alone cannot grant access, stream another caller's
 events, or terminate their session. OAuth sessions retain their issuer/subject
-identity across token refreshes. Management
-runs outside data-plane caching, coalescing, RBAC, and capability transforms.
+identity across token refreshes (or issuer/client ID for client credentials).
+Authenticated OAuth tokens with neither identity cannot initialize a session.
+Management runs outside data-plane caching, coalescing, RBAC, and capability
+transforms.
 Both paths retain configured audit/access logs, metrics, and the shared global
-rate limit. Ordinary requests retain their backend policies, and cannot reach management indirectly
-through composites or `proxy/call_tool`.
+rate limit. Ordinary requests retain their backend policies, and cannot reach
+management indirectly through composites or `proxy/call_tool`.
 
 HTTP endpoints:
 
