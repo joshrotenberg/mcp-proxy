@@ -172,6 +172,11 @@
 //!
 //! # Performance
 //!
+//! Optional request coalescing bounds active keys, followers and whole-group
+//! lifetime through [`config::CoalesceConfig`]. Cancellation wakes followers;
+//! interrupted tool calls are not replayed automatically. The default group
+//! deadline is 300 seconds, including backend readiness.
+//!
 //! Middleware stack overhead is sub-microsecond (~115ns per request). Cache hits
 //! are 33x faster than backend round-trips. See `benches/proxy_overhead.rs`.
 

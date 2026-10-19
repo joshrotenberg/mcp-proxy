@@ -56,6 +56,7 @@ tests/
   http_e2e.rs      # Real HTTP transport and authentication tests
   health_probes.rs # Configured proxy process probes and auth boundaries
   reload_runtime.rs # Watched-file CLI add/replace tests and watcher ownership
+  coalesce_runtime.rs # Configured HTTP/MCP capacity, expiry and recovery
   outbound_headers.rs # Actual HTTP requests and WebSocket handshake headers
   discovery_schemas.rs # Tool schema retrieval and reindex behavior
   chaos.rs         # Fault injection and resilience recovery regressions
@@ -182,6 +183,12 @@ update, and reload require successful resolution. Stored configuration retains
 references. `config_env.rs` owns redacted structured resolution errors.
 
 ### Testing
+
+Coalescing uses atomic registration and generation-aware synchronous cleanup;
+the sole result sender belongs to the leader. Cancellation must wake followers
+without replaying tool calls. Preserve positive entry/waiter bounds, the group
+deadline (including readiness), and each caller's request ID. Concurrency tests
+use controlled backend completions rather than assuming scheduling order.
 
 Every feature gets tests. No exceptions.
 

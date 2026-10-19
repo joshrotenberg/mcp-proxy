@@ -893,6 +893,50 @@ pub struct PerformanceConfig {
     /// Deduplicate identical concurrent tool calls and resource reads
     #[serde(default)]
     pub coalesce_requests: bool,
+    /// Bounds for request coalescing, used when `coalesce_requests` is enabled.
+    #[serde(default)]
+    pub coalesce: CoalesceConfig,
+}
+
+/// Resource and lifetime bounds for identical in-flight request groups.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CoalesceConfig {
+    /// Maximum active distinct request keys (default: 1024).
+    pub max_entries: usize,
+    /// Maximum followers per active key, excluding its leader (default: 128).
+    pub max_waiters: usize,
+    /// Whole-group deadline from leader election, including readiness (default: 300).
+    /// Must be between 1 second and 24 hours. No automatic replay occurs on expiry.
+    pub timeout_seconds: u64,
+}
+
+impl Default for CoalesceConfig {
+    fn default() -> Self {
+        Self {
+            max_entries: 1024,
+            max_waiters: 128,
+            timeout_seconds: 300,
+        }
+    }
+}
+
+impl CoalesceConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.max_entries > 0,
+            "coalesce.max_entries must be positive"
+        );
+        anyhow::ensure!(
+            self.max_waiters > 0,
+            "coalesce.max_waiters must be positive"
+        );
+        anyhow::ensure!(
+            (1..=86400).contains(&self.timeout_seconds),
+            "coalesce.timeout_seconds must be between 1 and 86400"
+        );
+        Ok(())
+    }
 }
 
 /// Security policies.
@@ -1543,6 +1587,7 @@ impl ProxyConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        self.performance.coalesce.validate()?;
         if let Some(
             AuthConfig::Jwt {
                 issuer,

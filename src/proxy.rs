@@ -974,7 +974,10 @@ fn build_middleware_stack(
     // Request coalescing
     if config.performance.coalesce_requests {
         tracing::info!("Request coalescing enabled");
-        service = BoxCloneService::new(coalesce::CoalesceService::new(service));
+        service = BoxCloneService::new(coalesce::CoalesceService::with_config(
+            service,
+            &config.performance.coalesce,
+        )?);
     }
 
     // Request validation

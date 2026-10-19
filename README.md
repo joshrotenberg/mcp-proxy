@@ -238,6 +238,36 @@ target**, for both direct and wrapped calls. Each target uses its public name
 Denied targets receive no backend call; other permitted targets may run, and any
 target failure marks the aggregate as an error. Nested composites are not expanded.
 
+### Bounded request coalescing
+
+Enable coalescing only when sharing identical concurrent tool calls and resource
+reads is appropriate for the deployment. It shares an in-flight result, not a
+cached result; later requests execute again. Each caller retains its request ID.
+
+```toml
+[performance]
+coalesce_requests = true
+
+[performance.coalesce]
+max_entries = 1024    # Active distinct request keys
+max_waiters = 128     # Followers per key, excluding the leader
+timeout_seconds = 300 # Whole-group deadline, including backend readiness
+```
+
+These are the defaults for existing configurations and `CoalesceService::new`.
+Library users can customize them with `CoalesceService::with_config`.
+Capacities must be positive; timeout must be 1–86400 seconds. Excess active keys
+or followers receive a JSON-RPC capacity error without dispatching more work.
+Non-coalescible methods pass through; their timeouts remain a backend concern.
+
+Cancelling a follower frees its slot. Cancelling the leader cancels its local
+backend future, removes the group and wakes followers with an interruption error.
+A group deadline returns timeout errors and releases the slot. Backend JSON-RPC
+errors are shared like successful results. No automatic replay occurs on
+cancellation or expiry; remote execution or side effects may already have occurred.
+This adds a finite deadline to coalesced operations, including leaders; raise it
+explicitly for legitimately long operations. Changes to these limits require restart.
+
 ### Supported hot reload changes
 
 The CLI watches its file when `proxy.hot_reload = true`. Library users call
