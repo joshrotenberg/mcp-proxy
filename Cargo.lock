@@ -1895,6 +1895,7 @@ dependencies = [
  "futures-util",
  "glob-match",
  "jpx-engine",
+ "jsonwebtoken",
  "metrics",
  "metrics-exporter-prometheus",
  "moka",

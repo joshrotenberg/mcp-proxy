@@ -652,6 +652,101 @@ fn oauth_scope_layer(
     Some(tower_mcp::oauth::ScopeEnforcementLayer::new(policy))
 }
 
+/// Apply caller policy to a public tool name before aliases or backend dispatch.
+fn invocation_policy(
+    config: &ProxyConfig,
+    #[allow(unused_mut)] mut service: BoxCloneService<RouterRequest, RouterResponse, Infallible>,
+) -> BoxCloneService<RouterRequest, RouterResponse, Infallible> {
+    // Bearer token scoping (per-token allow/deny lists)
+    #[cfg(feature = "oauth")]
+    if matches!(
+        &config.auth,
+        Some(AuthConfig::Bearer {
+            scoped_tokens,
+            ..
+        }) if !scoped_tokens.is_empty()
+    ) {
+        tracing::info!("Enabling bearer token scoping middleware");
+        service = BoxCloneService::new(crate::bearer_scope::BearerScopingService::new(service));
+    }
+
+    // RBAC (JWT auth only)
+    #[cfg(feature = "oauth")]
+    {
+        let rbac_config = match &config.auth {
+            Some(
+                AuthConfig::Jwt {
+                    roles,
+                    role_mapping: Some(mapping),
+                    ..
+                }
+                | AuthConfig::OAuth {
+                    roles,
+                    role_mapping: Some(mapping),
+                    ..
+                },
+            ) if !roles.is_empty() => {
+                tracing::info!(
+                    roles = roles.len(),
+                    claim = %mapping.claim,
+                    "Enabling RBAC"
+                );
+                Some(RbacConfig::new(roles, mapping))
+            }
+            _ => None,
+        };
+
+        if let Some(rbac) = rbac_config {
+            service = BoxCloneService::new(RbacService::new(service, rbac));
+        }
+
+        // OAuth `required_scopes` enforcement: a coarse global gate that rejects
+        // any token missing one of the configured scopes (AND semantics). Runs
+        // outside RBAC so a token lacking the required scopes is denied for every
+        // operation, including `tools/list`. Reads TokenClaims injected by the
+        // OAuth auth layer; requests without claims pass through (already rejected
+        // upstream by the HTTP auth layer when auth is enabled).
+        let required_scopes: &[String] = match &config.auth {
+            Some(AuthConfig::OAuth {
+                required_scopes, ..
+            }) => required_scopes,
+            _ => &[],
+        };
+        if let Some(layer) = oauth_scope_layer(required_scopes) {
+            tracing::info!(
+                scopes = ?required_scopes,
+                "Enabling OAuth required_scopes enforcement"
+            );
+            service = BoxCloneService::new(tower::Layer::layer(&layer, service));
+        }
+
+        // Token passthrough (inject ClientToken for forward_auth backends)
+        let forward_namespaces: std::collections::HashSet<String> = config
+            .backends
+            .iter()
+            .filter(|b| b.forward_auth)
+            .map(|b| format!("{}{}", b.name, config.proxy.separator))
+            .collect();
+
+        if !forward_namespaces.is_empty() {
+            tracing::info!(
+                backends = ?forward_namespaces,
+                "Enabling token passthrough for forward_auth backends"
+            );
+            service = BoxCloneService::new(crate::token::TokenPassthroughService::new(
+                service,
+                forward_namespaces,
+            ));
+        }
+    }
+
+    BoxCloneService::new(crate::management::Guard::new(
+        service,
+        &config.proxy.separator,
+        false,
+    ))
+}
+
 /// Build the MCP-level middleware stack around the proxy.
 fn build_middleware_stack(
     config: &ProxyConfig,
@@ -920,93 +1015,24 @@ fn build_middleware_stack(
     if !config.composite_tools.is_empty() {
         let count = config.composite_tools.len();
         tracing::info!(composite_tools = count, "Applying composite tool fan-out");
-        service = BoxCloneService::new(crate::composite::CompositeService::new(
+        // Each delegated target must pass the same caller policy independently.
+        // The target service excludes composites, so delegation cannot recurse.
+        let targets = invocation_policy(config, service.clone());
+        service = BoxCloneService::new(crate::composite::CompositeService::with_targets(
             service,
             config.composite_tools.clone(),
+            targets,
         ));
     }
 
-    // Bearer token scoping (per-token allow/deny lists)
-    #[cfg(feature = "oauth")]
-    if matches!(
-        &config.auth,
-        Some(AuthConfig::Bearer {
-            scoped_tokens,
-            ..
-        }) if !scoped_tokens.is_empty()
-    ) {
-        tracing::info!("Enabling bearer token scoping middleware");
-        service = BoxCloneService::new(crate::bearer_scope::BearerScopingService::new(service));
-    }
+    service = invocation_policy(config, service);
 
-    // RBAC (JWT auth only)
-    #[cfg(feature = "oauth")]
-    {
-        let rbac_config = match &config.auth {
-            Some(
-                AuthConfig::Jwt {
-                    roles,
-                    role_mapping: Some(mapping),
-                    ..
-                }
-                | AuthConfig::OAuth {
-                    roles,
-                    role_mapping: Some(mapping),
-                    ..
-                },
-            ) if !roles.is_empty() => {
-                tracing::info!(
-                    roles = roles.len(),
-                    claim = %mapping.claim,
-                    "Enabling RBAC"
-                );
-                Some(RbacConfig::new(roles, mapping))
-            }
-            _ => None,
-        };
-
-        if let Some(rbac) = rbac_config {
-            service = BoxCloneService::new(RbacService::new(service, rbac));
-        }
-
-        // OAuth `required_scopes` enforcement: a coarse global gate that rejects
-        // any token missing one of the configured scopes (AND semantics). Runs
-        // outside RBAC so a token lacking the required scopes is denied for every
-        // operation, including `tools/list`. Reads TokenClaims injected by the
-        // OAuth auth layer; requests without claims pass through (already rejected
-        // upstream by the HTTP auth layer when auth is enabled).
-        let required_scopes: &[String] = match &config.auth {
-            Some(AuthConfig::OAuth {
-                required_scopes, ..
-            }) => required_scopes,
-            _ => &[],
-        };
-        if let Some(layer) = oauth_scope_layer(required_scopes) {
-            tracing::info!(
-                scopes = ?required_scopes,
-                "Enabling OAuth required_scopes enforcement"
-            );
-            service = BoxCloneService::new(tower::Layer::layer(&layer, service));
-        }
-
-        // Token passthrough (inject ClientToken for forward_auth backends)
-        let forward_namespaces: std::collections::HashSet<String> = config
-            .backends
-            .iter()
-            .filter(|b| b.forward_auth)
-            .map(|b| format!("{}{}", b.name, config.proxy.separator))
-            .collect();
-
-        if !forward_namespaces.is_empty() {
-            tracing::info!(
-                backends = ?forward_namespaces,
-                "Enabling token passthrough for forward_auth backends"
-            );
-            service = BoxCloneService::new(crate::token::TokenPassthroughService::new(
-                service,
-                forward_namespaces,
-            ));
-        }
+    // Resolve the search wrapper before the ordinary target's policy stack.
+    if config.proxy.tool_exposure == crate::config::ToolExposure::Search {
+        service = BoxCloneService::new(crate::invocation::SearchInvocation::new(
+            service,
+            &config.proxy.separator,
+        ));
     }
 
     // Select authority before shared observability and the global rate limit,

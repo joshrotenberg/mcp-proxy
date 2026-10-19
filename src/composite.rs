@@ -45,19 +45,19 @@
 //! Validation enforces that composite tool names are non-empty, unique,
 //! and reference at least one target tool.
 //!
-//! # Middleware stack position
+//! # Delegation and caller authority
 //!
-//! Composite tools are the outermost middleware in the request-processing
-//! stack, applied after aliasing. This means composite tool names are not
-//! subject to alias rewriting, but the target tools they reference are
-//! resolved through the full middleware chain (including aliases, filters,
-//! and validation). The ordering in `proxy.rs`:
+//! In the configured [`crate::Proxy`], the caller must be authorized for both
+//! the composite name and each public target name. Delegation does not grant
+//! extra authority. Each target retains caller extensions and continuation
+//! fields, and passes policy checks before aliases, filters, validation, caches,
+//! parameter overrides, and argument injection. A denied target never reaches
+//! its backend; other permitted targets may still run and the aggregate is marked
+//! as an error. Nested composite expansion is not supported.
 //!
-//! 1. Request validation ([`crate::validation`])
-//! 2. Capability filtering ([`crate::filter`])
-//! 3. Search-mode filtering ([`crate::filter`])
-//! 4. Tool aliasing ([`crate::alias`])
-//! 5. **Composite tools** (this module)
+//! [`CompositeService::new`] and [`CompositeLayer`] are low-level composition
+//! APIs: targets use their inner service. Embedders must place target policies
+//! there, as well as authorizing the outer composite request when required.
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -66,7 +66,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use tokio::task::JoinSet;
-use tower::{Layer, Service};
+use tower::{Layer, Service, ServiceExt};
 use tower_mcp::protocol::{
     CallToolParams, CallToolResult, McpRequest, McpResponse, ToolDefinition,
 };
@@ -123,6 +123,7 @@ impl<S> Layer<S> for CompositeLayer {
 pub struct CompositeService<S> {
     inner: S,
     composites: Arc<Vec<CompositeToolConfig>>,
+    targets: Option<S>,
 }
 
 impl<S> CompositeService<S> {
@@ -131,6 +132,15 @@ impl<S> CompositeService<S> {
         Self {
             inner,
             composites: Arc::new(composites),
+            targets: None,
+        }
+    }
+
+    pub(crate) fn with_targets(inner: S, composites: Vec<CompositeToolConfig>, targets: S) -> Self {
+        Self {
+            inner,
+            composites: Arc::new(composites),
+            targets: Some(targets),
         }
     }
 }
@@ -166,13 +176,13 @@ where
             let request_state = params.request_state.clone();
             let meta = params.meta.clone();
             let task = params.task.clone();
-            let inner = self.inner.clone();
+            let inner = self.targets.as_ref().unwrap_or(&self.inner).clone();
 
             return Box::pin(async move {
                 let mut join_set = JoinSet::new();
 
                 for tool_name in tool_names {
-                    let mut svc = inner.clone();
+                    let svc = inner.clone();
                     let tool_req = RouterRequest {
                         id: id.clone(),
                         inner: McpRequest::CallTool(CallToolParams {
@@ -185,7 +195,7 @@ where
                         }),
                         extensions: extensions.clone(),
                     };
-                    join_set.spawn(async move { svc.call(tool_req).await });
+                    join_set.spawn(async move { svc.oneshot(tool_req).await });
                 }
 
                 let mut all_content = Vec::new();

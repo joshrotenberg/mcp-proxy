@@ -23,7 +23,6 @@ struct AdminToolState {
     session_handle: SessionHandle,
     config_snapshot: Arc<String>,
     proxy: McpProxy,
-    management_prefix: String,
 }
 
 #[derive(Serialize)]
@@ -81,7 +80,6 @@ pub async fn register_admin_tools(
         session_handle,
         config_snapshot: Arc::new(config_toml),
         proxy: proxy.clone(),
-        management_prefix: format!("proxy{}", config.proxy.separator),
     };
 
     // Build agentskills.io prompts
@@ -229,57 +227,17 @@ fn build_admin_router(
         .tool(config_tool);
 
     if search_mode {
-        let state_for_call = state.clone();
         let call_tool = ToolBuilder::new("call_tool")
             .description(
-                "Invoke any backend tool by its fully-qualified name. Use proxy/search_tools \
-                 to discover available tools, then call them through this tool.",
+                "Invoke a public tool by name with the same caller permissions and argument \
+                 transformations as a direct call. Use proxy/search_tools to discover tools.",
             )
-            .handler(move |input: CallToolInput| {
-                let s = state_for_call.clone();
-                async move {
-                    use tower::Service;
-                    use tower_mcp::protocol::{CallToolParams, McpRequest, McpResponse, RequestId};
-                    use tower_mcp::router::{Extensions, RouterRequest};
-
-                    if input.name.starts_with(&s.management_prefix) {
-                        return Err(tower_mcp::Error::invalid_params(
-                            "proxy/call_tool requires an ordinary backend target",
-                        ));
-                    }
-
-                    let req = RouterRequest {
-                        id: RequestId::Number(0),
-                        inner: McpRequest::CallTool(CallToolParams {
-                            name: input.name.clone(),
-                            arguments: input.arguments.unwrap_or_default().into(),
-                            input_responses: None,
-                            request_state: None,
-                            meta: None,
-                            task: None,
-                        }),
-                        extensions: Extensions::new(),
-                    };
-
-                    let mut proxy = s.proxy.clone();
-                    match proxy.call(req).await {
-                        Ok(resp) => match resp.inner {
-                            Ok(McpResponse::CallTool(result)) => Ok(result),
-                            Ok(_) => Ok(CallToolResult::text(format!(
-                                "Unexpected response type for tool '{}'",
-                                input.name
-                            ))),
-                            Err(e) => Ok(CallToolResult::text(format!(
-                                "Error calling '{}': {}",
-                                input.name, e.message
-                            ))),
-                        },
-                        Err(_) => Ok(CallToolResult::text(format!(
-                            "Internal error calling '{}'",
-                            input.name
-                        ))),
-                    }
-                }
+            // The configured service resolves this tool before backend dispatch.
+            // Raw McpProxy users must not regain the former policy bypass.
+            .handler(|_: CallToolInput| async {
+                Err(tower_mcp::Error::invalid_params(
+                    "proxy/call_tool requires the configured invocation service",
+                ))
             })
             .build();
         router = router.tool(call_tool);
@@ -317,11 +275,11 @@ struct AddBackendInput {
 
 /// Input for the `proxy/call_tool` meta-tool (search mode only).
 #[derive(Debug, Deserialize, JsonSchema)]
-struct CallToolInput {
+pub(crate) struct CallToolInput {
     /// Fully-qualified tool name (e.g. "math/add", "files/read_file")
-    name: String,
+    pub(crate) name: String,
     /// Arguments to pass to the tool
-    arguments: Option<serde_json::Map<String, serde_json::Value>>,
+    pub(crate) arguments: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[cfg(test)]
@@ -395,7 +353,6 @@ mod tests {
             session_handle: make_session_handle(),
             config_snapshot: Arc::new("# empty config".to_string()),
             proxy: proxy.clone(),
-            management_prefix: "proxy/".into(),
         };
 
         let router = build_admin_router(state, None, false, vec![]);
@@ -426,7 +383,6 @@ mod tests {
             session_handle: make_session_handle(),
             config_snapshot: Arc::new(String::new()),
             proxy: proxy.clone(),
-            management_prefix: "proxy/".into(),
         };
 
         let router = build_admin_router(state, None, true, vec![]);
@@ -444,6 +400,25 @@ mod tests {
             tools.contains(&"admin_call_tool".to_string()),
             "search mode should add call_tool, got: {tools:?}"
         );
+        let response = test_proxy
+            .call(RouterRequest {
+                id: RequestId::Number(2),
+                inner: McpRequest::CallTool(CallToolParams {
+                    name: "admin_call_tool".into(),
+                    arguments: serde_json::json!({"name":"test_ping","arguments":{}}),
+                    input_responses: None,
+                    request_state: None,
+                    meta: None,
+                    task: None,
+                }),
+                extensions: Extensions::new(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            !matches!(response.inner, Ok(McpResponse::CallTool(ref result)) if !result.is_error),
+            "raw registration must not bypass configured invocation policy"
+        );
     }
 
     #[tokio::test]
@@ -454,7 +429,6 @@ mod tests {
             session_handle: make_session_handle(),
             config_snapshot: Arc::new(String::new()),
             proxy: proxy.clone(),
-            management_prefix: "proxy/".into(),
         };
 
         let extra_tool = ToolBuilder::new("search_tools")
@@ -490,7 +464,6 @@ mod tests {
             session_handle: make_session_handle(),
             config_snapshot: Arc::new(config_text.clone()),
             proxy: proxy.clone(),
-            management_prefix: "proxy/".into(),
         };
 
         let router = build_admin_router(state, None, false, vec![]);

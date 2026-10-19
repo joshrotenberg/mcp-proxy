@@ -206,6 +206,21 @@ name, description, and complete input schema, then invoke it through
 `proxy/call_tool`. This keeps full schemas out of search result lists while making
 nested parameters and enums available before execution.
 
+`proxy/call_tool` authorizes the public **target name**, with the same bearer
+scope/JWT role checks, static filters, aliases, argument transforms, size limits,
+and caches as a direct call. Permission to the wrapper grants no target access;
+a caller permitted to invoke a target does not also need to allow the wrapper
+name. Identity, cancellation, progress, and continuation fields are preserved.
+Management and recursive `proxy/` targets are rejected (using your configured
+separator). Use the configured `Proxy` router; raw admin-tool registration cannot
+execute this wrapper.
+
+Composite calls require permission for the composite name **and every invoked
+target**, for both direct and wrapped calls. Each target uses its public name
+(including any alias) and the caller's policies and argument transformations.
+Denied targets receive no backend call; other permitted targets may run, and any
+target failure marks the aggregate as an error. Nested composites are not expanded.
+
 ### Upgrading to 0.6
 
 Version 0.6 uses tower-mcp 0.23. Library applications that exchange

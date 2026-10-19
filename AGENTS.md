@@ -37,6 +37,7 @@ src/
   rbac.rs          # Role-based access control (RbacService)
   token.rs         # Auth token passthrough to backends (TokenPassthroughService)
   management.rs    # Explicit HTTP/MCP management authority and credential-bound sessions
+  invocation.rs    # Search wrapper resolution preserving caller/request context
   bearer_scope.rs  # Per-token tool scoping and claims
   introspection.rs # OAuth token introspection and JWT fallback
   param_override.rs # Tool parameter hiding, renaming, and defaults
@@ -75,7 +76,7 @@ The middleware stack is built in `proxy.rs::build_middleware_stack()`. Order mat
 ```
 Request flow (outer to inner):
 Auth (axum layer) -> Global Rate Limit -> Audit -> Access Log -> Metrics
-  -> Management Dispatch -> Ordinary Guard -> Token Passthrough -> Token Validation -> RBAC -> Bearer Scoping -> Composite -> Alias
+  -> Management Dispatch -> Ordinary Guard -> Search Invocation -> Token Passthrough -> Token Validation -> RBAC -> Bearer Scoping -> Composite -> Alias
   -> Search Mode Filter -> Capability Filter -> Validation -> Coalesce -> Cache
   -> Mirror -> Failover -> Canary -> Parameter Overrides -> Inject Args
   -> Backend Management Guard -> McpProxy
@@ -86,6 +87,13 @@ Management Dispatch to an admin-only guard around the raw McpProxy. Both paths
 share global rate limiting, audit/access logging, and metrics. Management avoids
 data-plane caches/coalescing and capability transforms; ordinary calls are guarded
 before shared caches and again at backend dispatch to prevent indirect access.
+Search Invocation resolves `proxy/call_tool` before caller policies so they
+inspect the public target, preserving the original request context and protocol
+fields. Composite targets independently re-enter the same caller policies and
+ordinary middleware below composite expansion; nested expansion is unsupported.
+The caller must be allowed both the composite and each target. Shared global
+rate limiting and telemetry apply once to the incoming request.
+
 Only the dedicated `security.admin_token` grants management authority. The HTTP
 transport bridges a private verified identity and binds sessions to it, including
 in builds without OAuth.
