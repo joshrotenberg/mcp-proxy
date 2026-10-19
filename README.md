@@ -238,21 +238,42 @@ target**, for both direct and wrapped calls. Each target uses its public name
 Denied targets receive no backend call; other permitted targets may run, and any
 target failure marks the aggregate as an error. Nested composites are not expanded.
 
-### Hot reload ownership
+### Supported hot reload changes
 
 The CLI watches its file when `proxy.hot_reload = true`. Library users call
 `Proxy::enable_hot_reload(path)`; repeated calls retain the first watcher.
-Backend additions and replacements keep serving while the watcher waits for
-another file event, across stdio, HTTP and WebSocket transports. Writes are
-coalesced into a bounded notification and each reload reads the latest revision.
+Live changes support adding, removing, renaming, or reconnecting **plain,
+unreferenced backends**. Their configurable connection fields are transport,
+command/arguments, URL, subprocess environment, bearer token, and headers.
+Stdio, HTTP and WebSocket drivers keep serving while the watcher waits.
 
-`Proxy` owns the watcher. `into_router()` transfers that ownership to the router
-and its clones; dropping the final owner cancels watching and its runtime.
-Standalone serving joins the watcher after requests drain. Low-level
-`reload::spawn_config_watcher*` callers must now **retain the returned
-`ConfigWatcher`** for as long as they use reloaded transports. Dropping that handle
-cancels it; `shutdown().await` cancels and joins its worker thread. Global/auth
-policy edits still require reconstruction/restart.
+All global settings and auth changes require restart. Backend policies also
+require restart: filters, aliases, argument transforms, caching, forwarding,
+routing, timeout, retry, concurrency, rate limit, hedging, circuit breaker and
+outlier detection. A backend carrying any such policy, or referenced by routing
+or composites, cannot be replaced or removed live, even if only its URL changes.
+Startup remains the sole middleware constructor, preserving its active breaker
+handles and shared outlier fleet. Unsupported **whole revisions** are rejected
+before any backend mutation; the previous runtime remains active.
+
+`POST /admin/config/validate` and `PUT /admin/config` return HTTP 409 with
+`restart_required=true` for unsupported revisions; PUT does not write them.
+Accepted PUTs report `applied=false`: they save the original template and queue
+asynchronous reload, or report restart required if no watcher is active.
+Authenticated `GET /admin/config/status` reports `watcher_active`, `last_result`,
+`applied`, and `restart_required` for the last attempt. Results include `startup`,
+`pending`, `applied`, `invalid`, `restart_required`, `failed`, and `stopped`.
+A failed connection revision can still be partial; transactional replacement is
+separate work. GET `/admin/config` remains a redacted startup snapshot. Direct
+REST/MCP backend mutations also reject policy-bearing or referenced names.
+
+`Proxy` owns the watcher. `into_router()` transfers ownership to the router and
+its clones; final-owner drop cancels watching and its runtime. Standalone serving
+joins it after requests drain. Low-level `reload::spawn_config_watcher*` callers
+must retain the returned `ConfigWatcher` while using reloaded transports and
+ensure the initial file describes their constructed proxy. Dropping the handle
+cancels it; `shutdown().await` cancels and joins its worker thread. The configured
+Proxy captures its resolved startup policy independently of later file edits.
 
 ### OAuth resource identity and endpoint setup
 

@@ -23,6 +23,7 @@ struct AdminToolState {
     session_handle: SessionHandle,
     config_snapshot: Arc<String>,
     proxy: McpProxy,
+    reload_policy: crate::reload_policy::ReloadPolicy,
 }
 
 #[derive(Serialize)]
@@ -73,6 +74,25 @@ pub async fn register_admin_tools(
     config: &ProxyConfig,
     discovery_tools: Option<Vec<tower_mcp::Tool>>,
 ) -> Result<(), AddBackendError> {
+    register_admin_tools_with_policy(
+        proxy,
+        admin_state,
+        session_handle,
+        config,
+        discovery_tools,
+        crate::reload_policy::ReloadPolicy::new(config),
+    )
+    .await
+}
+
+pub(crate) async fn register_admin_tools_with_policy(
+    proxy: &McpProxy,
+    admin_state: AdminState,
+    session_handle: SessionHandle,
+    config: &ProxyConfig,
+    discovery_tools: Option<Vec<tower_mcp::Tool>>,
+    reload_policy: crate::reload_policy::ReloadPolicy,
+) -> Result<(), AddBackendError> {
     let config_toml = crate::config_view::redacted_config_toml(config);
 
     let search_mode = config.proxy.tool_exposure == crate::config::ToolExposure::Search;
@@ -82,6 +102,7 @@ pub async fn register_admin_tools(
         session_handle,
         config_snapshot: Arc::new(config_toml),
         proxy: proxy.clone(),
+        reload_policy,
     };
 
     // Build agentskills.io prompts
@@ -205,6 +226,9 @@ fn build_admin_router(
         .handler(move |input: AddBackendInput| {
             let s = state_for_add.clone();
             async move {
+                if let Err(error) = s.reload_policy.check_backend_change(&input.name) {
+                    return Ok(CallToolResult::error(error.to_string()));
+                }
                 let transport = tower_mcp::client::HttpClientTransport::new(&input.url);
                 match s.proxy.add_backend(&input.name, transport).await {
                     Ok(()) => Ok(CallToolResult::text(format!(
@@ -315,6 +339,11 @@ mod tests {
         crate::admin::test_admin_state("test-proxy", "0.1.0", 0, vec![])
     }
 
+    fn test_policy() -> crate::reload_policy::ReloadPolicy {
+        let config = ProxyConfig::parse("[proxy]\nname='test'\n[proxy.listen]\n[[backends]]\nname='test'\ntransport='stdio'\ncommand='echo'").unwrap();
+        crate::reload_policy::ReloadPolicy::new(&config)
+    }
+
     async fn make_test_proxy() -> McpProxy {
         let router = McpRouter::new().server_info("test", "1.0.0").tool(
             ToolBuilder::new("ping")
@@ -355,6 +384,7 @@ mod tests {
             session_handle: make_session_handle(),
             config_snapshot: Arc::new("# empty config".to_string()),
             proxy: proxy.clone(),
+            reload_policy: test_policy(),
         };
 
         let router = build_admin_router(state, None, false, vec![]);
@@ -385,6 +415,7 @@ mod tests {
             session_handle: make_session_handle(),
             config_snapshot: Arc::new(String::new()),
             proxy: proxy.clone(),
+            reload_policy: test_policy(),
         };
 
         let router = build_admin_router(state, None, true, vec![]);
@@ -431,6 +462,7 @@ mod tests {
             session_handle: make_session_handle(),
             config_snapshot: Arc::new(String::new()),
             proxy: proxy.clone(),
+            reload_policy: test_policy(),
         };
 
         let extra_tool = ToolBuilder::new("search_tools")
@@ -466,6 +498,7 @@ mod tests {
             session_handle: make_session_handle(),
             config_snapshot: Arc::new(config_text.clone()),
             proxy: proxy.clone(),
+            reload_policy: test_policy(),
         };
 
         let router = build_admin_router(state, None, false, vec![]);

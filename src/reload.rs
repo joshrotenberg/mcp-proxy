@@ -1,18 +1,18 @@
 //! Hot reload: watch the config file for changes and manage backends dynamically.
 //!
-//! Supports adding, removing, and replacing backends at runtime when the config
-//! file changes. Uses content hashing to detect modifications.
+//! Supports adding, removing, and reconnecting plain, unreferenced backends.
+//! Startup policy is frozen: unsupported whole revisions are rejected before
+//! mutation, preserving startup middleware and its shared state. Fingerprints
+//! detect supported connection changes; management exposes last-attempt status.
 
 use std::collections::{HashMap, HashSet};
-use std::convert::Infallible;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::reload_policy::ReloadPolicy;
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::process::Command;
-use tower::util::BoxCloneService;
-use tower_mcp::proxy::{BackendService, McpProxy};
-use tower_mcp::{RouterRequest, RouterResponse};
+use tower_mcp::proxy::McpProxy;
 
 use crate::config::{BackendConfig, ProxyConfig, TransportType};
 
@@ -60,7 +60,9 @@ impl Drop for ConfigWatcher {
 /// Spawn a watcher with its own runtime; retain the returned ownership handle.
 ///
 /// It can be called without an active Tokio runtime. Drop the handle only when
-/// finished with the proxy's reloaded backend transports.
+/// finished with the proxy's reloaded backend transports. The initial resolved
+/// file must describe the proxy as constructed; it becomes the admission baseline.
+/// [`crate::Proxy`] instead captures its actual resolved startup configuration.
 pub fn spawn_config_watcher(
     config_path: PathBuf,
     proxy: McpProxy,
@@ -82,6 +84,7 @@ pub fn spawn_config_watcher(
 ///
 /// Keep the returned handle for the lifetime of the proxy's reloaded transports.
 /// File events wait asynchronously so those transports keep making progress.
+/// The initial resolved file must describe the constructed proxy's policy.
 pub fn spawn_config_watcher_with_schemas(
     config_path: PathBuf,
     proxy: McpProxy,
@@ -91,10 +94,35 @@ pub fn spawn_config_watcher_with_schemas(
         String,
     )>,
 ) -> ConfigWatcher {
+    let policy = load_runtime_config(&config_path).map(|config| ReloadPolicy::new(&config));
+    spawn_config_watcher_with_policy(
+        config_path,
+        proxy,
+        #[cfg(feature = "discovery")]
+        discovery_index,
+        policy,
+    )
+}
+
+pub(crate) fn spawn_config_watcher_with_policy(
+    config_path: PathBuf,
+    proxy: McpProxy,
+    #[cfg(feature = "discovery")] discovery_index: Option<(
+        crate::discovery::SharedDiscoveryIndex,
+        crate::discovery::SchemaStore,
+        String,
+    )>,
+    policy: anyhow::Result<ReloadPolicy>,
+) -> ConfigWatcher {
     let (cancel, cancelled) = tokio::sync::oneshot::channel();
     let dispatch = tracing::dispatcher::get_default(Clone::clone);
     let thread = std::thread::spawn(move || {
         let _guard = tracing::dispatcher::set_default(&dispatch);
+        let Ok(policy) = policy else {
+            tracing::error!("Cannot capture initial reload policy; hot reload disabled");
+            return;
+        };
+        let worker_policy = policy.clone();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -108,10 +136,12 @@ pub fn spawn_config_watcher_with_schemas(
                     proxy,
                     #[cfg(feature = "discovery")]
                     discovery_index,
+                    worker_policy,
                 ) => {},
             }
         });
         drop(rt);
+        policy.stopped();
         tracing::info!("Config watcher stopped");
     });
     ConfigWatcher {
@@ -128,10 +158,12 @@ async fn watch_loop(
         crate::discovery::SchemaStore,
         String,
     )>,
+    policy: ReloadPolicy,
 ) {
     // Only the fact of a write matters: each reload reads the newest revision.
     // One pending notification coalesces bursts without an unbounded event queue.
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let initial = tx.clone();
     let callback = move |result: notify_debouncer_mini::DebounceEventResult| match result {
         Ok(events)
             if events
@@ -163,20 +195,12 @@ async fn watch_loop(
         return;
     }
 
+    policy.started();
+    let mut backend_fingerprints = policy.fingerprints();
+    // Reconcile any edit between construction and watcher registration as well.
+    let _ = initial.try_send(());
+    drop(initial);
     tracing::info!(path = %config_path.display(), "Hot reload watching config file");
-
-    // Track known backends and their config fingerprints for change detection
-    let mut backend_fingerprints: HashMap<String, String> = {
-        if let Ok(config) = load_runtime_config(&config_path) {
-            config
-                .backends
-                .iter()
-                .map(|b| (b.name.clone(), config_fingerprint(b)))
-                .collect()
-        } else {
-            HashMap::new()
-        }
-    };
 
     // Waiting yields this runtime to HTTP, WebSocket and stdio client drivers.
     while rx.recv().await.is_some() {
@@ -185,11 +209,19 @@ async fn watch_loop(
         let new_config = match load_runtime_config(&config_path) {
             Ok(c) => c,
             Err(e) => {
+                policy.record("invalid", false, false);
                 tracing::warn!(error = %e, "Failed to parse updated config, skipping reload");
                 continue;
             }
         };
 
+        if let Err(error) = policy.check(&new_config) {
+            policy.record("restart_required", false, true);
+            tracing::warn!(%error, "Unsupported live config change, skipping reload");
+            continue;
+        }
+        policy.record("pending", false, false);
+        let mut failed = false;
         let new_fingerprints: HashMap<String, String> = new_config
             .backends
             .iter()
@@ -225,6 +257,7 @@ async fn watch_loop(
                     // Remove old, add new
                     proxy.remove_backend(&backend.name).await;
                     if let Err(e) = add_backend(&proxy, backend).await {
+                        failed = true;
                         tracing::error!(
                             backend = %backend.name,
                             error = %e,
@@ -244,6 +277,7 @@ async fn watch_loop(
             );
 
             if let Err(e) = add_backend(&proxy, backend).await {
+                failed = true;
                 tracing::error!(
                     backend = %backend.name,
                     error = %e,
@@ -254,9 +288,6 @@ async fn watch_loop(
             }
         }
 
-        // Update fingerprints to reflect current state
-        backend_fingerprints = new_fingerprints;
-
         // Re-index discovery if enabled
         #[cfg(feature = "discovery")]
         if let Some((ref index, ref schemas, ref separator)) = discovery_index {
@@ -264,6 +295,10 @@ async fn watch_loop(
             crate::discovery::reindex_with_schemas(index, schemas, &mut proxy_clone, separator)
                 .await;
         }
+
+        policy.record(if failed { "failed" } else { "applied" }, !failed, false);
+        // Transactional replacement/failure retry is tracked separately in #277.
+        backend_fingerprints = new_fingerprints;
     }
 }
 
@@ -275,21 +310,16 @@ fn load_runtime_config(path: &std::path::Path) -> anyhow::Result<ProxyConfig> {
 }
 
 /// Generate a fingerprint for a backend config to detect changes.
-/// Uses TOML serialization for a stable, content-based comparison.
+/// Uses canonical JSON serialization for a stable, content-based comparison.
 fn config_fingerprint(backend: &BackendConfig) -> String {
-    toml::to_string(backend).unwrap_or_default()
+    let mut value = serde_json::to_value(backend).expect("backend object");
+    value.sort_all_objects();
+    serde_json::to_string(&value).expect("backend fingerprint")
 }
 
-/// Connect and add a single backend to the proxy, including per-backend middleware.
+/// Connect and add an admitted policy-free backend using startup transport builders.
 async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Result<()> {
-    let has_middleware = backend.timeout.is_some()
-        || backend.circuit_breaker.is_some()
-        || backend.rate_limit.is_some()
-        || backend.concurrency.is_some()
-        || backend.retry.is_some()
-        || backend.hedging.is_some()
-        || backend.outlier_detection.is_some();
-
+    // Admission rejects every policy-bearing backend before any mutation.
     match backend.transport {
         TransportType::Stdio => {
             let command = backend
@@ -307,18 +337,10 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
             let transport =
                 tower_mcp::client::StdioClientTransport::spawn_command(&mut cmd).await?;
 
-            if has_middleware {
-                let layer = build_backend_layer(backend)?;
-                proxy
-                    .add_backend_with_layer(&backend.name, transport, layer)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-            } else {
-                proxy
-                    .add_backend(&backend.name, transport)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-            }
+            proxy
+                .add_backend(&backend.name, transport)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
         TransportType::Http => {
             let url = backend
@@ -327,18 +349,10 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
                 .ok_or_else(|| anyhow::anyhow!("http backend requires 'url'"))?;
             let transport = crate::proxy::build_http_transport(url, backend);
 
-            if has_middleware {
-                let layer = build_backend_layer(backend)?;
-                proxy
-                    .add_backend_with_layer(&backend.name, transport, layer)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-            } else {
-                proxy
-                    .add_backend(&backend.name, transport)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-            }
+            proxy
+                .add_backend(&backend.name, transport)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
         #[cfg(feature = "websocket")]
         TransportType::Websocket => {
@@ -353,18 +367,10 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
             )
             .await?;
 
-            if has_middleware {
-                let layer = build_backend_layer(backend)?;
-                proxy
-                    .add_backend_with_layer(&backend.name, transport, layer)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-            } else {
-                proxy
-                    .add_backend(&backend.name, transport)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-            }
+            proxy
+                .add_backend(&backend.name, transport)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
         #[cfg(not(feature = "websocket"))]
         TransportType::Websocket => {
@@ -375,153 +381,7 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
         }
     }
 
-    if has_middleware {
-        tracing::info!(
-            backend = %backend.name,
-            timeout = backend.timeout.is_some(),
-            circuit_breaker = backend.circuit_breaker.is_some(),
-            rate_limit = backend.rate_limit.is_some(),
-            concurrency = backend.concurrency.is_some(),
-            "Per-backend middleware applied to hot-reloaded backend"
-        );
-    }
-
     Ok(())
-}
-
-/// A type-erasing layer that builds the full per-backend middleware stack.
-///
-/// Uses `BoxCloneService` to erase the composed middleware types, allowing
-/// arbitrary combinations of optional layers.
-struct BackendMiddlewareLayer {
-    build_fn: Box<
-        dyn Fn(BackendService) -> BoxCloneService<RouterRequest, RouterResponse, Infallible> + Send,
-    >,
-}
-
-impl tower::Layer<BackendService> for BackendMiddlewareLayer {
-    type Service = BoxCloneService<RouterRequest, RouterResponse, Infallible>;
-
-    fn layer(&self, inner: BackendService) -> Self::Service {
-        (self.build_fn)(inner)
-    }
-}
-
-/// Build a type-erased layer for per-backend middleware from config.
-///
-/// Layers are applied inner to outer:
-/// retry -> concurrency -> rate limit -> timeout -> circuit breaker -> outlier detection.
-fn build_backend_layer(backend: &BackendConfig) -> anyhow::Result<BackendMiddlewareLayer> {
-    let retry_config = backend.retry.clone();
-    let concurrency = backend.concurrency.as_ref().map(|cc| cc.max_concurrent);
-    let rate_limit = backend
-        .rate_limit
-        .as_ref()
-        .map(|rl| {
-            tower_resilience::ratelimiter::RateLimiterLayer::builder()
-                .limit_for_period(rl.requests)
-                .refresh_period(Duration::from_secs(rl.period_seconds))
-                .name(format!("{}-ratelimit", backend.name))
-                .build()
-        })
-        .transpose()?;
-    let timeout_secs = backend.timeout.as_ref().map(|t| t.seconds);
-    let circuit_breaker = backend
-        .circuit_breaker
-        .as_ref()
-        .map(|cb| {
-            tower_resilience::circuitbreaker::CircuitBreakerLayer::builder()
-                .failure_rate_threshold(cb.failure_rate_threshold)
-                .minimum_number_of_calls(cb.minimum_calls)
-                .sliding_window_size(cb.minimum_calls)
-                .wait_duration_in_open(Duration::from_secs(cb.wait_duration_seconds))
-                .permitted_calls_in_half_open(cb.permitted_calls_in_half_open)
-                .name(format!("{}-cb", backend.name))
-                .build()
-        })
-        .transpose()?;
-    let hedging = backend.hedging.clone();
-    let outlier = backend.outlier_detection.clone();
-    let name = backend.name.clone();
-
-    Ok(BackendMiddlewareLayer {
-        build_fn: Box::new(move |inner: BackendService| {
-            let mut svc: BoxCloneService<RouterRequest, RouterResponse, Infallible> =
-                BoxCloneService::new(inner);
-
-            // Retry (innermost)
-            if let Some(ref retry_cfg) = retry_config {
-                let layer = crate::retry::build_retry_layer(retry_cfg, &name);
-                let retried = tower::Layer::layer(&layer, svc);
-                svc = BoxCloneService::new(retried);
-            }
-
-            // Hedging
-            if let Some(ref hedge_cfg) = hedging {
-                let delay = Duration::from_millis(hedge_cfg.delay_ms);
-                let max_attempts = hedge_cfg.max_hedges + 1;
-                let layer = if delay.is_zero() {
-                    tower_resilience::hedge::HedgeLayer::builder()
-                        .no_delay()
-                        .max_hedged_attempts(max_attempts)
-                        .name(format!("{}-hedge", name))
-                        .build()
-                } else {
-                    tower_resilience::hedge::HedgeLayer::builder()
-                        .delay(delay)
-                        .max_hedged_attempts(max_attempts)
-                        .name(format!("{}-hedge", name))
-                        .build()
-                };
-                let hedged = tower::Layer::layer(&layer, svc);
-                svc = BoxCloneService::new(tower_mcp::CatchError::new(hedged));
-            }
-
-            // Concurrency limit
-            if let Some(max) = concurrency {
-                let limited =
-                    tower::Layer::layer(&tower::limit::ConcurrencyLimitLayer::new(max), svc);
-                svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
-            }
-
-            // Rate limit
-            if let Some(ref layer) = rate_limit {
-                let limited = tower::Layer::layer(layer, svc);
-                svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
-            }
-
-            // Timeout
-            if let Some(seconds) = timeout_secs {
-                let limited = tower::Layer::layer(
-                    &tower::timeout::TimeoutLayer::new(Duration::from_secs(seconds)),
-                    svc,
-                );
-                svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
-            }
-
-            // Circuit breaker
-            if let Some(ref layer) = circuit_breaker {
-                let limited = tower::Layer::layer(layer, svc);
-                svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
-            }
-
-            // Outlier detection (outermost)
-            if let Some(ref od_config) = outlier {
-                // Hot-reloaded backends get their own detector (single-backend scope).
-                // The main proxy build path uses a shared detector across all backends.
-                let detector = crate::outlier::OutlierDetector::new(od_config.max_ejection_percent);
-                let layer = crate::outlier::OutlierDetectionLayer::new(
-                    name.clone(),
-                    od_config.clone(),
-                    detector,
-                );
-                let od_svc = tower::Layer::layer(&layer, svc);
-                svc = BoxCloneService::new(od_svc);
-            }
-
-            svc
-        }),
-    })
 }
 
 #[cfg(test)]
@@ -541,16 +401,22 @@ mod tests {
     }
 
     #[test]
-    fn invalid_reload_middleware_returns_error() {
-        let mut backend = http_backend("api", "http://localhost:1");
-        backend.rate_limit = Some(crate::config::RateLimitConfig {
-            requests: 1,
-            period_seconds: 0,
-        });
-        assert!(build_backend_layer(&backend).is_err());
-        backend.rate_limit = None;
-        backend.circuit_breaker = Some(toml::from_str("minimum_calls = 0").unwrap());
-        assert!(build_backend_layer(&backend).is_err());
+    fn fingerprints_ignore_header_and_environment_map_order() {
+        let mut first = http_backend("api", "http://localhost:1");
+        let mut second = http_backend("api", "http://localhost:1");
+        for key in ["X-First", "X-Second"] {
+            first.headers.insert(key.into(), "value".into());
+        }
+        for key in ["X-Second", "X-First"] {
+            second.headers.insert(key.into(), "value".into());
+        }
+        for key in ["FIRST", "SECOND"] {
+            first.env.insert(key.into(), "value".into());
+        }
+        for key in ["SECOND", "FIRST"] {
+            second.env.insert(key.into(), "value".into());
+        }
+        assert_eq!(config_fingerprint(&first), config_fingerprint(&second));
     }
 
     #[test]

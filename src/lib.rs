@@ -135,8 +135,8 @@
 //! # Hot Reload
 //!
 //! The CLI uses `hot_reload = true` to watch its config file. Library applications
-//! call [`Proxy::enable_hot_reload`]. Backends are added, removed, or replaced
-//! dynamically, and discovery indexes are re-indexed. The event wait is
+//! call [`Proxy::enable_hot_reload`]. Plain, unreferenced backends can be added,
+//! removed or reconnected, and discovery indexes are re-indexed. The event wait is
 //! asynchronous so reloaded stdio, HTTP and WebSocket drivers keep progressing.
 //!
 //! `Proxy` owns one watcher; repeated enable calls keep the original watcher.
@@ -146,7 +146,11 @@
 //! [`reload::spawn_config_watcher`] callers must retain the returned
 //! [`reload::ConfigWatcher`] until finished with reloaded backends and can await
 //! [`reload::ConfigWatcher::shutdown`] for explicit joined cleanup.
-//! Global/auth policy changes still require reconstruction/restart.
+//! Global/auth changes, all backend policy changes, and mutation of policy-bearing
+//! or routing/composite-referenced backends require reconstruction/restart.
+//! Unsupported revisions are rejected before any mutation. Management config
+//! endpoints report restart-required or pending outcomes explicitly; authenticated
+//! `/admin/config/status` reports the last reload attempt without credentials.
 //!
 //! # Feature Flags
 //!
@@ -205,6 +209,7 @@ pub mod param_override;
 #[cfg(feature = "oauth")]
 pub mod rbac;
 pub mod reload;
+mod reload_policy;
 pub mod retry;
 #[cfg(feature = "skills")]
 pub mod skills;

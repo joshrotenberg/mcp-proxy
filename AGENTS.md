@@ -21,7 +21,8 @@ src/
   skills.rs        # Management prompts bundled from src/skills/
   admin.rs         # HTTP admin API (/admin/backends, /admin/health, etc.)
   admin_tools.rs   # MCP admin tools (proxy/ namespace, via ChannelTransport)
-  reload.rs        # Hot reload: file watcher, dynamic backend addition
+  reload.rs        # Owned file watcher and admitted plain backend connections
+  reload_policy.rs # Frozen startup policy admission and safe last-attempt status
   test_util.rs     # MockService, ErrorMockService, call_service helper
 
   # Global middleware (wraps the entire proxy, applied in proxy.rs)
@@ -122,8 +123,12 @@ svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
 `BackendMiddlewareLayer` builds retry in the Infallible zone, then
 hedge/concurrency/rate/timeout/breaker in the BoxError zone, converts errors back into
 responses with `CatchError`, and applies outlier detection outside that boundary.
-Pass the composed layer to `builder.backend_layer()` once. The reload path
-constructs the same zones; changing either path requires checking the other.
+Pass the composed layer to `builder.backend_layer()` once. Startup is the sole
+middleware constructor. Reload admits only plain, unreferenced backend connection/
+topology changes; backend policies and global/auth edits require restart.
+`reload_policy.rs` shares startup admission/status across watcher and management.
+Unsupported revisions are rejected before mutation, keeping active handles/fleet
+state. Direct management cannot replace/remove policy-bearing or referenced names.
 
 ### Adding a new middleware layer
 
@@ -143,7 +148,8 @@ Every middleware follows the same tower Service pattern. Use `inject.rs` as a te
 
 4. Add config fields to `config.rs` (with `#[serde(default)]` for optional fields)
 
-5. Wire the hot reload path in `reload.rs::build_backend_layer()` (per-backend only)
+5. Add its restart-admission contract case in `reload_policy.rs`; new policy
+   fields must remain rejected live until an explicit implementation supports them
 
 6. Add integration tests in `tests/integration.rs`
 

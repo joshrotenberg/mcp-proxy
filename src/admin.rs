@@ -24,7 +24,8 @@
 //! | `POST` | `/admin/cache/clear` | Flush the response cache |
 //! | `GET` | `/admin/config` | Current proxy configuration (sanitized) |
 //! | `PUT` | `/admin/config` | Hot-reload proxy configuration |
-//! | `POST` | `/admin/config/validate` | Validate a config without applying it |
+//! | `POST` | `/admin/config/validate` | Validate config and live admission without applying it |
+//! | `GET` | `/admin/config/status` | Last reload attempt and watcher state |
 //! | `GET` | `/admin/metrics` | Prometheus metrics scrape endpoint (feature `metrics`) |
 //! | `GET` | `/admin/openapi.json` | OpenAPI spec (feature `openapi`) |
 //!
@@ -381,8 +382,19 @@ struct BackendOpResponse {
 
 async fn handle_add_backend(
     Extension(proxy): Extension<McpProxy>,
+    Extension(policy): Extension<crate::reload_policy::ReloadPolicy>,
     Json(req): Json<AddBackendRequest>,
 ) -> (StatusCode, Json<BackendOpResponse>) {
+    if let Err(error) = policy.check_backend_change(&req.name) {
+        return (
+            StatusCode::CONFLICT,
+            Json(BackendOpResponse {
+                ok: false,
+                message: error.to_string(),
+            }),
+        );
+    }
+
     let mut transport = tower_mcp::client::HttpClientTransport::new(&req.url);
     if let Some(token) = &req.bearer_token {
         transport = transport.bearer_token(token);
@@ -410,7 +422,18 @@ async fn handle_add_backend(
 async fn handle_remove_backend(
     Extension(proxy): Extension<McpProxy>,
     Path(name): Path<String>,
+    Extension(policy): Extension<crate::reload_policy::ReloadPolicy>,
 ) -> (StatusCode, Json<BackendOpResponse>) {
+    if let Err(error) = policy.check_backend_change(&name) {
+        return (
+            StatusCode::CONFLICT,
+            Json(BackendOpResponse {
+                ok: false,
+                message: error.to_string(),
+            }),
+        );
+    }
+
     if proxy.remove_backend(&name).await {
         (
             StatusCode::OK,
@@ -443,21 +466,56 @@ fn resolve_config(
     Ok(config)
 }
 
-async fn handle_validate_config(body: String) -> (StatusCode, Json<BackendOpResponse>) {
+#[derive(Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+struct ConfigChangeResponse {
+    ok: bool,
+    message: String,
+    applied: bool,
+    restart_required: bool,
+}
+fn config_response(
+    status: StatusCode,
+    ok: bool,
+    message: impl Into<String>,
+    restart_required: bool,
+) -> (StatusCode, Json<ConfigChangeResponse>) {
+    (
+        status,
+        Json(ConfigChangeResponse {
+            ok,
+            message: message.into(),
+            applied: false,
+            restart_required,
+        }),
+    )
+}
+async fn handle_config_status(
+    Extension(policy): Extension<crate::reload_policy::ReloadPolicy>,
+) -> Json<crate::reload_policy::ReloadStatus> {
+    Json(policy.status())
+}
+async fn handle_validate_config(
+    Extension(policy): Extension<crate::reload_policy::ReloadPolicy>,
+    body: String,
+) -> (StatusCode, Json<ConfigChangeResponse>) {
     match crate::config::ProxyConfig::parse(&body).and_then(resolve_config) {
-        Ok(config) => (
-            StatusCode::OK,
-            Json(BackendOpResponse {
-                ok: true,
-                message: format!("Valid config with {} backends", config.backends.len()),
-            }),
-        ),
-        Err(e) => (
+        Ok(config) => {
+            if let Err(error) = policy.check(&config) {
+                return config_response(StatusCode::CONFLICT, false, error.to_string(), true);
+            }
+            config_response(
+                StatusCode::OK,
+                true,
+                "Valid config; supported live changes only. Validation does not apply changes",
+                !policy.status().watcher_active,
+            )
+        }
+        Err(error) => config_response(
             StatusCode::BAD_REQUEST,
-            Json(BackendOpResponse {
-                ok: false,
-                message: format!("Invalid config: {e}"),
-            }),
+            false,
+            format!("Invalid config: {error}"),
+            false,
         ),
     }
 }
@@ -496,8 +554,19 @@ async fn handle_backend_health_history(
 async fn handle_update_backend(
     Extension(proxy): Extension<McpProxy>,
     Path(name): Path<String>,
+    Extension(policy): Extension<crate::reload_policy::ReloadPolicy>,
     Json(req): Json<UpdateBackendRequest>,
 ) -> (StatusCode, Json<BackendOpResponse>) {
+    if let Err(error) = policy.check_backend_change(&name) {
+        return (
+            StatusCode::CONFLICT,
+            Json(BackendOpResponse {
+                ok: false,
+                message: error.to_string(),
+            }),
+        );
+    }
+
     // Remove existing backend
     if !proxy.remove_backend(&name).await {
         return (
@@ -634,8 +703,9 @@ async fn handle_terminate_session(
 
 async fn handle_update_config(
     Extension(config_path): Extension<Option<std::path::PathBuf>>,
+    Extension(policy): Extension<crate::reload_policy::ReloadPolicy>,
     body: String,
-) -> (StatusCode, Json<BackendOpResponse>) {
+) -> (StatusCode, Json<ConfigChangeResponse>) {
     // Detect format from config file extension (or try TOML then YAML)
     let is_yaml = config_path
         .as_ref()
@@ -656,49 +726,55 @@ async fn handle_update_config(
     };
 
     let config = match config.and_then(resolve_config) {
-        Ok(c) => c,
-        Err(e) => {
-            return (
+        Ok(config) => config,
+        Err(error) => {
+            return config_response(
                 StatusCode::BAD_REQUEST,
-                Json(BackendOpResponse {
-                    ok: false,
-                    message: format!("Invalid config: {e}"),
-                }),
+                false,
+                format!("Invalid config: {error}"),
+                false,
             );
         }
     };
-
-    // Write to disk if we have a config path (triggers hot reload if enabled)
+    if let Err(error) = policy.check(&config) {
+        policy.record("restart_required", false, true);
+        return config_response(StatusCode::CONFLICT, false, error.to_string(), true);
+    }
     let Some(path) = config_path else {
-        return (
+        return config_response(
             StatusCode::BAD_REQUEST,
-            Json(BackendOpResponse {
-                ok: false,
-                message: "No config file path available (running in --from-mcp-json mode?)"
-                    .to_string(),
-            }),
+            false,
+            "No config file path available",
+            false,
         );
     };
-
-    if let Err(e) = std::fs::write(&path, &body) {
-        return (
+    if std::fs::write(&path, &body).is_err() {
+        return config_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(BackendOpResponse {
-                ok: false,
-                message: format!("Failed to write config: {e}"),
-            }),
+            false,
+            "Failed to write config file",
+            false,
         );
     }
-
-    (
+    let active = policy.status().watcher_active;
+    policy.record(
+        if active {
+            "pending"
+        } else {
+            "restart_required"
+        },
+        false,
+        !active,
+    );
+    config_response(
         StatusCode::OK,
-        Json(BackendOpResponse {
-            ok: true,
-            message: format!(
-                "Config updated ({} backends). Hot reload will apply changes if enabled.",
-                config.backends.len()
-            ),
-        }),
+        true,
+        if active {
+            "Config saved; asynchronous reload pending. Consult /admin/config/status for the last attempt"
+        } else {
+            "Config saved; restart required because no watcher is active"
+        },
+        !active,
     )
 }
 
@@ -745,6 +821,8 @@ struct CircuitBreakerStatus {
         SessionsResponse,
         AddBackendRequest,
         BackendOpResponse,
+        ConfigChangeResponse,
+        crate::reload_policy::ReloadStatus,
     ))
 )]
 struct ApiDoc;
@@ -766,6 +844,31 @@ pub fn admin_router(
     config_path: Option<std::path::PathBuf>,
     cb_handles: std::collections::HashMap<String, crate::proxy::CbHandle>,
 ) -> Router {
+    admin_router_with_policy(
+        state,
+        metrics_handle,
+        session_handle,
+        cache_handle,
+        proxy,
+        config,
+        config_path,
+        cb_handles,
+        crate::reload_policy::ReloadPolicy::new(config),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn admin_router_with_policy(
+    state: AdminState,
+    metrics_handle: MetricsHandle,
+    session_handle: SessionHandle,
+    cache_handle: Option<crate::cache::CacheHandle>,
+    proxy: McpProxy,
+    config: &crate::config::ProxyConfig,
+    config_path: Option<std::path::PathBuf>,
+    cb_handles: std::collections::HashMap<String, crate::proxy::CbHandle>,
+    reload_policy: crate::reload_policy::ReloadPolicy,
+) -> Router {
     let config_toml = std::sync::Arc::new(crate::config_view::redacted_config_toml(config));
 
     let router = Router::new()
@@ -782,6 +885,7 @@ pub fn admin_router(
         .route("/circuit-breakers", get(handle_circuit_breakers))
         .route("/config", get(handle_get_config).put(handle_update_config))
         .route("/config/validate", post(handle_validate_config))
+        .route("/config/status", get(handle_config_status))
         // Per-backend endpoints
         .route("/backends/{name}/health", get(handle_single_backend_health))
         .route(
@@ -800,7 +904,8 @@ pub fn admin_router(
         .layer(Extension(proxy))
         .layer(Extension(config_toml))
         .layer(Extension(config_path))
-        .layer(Extension(Arc::new(cb_handles)));
+        .layer(Extension(Arc::new(cb_handles)))
+        .layer(Extension(reload_policy));
 
     #[cfg(feature = "metrics")]
     let router = router.layer(Extension(metrics_handle));

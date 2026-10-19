@@ -34,6 +34,7 @@ pub struct Proxy {
     inner: McpProxy,
     config: ProxyConfig,
     config_watcher: std::sync::Mutex<Option<crate::reload::ConfigWatcher>>,
+    reload_policy: crate::reload_policy::ReloadPolicy,
     #[cfg(feature = "discovery")]
     discovery_index: Option<crate::discovery::SharedDiscoveryIndex>,
     #[cfg(feature = "discovery")]
@@ -48,6 +49,7 @@ impl Proxy {
     /// [`into_router()`](Self::into_router) to embed in an existing app.
     pub async fn from_config(mut config: ProxyConfig) -> Result<Self> {
         config.resolve_env_vars()?;
+        let reload_policy = crate::reload_policy::ReloadPolicy::new(&config);
         let (mcp_proxy, cb_handles) = build_mcp_proxy(&config).await?;
         let proxy_for_admin = mcp_proxy.clone();
         // Only the discovery index build mutates this clone.
@@ -107,7 +109,7 @@ impl Proxy {
         );
         let router = router.nest(
             "/admin",
-            crate::admin::admin_router(
+            crate::admin::admin_router_with_policy(
                 admin_state.clone(),
                 metrics_handle,
                 session_handle.clone(),
@@ -116,6 +118,7 @@ impl Proxy {
                 &config,
                 config.source_path.clone(),
                 cb_handles,
+                reload_policy.clone(),
             ),
         );
         if crate::management::admin_token(&config).is_some() {
@@ -154,12 +157,13 @@ impl Proxy {
         let discovery_tools: Option<Vec<tower_mcp::Tool>> = None;
 
         // MCP admin tools (proxy/ namespace)
-        if let Err(e) = crate::admin_tools::register_admin_tools(
+        if let Err(e) = crate::admin_tools::register_admin_tools_with_policy(
             &proxy_for_caller,
             admin_state,
             session_handle.clone(),
             &config,
             discovery_tools,
+            reload_policy.clone(),
         )
         .await
         {
@@ -174,6 +178,7 @@ impl Proxy {
             inner: proxy_for_caller,
             config,
             config_watcher: std::sync::Mutex::new(None),
+            reload_policy,
             #[cfg(feature = "discovery")]
             discovery_index,
             #[cfg(feature = "discovery")]
@@ -207,7 +212,7 @@ impl Proxy {
             return;
         }
         tracing::info!("Hot reload enabled, watching config file for changes");
-        *watcher = Some(crate::reload::spawn_config_watcher_with_schemas(
+        *watcher = Some(crate::reload::spawn_config_watcher_with_policy(
             config_path,
             self.inner.clone(),
             #[cfg(feature = "discovery")]
@@ -221,6 +226,7 @@ impl Proxy {
                         self.config.proxy.separator.clone(),
                     )
                 }),
+            Ok(self.reload_policy.clone()),
         ));
     }
 
