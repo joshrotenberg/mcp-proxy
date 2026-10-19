@@ -288,7 +288,8 @@ impl Proxy {
 }
 
 /// Circuit breaker handle type alias.
-pub type CbHandle = tower_resilience::circuitbreaker::CircuitBreakerHandle;
+pub type CbHandle =
+    tower_resilience::circuitbreaker::CircuitBreakerHandle<crate::outcome::McpFailureClassifier>;
 
 /// Build the circuit breaker layer for one backend from its config.
 ///
@@ -301,10 +302,11 @@ fn build_breaker_layer(
     cb: &crate::config::CircuitBreakerConfig,
     backend_name: &str,
 ) -> Result<(
-    tower_resilience::circuitbreaker::CircuitBreakerLayer,
+    tower_resilience::circuitbreaker::CircuitBreakerLayer<crate::outcome::McpFailureClassifier>,
     CbHandle,
 )> {
     tower_resilience::circuitbreaker::CircuitBreakerLayer::builder()
+        .failure_classifier_type(crate::outcome::McpFailureClassifier)
         .failure_rate_threshold(cb.failure_rate_threshold)
         .minimum_number_of_calls(cb.minimum_calls)
         .sliding_window_size(cb.minimum_calls)
@@ -390,23 +392,20 @@ where
             match e {}
         }
 
-        // Zone A: retry classifies failures from responses over the
-        // Infallible base (hedging also needs a Clone inner error, which
-        // Infallible satisfies).
+        // Zone A: retry classifies responses over the Infallible base.
+        // The hedge adapter promotes failed responses into a private Clone
+        // error plane, then restores the original response after all failures.
         let after_retry: InfallibleService = match &self.retry {
             Some(retry) => BoxCloneService::new(retry.layer(base)),
             None => BoxCloneService::new(base),
         };
 
-        // Zone B: error-producing middlewares in the BoxError plane. Hedging
-        // wraps the inner error type (`HedgeError<Infallible>`), so it forms
-        // the floor of this zone.
+        // Zone B: concurrency/rate/timeout/breaker can produce typed errors.
+        // Hedging has already restored its response plane before widening.
         let mut svc: MwService = match &self.hedge {
-            Some(hedge) => BoxCloneService::new(
-                hedge
-                    .layer(after_retry)
-                    .map_err(|e| -> tower::BoxError { e.to_string().into() }),
-            ),
+            Some(hedge) => {
+                BoxCloneService::new(crate::outcome::hedged(after_retry, hedge).map_err(widen))
+            }
             None => BoxCloneService::new(after_retry.map_err(widen)),
         };
         for stage in &self.stages {

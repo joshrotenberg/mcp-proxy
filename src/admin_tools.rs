@@ -236,7 +236,7 @@ fn build_admin_router(
                         input.name
                     ))),
                     // Transport errors may contain URL credentials or headers.
-                    Err(_) => Ok(CallToolResult::text(
+                    Err(_) => Ok(CallToolResult::error(
                         "Failed to add backend; check backend reachability and configuration",
                     )),
                 }

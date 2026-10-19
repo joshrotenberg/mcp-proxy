@@ -58,19 +58,23 @@ where
         let future = self.inner.call(req);
         Box::pin(async move {
             let response = future.await?;
-            // Preserve the existing JSON-RPC classification. Tool-level outcomes
-            // and richer denial reasons are separate work in #280/#290.
-            let (status, error_code) = match &response.inner {
-                Ok(_) => ("success", None),
-                Err(error) if error.code == -32602 => ("denied", Some(error.code)),
-                Err(error) => ("error", Some(error.code)),
+            let outcome = crate::outcome::Outcome::from_response(&response);
+            let status = match (&response.inner, outcome) {
+                (_, crate::outcome::Outcome::Success) => "success",
+                (Err(error), crate::outcome::Outcome::ClientError)
+                    if error.code == -32602 || error.code == -32007 =>
+                {
+                    "denied"
+                }
+                _ => "error",
             };
+            let error_code = response.inner.as_ref().err().map(|error| error.code);
             let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
             tracing::info!(
                 target: "mcp::audit", %method, %request_id,
                 tool = tool.as_deref(), resource_uri = resource_uri.as_deref(),
                 prompt = prompt.as_deref(), duration_ms, status, error_code,
-                read_only, destructive, "audit",
+                read_only, destructive, outcome = outcome.as_str(), "audit",
             );
             Ok(response)
         })

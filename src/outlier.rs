@@ -3,7 +3,9 @@
 //! Tracks error rates on live traffic and automatically ejects unhealthy backends.
 //! Unlike the circuit breaker (which uses failure *rate* over a sliding window),
 //! outlier detection triggers on *consecutive* errors, catching hard-down backends
-//! faster. Cross-backend coordination via `max_ejection_percent` prevents ejecting
+//! faster. The shared [`crate::outcome`] policy counts server/transport failures;
+//! tool failures and known client/protocol errors do not trigger ejection.
+//! Cross-backend coordination via `max_ejection_percent` prevents ejecting
 //! all backends simultaneously.
 //!
 //! # Configuration
@@ -234,13 +236,7 @@ fn now_ms() -> u64 {
 
 /// Returns true if the MCP response indicates a server-side error.
 fn is_server_error(response: &RouterResponse) -> bool {
-    match &response.inner {
-        Err(err) => {
-            // JSON-RPC internal error (-32603) and server errors (-32000 to -32099)
-            err.code == -32603 || (-32099..=-32000).contains(&err.code)
-        }
-        Ok(_) => false,
-    }
+    crate::outcome::Outcome::from_response(response).backend_failure()
 }
 
 impl<S> Service<RouterRequest> for OutlierDetectionService<S>

@@ -81,6 +81,11 @@
 //!   (glob patterns and `re:` regex support)
 //! - **Annotation filtering** -- hide destructive tools, read-only-only mode
 //!
+//! Middleware shares the [`outcome`] policy: tool `isError` results are never
+//! cached and do not trigger ordinary retries or backend-health failures.
+//! Configured hedges seek successful alternatives to tool/server failures;
+//! metrics and request logs distinguish bounded outcome classes.
+//!
 //! # Traffic Routing
 //!
 //! - **Failover** -- N-way priority chains with automatic fallback
@@ -219,6 +224,7 @@ pub mod mcp_json;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod mirror;
+pub mod outcome;
 pub mod outlier;
 pub mod param_override;
 #[cfg(feature = "oauth")]

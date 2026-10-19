@@ -123,16 +123,8 @@ where
             let result = fut.await;
             let duration_ms = start.elapsed().as_millis() as u64;
 
-            let status = match &result {
-                Ok(resp) => {
-                    if resp.inner.is_ok() {
-                        "ok"
-                    } else {
-                        "error"
-                    }
-                }
-                Err(_) => "error",
-            };
+            let outcome = crate::outcome::Outcome::from_result(&result);
+            let status = outcome.status();
 
             match (target, backend) {
                 (Some(name), Some(be)) => {
@@ -143,6 +135,7 @@ where
                         backend = %be,
                         duration_ms = duration_ms,
                         status = %status,
+                        outcome = outcome.as_str(),
                     );
                 }
                 (Some(name), None) => {
@@ -152,6 +145,7 @@ where
                         target = %name,
                         duration_ms = duration_ms,
                         status = %status,
+                        outcome = outcome.as_str(),
                     );
                 }
                 _ => {
@@ -160,6 +154,7 @@ where
                         method = %method,
                         duration_ms = duration_ms,
                         status = %status,
+                        outcome = outcome.as_str(),
                     );
                 }
             }

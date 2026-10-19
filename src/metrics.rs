@@ -1,7 +1,8 @@
 //! Prometheus metrics middleware for the proxy.
 //!
-//! Records per-request counters and duration histograms, labeled by
-//! MCP method and backend namespace.
+//! Request counters use MCP method, coarse status and the bounded
+//! [`crate::outcome`] class. Duration histograms use MCP method. Tool `isError`
+//! results count as errors without recording response bodies.
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -70,18 +71,10 @@ where
             let result = fut.await;
             let duration = start.elapsed().as_secs_f64();
 
-            let status = match &result {
-                Ok(resp) => {
-                    if resp.inner.is_ok() {
-                        "ok"
-                    } else {
-                        "error"
-                    }
-                }
-                Err(_) => "error",
-            };
+            let outcome = crate::outcome::Outcome::from_result(&result);
+            let status = outcome.status();
 
-            counter!("mcp_proxy_requests_total", "method" => method.clone(), "status" => status)
+            counter!("mcp_proxy_requests_total", "method" => method.clone(), "status" => status, "outcome" => outcome.as_str())
                 .increment(1);
             histogram!(
                 "mcp_proxy_request_duration_seconds",

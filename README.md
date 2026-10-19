@@ -288,17 +288,61 @@ records go to stderr. The CLI uses these configuration settings rather than
 must enable the desired targets at INFO.
 
 Access records contain method, target, backend when identifiable, duration and
-JSON-RPC status (`ok`/`error`). Audit records contain method, request ID, target,
-duration, JSON-RPC status, error code and annotation hints when available. Audit
-status is `success`, `denied` for invalid-params errors, or `error` for other
-JSON-RPC errors. These statuses describe the envelope; tool-level errors inside
-a successful envelope are not classified separately yet.
+status (`ok`/`error`) and a bounded `outcome`. Audit records contain method,
+request ID, target, duration, status, outcome, numeric error code and annotation
+hints when available. Audit status is `success`, `denied` for invalid-params or
+forbidden errors, or `error` for other failures. Tool results with `isError=true`
+are errors in access logs, audit logs and request counters.
 
 Arguments, credential headers, response bodies and free-form backend error
 messages are omitted. Request IDs and tool/resource/prompt identifiers remain
 logged fields. Records are emitted when the MCP service completes. HTTP
 authentication rejections occur before this middleware and are not included;
 these records do not yet attribute callers.
+
+### MCP outcome policy
+
+Resilience, cache admission and telemetry share a classifier based on typed
+results and numeric JSON-RPC codes. Error text and application error data do not
+change the policy.
+
+| Outcome (`outcome` label) | Retry / breaker / outlier failure | Configured hedge seeks another result | Cache |
+| --- | --- | --- | --- |
+| `success` | No | No | Completed tool results and resource reads only |
+| `tool_error` (`isError=true`) | No | Yes | No |
+| `client_error` | No | No | No |
+| `server_error` | Yes | Yes | No |
+| `transport_error` | Yes | Yes | No |
+| `other_error` | No | No | No |
+
+Client errors include invalid requests/params/methods, parse errors and known MCP
+resource/session/authorization/subscription/header/capability/version/elicitation
+codes, even when assigned in the `-32099..=-32000` range. Other codes in that
+range and internal error (`-32603`) count as server failures. Explicit connection
+closed (`-32000`), request timeout (`-32010`) and typed service failures count as
+transport failures. Unknown application codes remain terminal. The pinned
+upstream backend service folds some backend errors to `-32603`; their original
+code or transport type cannot be recovered, so those responses count as server
+failures without inspecting their messages.
+
+Retry and hedging require explicit configuration. A fast server or tool failure
+cannot beat a slower successful hedge; if every attempt fails, the original
+primary response retains its ID, error data and `isError` flag. Client/protocol
+and unknown errors are terminal hedge results. Retries and hedges can execute
+a tool more than once; enable them only where duplicate execution is acceptable.
+Failed management backend additions also return `isError=true`.
+
+Caches reject failed results both on writes and when reading entries created by
+older versions. Intermediate task/continuation responses are never cached.
+
+Migration: `mcp_proxy_requests_total` retains `method` and `status` and adds the
+bounded `outcome` label shown above. Update recording rules that expect an exact
+label set; use aggregation when retaining the previous series shape. Tool failures
+now contribute to `status="error"`. Access/audit records also add `outcome`.
+The public `admin::admin_router` breaker-handle map now uses
+`CircuitBreakerHandle<mcp_proxy::outcome::McpFailureClassifier>`; callers constructing
+those handles must use that classifier rather than the default service-error-only
+classifier. Configuration fields are unchanged.
 
 ### Supported hot reload changes
 

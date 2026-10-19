@@ -833,6 +833,11 @@ async fn handle_openapi() -> impl IntoResponse {
 }
 
 /// Build the admin API router.
+///
+/// `cb_handles` must use [`crate::outcome::McpFailureClassifier`] so the status
+/// endpoint observes the same response-aware breakers as configured backends.
+/// Callers migrating from default classifier handles should build them with
+/// `.failure_classifier_type(crate::outcome::McpFailureClassifier)`.
 #[allow(clippy::too_many_arguments)]
 pub fn admin_router(
     state: AdminState,

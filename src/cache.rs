@@ -554,7 +554,9 @@ where
 
             return Box::pin(async move {
                 // Cache hit -- return with current request ID
-                if let Some(cached) = store.get(&key).await {
+                if let Some(cached) = store.get(&key).await
+                    && crate::outcome::cacheable(&cached)
+                {
                     stats.hits.fetch_add(1, Ordering::Relaxed);
                     return Ok(RouterResponse {
                         id: req.id,
@@ -567,7 +569,7 @@ where
 
                 // Only cache successful MCP responses
                 let Ok(ref resp) = result;
-                if resp.inner.is_ok() {
+                if crate::outcome::cacheable(resp) {
                     store.insert(key, resp.clone()).await;
                 }
 
@@ -606,6 +608,55 @@ mod tests {
 
     fn default_backend_config() -> CacheBackendConfig {
         CacheBackendConfig::default()
+    }
+
+    #[tokio::test]
+    async fn legacy_cached_tool_failure_is_ignored_and_recovered_result_is_cached() {
+        use crate::outcome::tests::{request, service};
+        use tower::{Service, ServiceExt};
+        use tower_mcp::protocol::{CallToolResult, RequestId};
+        let (base, calls) = service(Ok(McpResponse::CallTool(CallToolResult::text("recovered"))));
+        let config = BackendCacheConfig {
+            tool_ttl_seconds: 60,
+            resource_ttl_seconds: 60,
+            max_entries: 10,
+        };
+        let (mut cache, handle) = CacheService::new(
+            base,
+            vec![("api/".into(), &config)],
+            &CacheBackendConfig::default(),
+        );
+        let (store, key, _) = super::resolve_cache(&cache.caches, &request(0).inner).unwrap();
+        store
+            .insert(
+                key,
+                tower_mcp::RouterResponse {
+                    id: RequestId::Number(0),
+                    inner: Ok(McpResponse::CallTool(CallToolResult::error(
+                        "legacy failure",
+                    ))),
+                },
+            )
+            .await;
+        for id in [1, 2] {
+            let response = cache
+                .ready()
+                .await
+                .unwrap()
+                .call(request(id))
+                .await
+                .unwrap();
+            assert_eq!(response.id, RequestId::Number(id));
+            let McpResponse::CallTool(result) = response.inner.unwrap() else {
+                panic!("expected tool result")
+            };
+            assert!(!result.is_error);
+            assert_eq!(result.all_text(), "recovered");
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let stats = handle.stats().await;
+        assert_eq!(stats[0].hits, 1);
+        assert_eq!(stats[0].misses, 1);
     }
 
     #[tokio::test]

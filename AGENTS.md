@@ -48,6 +48,7 @@ src/
   failover.rs      # Ordered backend failover
 
   # Per-backend middleware (applied per-backend in proxy.rs and reload.rs)
+  outcome.rs       # Shared response classification, cache admission, hedge adapter
   retry.rs         # tower-resilience retry layer, exponential backoff, budgets
   outlier.rs       # Outlier detection and ejection (OutlierDetectionLayer)
 
@@ -58,6 +59,7 @@ tests/
   health_probes.rs # Configured proxy process probes and auth boundaries
   reload_runtime.rs # Watched-file CLI add/replace tests and watcher ownership
   coalesce_runtime.rs # Configured HTTP/MCP capacity, expiry and recovery
+  outcome_runtime.rs # Configured cache recovery, breaker state, hedge winners and metrics
   cli_logging.rs   # Real CLI JSON/text/OTel request records and privacy regressions
   outbound_headers.rs # Actual HTTP requests and WebSocket handshake headers
   discovery_schemas.rs # Tool schema retrieval and reindex behavior
@@ -123,8 +125,8 @@ let limited = tower::Layer::layer(&layer, svc);
 svc = BoxCloneService::new(tower_mcp::CatchError::new(limited));
 ```
 
-`BackendMiddlewareLayer` builds retry in the Infallible zone, then
-hedge/concurrency/rate/timeout/breaker in the BoxError zone, converts errors back into
+`BackendMiddlewareLayer` builds retry and response-aware hedging in the Infallible
+zone, then concurrency/rate/timeout/breaker in the BoxError zone, converts errors back into
 responses with `CatchError`, and applies outlier detection outside that boundary.
 Pass the composed layer to `builder.backend_layer()` once. Startup is the sole
 middleware constructor. Reload admits only plain, unreferenced backend connection/
@@ -132,6 +134,15 @@ topology changes; backend policies and global/auth edits require restart.
 `reload_policy.rs` shares startup admission/status across watcher and management.
 Unsupported revisions are rejected before mutation, keeping active handles/fleet
 state. Direct management cannot replace/remove policy-bearing or referenced names.
+
+Shared `outcome.rs` policy classifies typed tool failures and numeric RPC codes,
+never error text. Retry/breaker/outlier count server and transport failures, not
+`isError` tool results or known client/protocol errors. Configured hedges can seek
+a successful alternative to a tool failure; their adapter restores the original
+primary response when every attempt fails. Cache admits only completed successful
+tool/resource responses and rejects legacy cached failures on reads. Telemetry
+uses bounded outcome labels and treats tool failures as errors. Preserve these
+contracts with the table-driven outcome tests and configured HTTP regression.
 
 ### Adding a new middleware layer
 

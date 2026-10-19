@@ -2,7 +2,8 @@
 //!
 //! Uses tower-resilience's [`RetryLayer`] with a response-based predicate to
 //! retry MCP error responses with transient error codes (internal errors,
-//! timeouts). Tool-not-found and other client errors are not retried.
+//! timeouts), using the shared [`crate::outcome`] policy. Tool `isError` results,
+//! unknown application codes and known client/protocol errors are not retried.
 //!
 //! # Retry Budget
 //!
@@ -34,19 +35,9 @@ use tower_resilience::retry::{RetryBudgetBuilder, RetryLayer};
 
 use crate::config::RetryConfig;
 
-/// Returns true if the MCP error code indicates a transient/retriable error.
-fn is_retriable_error(code: i32) -> bool {
-    // JSON-RPC internal error (-32603) and server errors (-32000 to -32099)
-    // are potentially transient. Method not found, invalid params, etc. are not.
-    code == -32603 || (-32099..=-32000).contains(&code)
-}
-
 /// Returns true if a `RouterResponse` contains a retriable MCP error.
 fn is_retriable_response(resp: &RouterResponse) -> bool {
-    match &resp.inner {
-        Err(err) => is_retriable_error(err.code),
-        Ok(_) => false,
-    }
+    crate::outcome::Outcome::from_response(resp).backend_failure()
 }
 
 /// Build a tower-resilience [`RetryLayer`] from our [`RetryConfig`].
