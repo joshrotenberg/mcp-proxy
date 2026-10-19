@@ -33,7 +33,9 @@ The all-feature integration suite requires a working Docker daemon and the
 `redis:7-alpine` image. Run `docker info` and `docker pull redis:7-alpine` before
 testing. Redis startup failures fail the suite rather than counting as passing
 tests. SQLite uses temporary files. The outlier recovery regression runs in the
-normal suite and takes approximately 1.2 seconds.
+normal suite and takes approximately 1.2 seconds. Watched-file CLI regressions
+also require Python 3 for their minimal stdio MCP fixture; no Python packages or
+external MCP servers are needed.
 
 ## Temporary upstream fix and release prerequisite
 

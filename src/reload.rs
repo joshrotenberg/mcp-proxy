@@ -6,7 +6,6 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::path::PathBuf;
-use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
@@ -17,7 +16,51 @@ use tower_mcp::{RouterRequest, RouterResponse};
 
 use crate::config::{BackendConfig, ProxyConfig, TransportType};
 
-/// Spawn a background task that watches the config file and adds new backends.
+/// Owns a watcher and the runtime driving its reloaded backend transports.
+///
+/// Retain this handle for as long as the proxy uses those backends. Dropping it
+/// cancels the watcher, releases the file watch, and stops that runtime without
+/// blocking the caller. Use [`Self::shutdown`] after draining requests to wait
+/// for the worker thread to exit. [`crate::Proxy`] retains its handle for you.
+#[must_use = "dropping the handle stops the watcher and its reloaded transports"]
+pub struct ConfigWatcher {
+    cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ConfigWatcher {
+    fn cancel(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+    }
+
+    /// Cancel the watcher and join its runtime thread without blocking Tokio.
+    ///
+    /// Drain proxy requests first: reloaded transport drivers stop with this
+    /// runtime. Requires a Tokio runtime. Returns an error if the worker panics.
+    pub async fn shutdown(mut self) -> anyhow::Result<()> {
+        self.cancel();
+        if let Some(thread) = self.thread.take() {
+            tokio::task::spawn_blocking(move || thread.join())
+                .await
+                .map_err(|_| anyhow::anyhow!("joining config watcher task failed"))?
+                .map_err(|_| anyhow::anyhow!("config watcher thread panicked"))?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ConfigWatcher {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+/// Spawn a watcher with its own runtime; retain the returned ownership handle.
+///
+/// It can be called without an active Tokio runtime. Drop the handle only when
+/// finished with the proxy's reloaded backend transports.
 pub fn spawn_config_watcher(
     config_path: PathBuf,
     proxy: McpProxy,
@@ -25,17 +68,20 @@ pub fn spawn_config_watcher(
         crate::discovery::SharedDiscoveryIndex,
         String,
     )>,
-) {
+) -> ConfigWatcher {
     spawn_config_watcher_with_schemas(
         config_path,
         proxy,
         #[cfg(feature = "discovery")]
         discovery_index
             .map(|(index, separator)| (index, crate::discovery::SchemaStore::new(), separator)),
-    );
+    )
 }
 
-/// Spawn a config watcher that also refreshes retained discovery tool schemas.
+/// Spawn an owned watcher that also refreshes retained discovery tool schemas.
+///
+/// Keep the returned handle for the lifetime of the proxy's reloaded transports.
+/// File events wait asynchronously so those transports keep making progress.
 pub fn spawn_config_watcher_with_schemas(
     config_path: PathBuf,
     proxy: McpProxy,
@@ -44,19 +90,34 @@ pub fn spawn_config_watcher_with_schemas(
         crate::discovery::SchemaStore,
         String,
     )>,
-) {
-    std::thread::spawn(move || {
+) -> ConfigWatcher {
+    let (cancel, cancelled) = tokio::sync::oneshot::channel();
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
+    let thread = std::thread::spawn(move || {
+        let _guard = tracing::dispatcher::set_default(&dispatch);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("hot reload runtime");
-        rt.block_on(watch_loop(
-            config_path,
-            proxy,
-            #[cfg(feature = "discovery")]
-            discovery_index,
-        ));
+        rt.block_on(async move {
+            tokio::select! {
+                biased;
+                _ = cancelled => {},
+                _ = watch_loop(
+                    config_path,
+                    proxy,
+                    #[cfg(feature = "discovery")]
+                    discovery_index,
+                ) => {},
+            }
+        });
+        drop(rt);
+        tracing::info!("Config watcher stopped");
     });
+    ConfigWatcher {
+        cancel: Some(cancel),
+        thread: Some(thread),
+    }
 }
 
 async fn watch_loop(
@@ -68,9 +129,21 @@ async fn watch_loop(
         String,
     )>,
 ) {
-    let (tx, rx) = std_mpsc::channel();
-
-    let mut debouncer = match new_debouncer(Duration::from_secs(2), tx) {
+    // Only the fact of a write matters: each reload reads the newest revision.
+    // One pending notification coalesces bursts without an unbounded event queue.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let callback = move |result: notify_debouncer_mini::DebounceEventResult| match result {
+        Ok(events)
+            if events
+                .iter()
+                .any(|e| matches!(e.kind, DebouncedEventKind::Any)) =>
+        {
+            let _ = tx.try_send(());
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(error = %error, "File watcher error"),
+    };
+    let mut debouncer = match new_debouncer(Duration::from_secs(2), callback) {
         Ok(d) => d,
         Err(e) => {
             tracing::error!(error = %e, "Failed to create file watcher, hot reload disabled");
@@ -105,28 +178,8 @@ async fn watch_loop(
         }
     };
 
-    loop {
-        // Block until a file event arrives (this is a std::sync channel)
-        let events = match rx.recv() {
-            Ok(Ok(events)) => events,
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, "File watcher error");
-                continue;
-            }
-            Err(_) => {
-                tracing::info!("File watcher channel closed, stopping hot reload");
-                break;
-            }
-        };
-
-        // Only process write events
-        let has_write = events
-            .iter()
-            .any(|e| matches!(e.kind, DebouncedEventKind::Any));
-        if !has_write {
-            continue;
-        }
-
+    // Waiting yields this runtime to HTTP, WebSocket and stdio client drivers.
+    while rx.recv().await.is_some() {
         tracing::info!("Config file changed, reloading backends");
 
         let new_config = match load_runtime_config(&config_path) {

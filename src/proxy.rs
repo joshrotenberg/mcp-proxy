@@ -33,6 +33,7 @@ pub struct Proxy {
     session_handle: SessionHandle,
     inner: McpProxy,
     config: ProxyConfig,
+    config_watcher: std::sync::Mutex<Option<crate::reload::ConfigWatcher>>,
     #[cfg(feature = "discovery")]
     discovery_index: Option<crate::discovery::SharedDiscoveryIndex>,
     #[cfg(feature = "discovery")]
@@ -172,6 +173,7 @@ impl Proxy {
             session_handle,
             inner: proxy_for_caller,
             config,
+            config_watcher: std::sync::Mutex::new(None),
             #[cfg(feature = "discovery")]
             discovery_index,
             #[cfg(feature = "discovery")]
@@ -196,10 +198,16 @@ impl Proxy {
     /// Enable hot reload by watching the given config file path.
     ///
     /// New backends added to the config file will be connected dynamically
-    /// without restarting the proxy.
+    /// without restarting the proxy. The proxy owns the watcher; embedding via
+    /// [`Self::into_router`] transfers ownership to the router and its clones.
+    /// Repeated calls keep the first watcher instead of creating duplicate writers.
     pub fn enable_hot_reload(&self, config_path: std::path::PathBuf) {
+        let mut watcher = self.config_watcher.lock().expect("config watcher owner");
+        if watcher.is_some() {
+            return;
+        }
         tracing::info!("Hot reload enabled, watching config file for changes");
-        crate::reload::spawn_config_watcher_with_schemas(
+        *watcher = Some(crate::reload::spawn_config_watcher_with_schemas(
             config_path,
             self.inner.clone(),
             #[cfg(feature = "discovery")]
@@ -213,7 +221,7 @@ impl Proxy {
                         self.config.proxy.separator.clone(),
                     )
                 }),
-        );
+        ));
     }
 
     /// Consume the proxy and return the axum Router and SessionHandle.
@@ -231,7 +239,10 @@ impl Proxy {
     /// # }
     /// ```
     pub fn into_router(self) -> (Router, SessionHandle) {
-        (self.router, self.session_handle)
+        let router = self
+            .router
+            .layer(axum::Extension(std::sync::Arc::new(self.config_watcher)));
+        (router, self.session_handle)
     }
 
     /// Serve the proxy on the configured listen address.
@@ -251,10 +262,19 @@ impl Proxy {
             .with_context(|| format!("binding to {}", addr))?;
 
         let shutdown_timeout = Duration::from_secs(self.config.proxy.shutdown_timeout_seconds);
-        axum::serve(listener, self.router)
+        let result = axum::serve(listener, self.router)
             .with_graceful_shutdown(shutdown_signal(shutdown_timeout))
             .await
-            .context("server error")?;
+            .context("server error");
+        // Drivers stay alive during draining, then the owned watcher is joined.
+        if let Some(watcher) = self
+            .config_watcher
+            .into_inner()
+            .expect("config watcher owner")
+        {
+            watcher.shutdown().await?;
+        }
+        result?;
 
         tracing::info!("Proxy shut down");
         Ok(())

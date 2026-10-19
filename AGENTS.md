@@ -54,6 +54,7 @@ tests/
   e2e.rs           # Full proxy pipeline tests with in-process backends
   http_e2e.rs      # Real HTTP transport and authentication tests
   health_probes.rs # Configured proxy process probes and auth boundaries
+  reload_runtime.rs # Watched-file CLI add/replace tests and watcher ownership
   outbound_headers.rs # Actual HTTP requests and WebSocket handshake headers
   discovery_schemas.rs # Tool schema retrieval and reindex behavior
   chaos.rs         # Fault injection and resilience recovery regressions
@@ -225,9 +226,10 @@ cargo test --doc --all-features          # catches stale doc examples
 ## Compatibility, coverage, and deployment checks
 
 See `CONTRIBUTING.md` for the full Rust 1.90 feature matrix and coverage commands.
-All-feature integration tests require Docker and `redis:7-alpine`; startup or
-readiness failures are test failures. All Rust examples are checked, and the
-outlier recovery regression runs in the normal suite.
+All-feature integration tests require Docker and `redis:7-alpine`; watched-file
+stdio fixtures require Python 3. Startup or readiness failures are test failures.
+All Rust examples are checked, and the outlier recovery regression runs in the
+normal suite.
 
 CI publishes a `coverage-report` artifact and validates the Helm chart with
 `./scripts/check-chart.sh`. Release preparation must synchronize

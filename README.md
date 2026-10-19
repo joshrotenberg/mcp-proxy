@@ -238,6 +238,22 @@ target**, for both direct and wrapped calls. Each target uses its public name
 Denied targets receive no backend call; other permitted targets may run, and any
 target failure marks the aggregate as an error. Nested composites are not expanded.
 
+### Hot reload ownership
+
+The CLI watches its file when `proxy.hot_reload = true`. Library users call
+`Proxy::enable_hot_reload(path)`; repeated calls retain the first watcher.
+Backend additions and replacements keep serving while the watcher waits for
+another file event, across stdio, HTTP and WebSocket transports. Writes are
+coalesced into a bounded notification and each reload reads the latest revision.
+
+`Proxy` owns the watcher. `into_router()` transfers that ownership to the router
+and its clones; dropping the final owner cancels watching and its runtime.
+Standalone serving joins the watcher after requests drain. Low-level
+`reload::spawn_config_watcher*` callers must now **retain the returned
+`ConfigWatcher`** for as long as they use reloaded transports. Dropping that handle
+cancels it; `shutdown().await` cancels and joins its worker thread. Global/auth
+policy edits still require reconstruction/restart.
+
 ### OAuth resource identity and endpoint setup
 
 For JWT and OAuth authentication, `auth.audience` is the public MCP resource URL,

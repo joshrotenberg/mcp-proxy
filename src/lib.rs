@@ -134,9 +134,19 @@
 //!
 //! # Hot Reload
 //!
-//! Enable `hot_reload = true` to watch the config file. Backends are added,
-//! removed, or replaced dynamically without restart. Discovery indexes are
-//! automatically re-indexed.
+//! The CLI uses `hot_reload = true` to watch its config file. Library applications
+//! call [`Proxy::enable_hot_reload`]. Backends are added, removed, or replaced
+//! dynamically, and discovery indexes are re-indexed. The event wait is
+//! asynchronous so reloaded stdio, HTTP and WebSocket drivers keep progressing.
+//!
+//! `Proxy` owns one watcher; repeated enable calls keep the original watcher.
+//! [`Proxy::into_router`] transfers ownership to the router and its clones.
+//! Dropping the final owner cancels watching and stops the reload runtime;
+//! standalone serving joins it after requests drain. Low-level
+//! [`reload::spawn_config_watcher`] callers must retain the returned
+//! [`reload::ConfigWatcher`] until finished with reloaded backends and can await
+//! [`reload::ConfigWatcher::shutdown`] for explicit joined cleanup.
+//! Global/auth policy changes still require reconstruction/restart.
 //!
 //! # Feature Flags
 //!
