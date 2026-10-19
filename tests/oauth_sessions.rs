@@ -224,18 +224,45 @@ struct Fixture {
     calls: Arc<AtomicUsize>,
 }
 async fn proxy(authority: &Authority, strategy: &str, explicit: bool) -> anyhow::Result<Fixture> {
+    proxy_with_policy(authority, strategy, explicit, "").await
+}
+async fn proxy_with_policy(
+    authority: &Authority,
+    strategy: &str,
+    explicit: bool,
+    policy: &str,
+) -> anyhow::Result<Fixture> {
     let calls = Arc::new(AtomicUsize::new(0));
     let count = calls.clone();
+    let write_count = calls.clone();
+    let delete_count = calls.clone();
     let backend = serve(
         HttpTransport::new(
-            McpRouter::new().tool(
-                ToolBuilder::new("ping")
-                    .handler(move |_: Value| {
-                        count.fetch_add(1, Ordering::SeqCst);
-                        async { Ok(CallToolResult::text("pong")) }
-                    })
-                    .build(),
-            ),
+            McpRouter::new()
+                .tool(
+                    ToolBuilder::new("write")
+                        .handler(move |_: Value| {
+                            write_count.fetch_add(1, Ordering::SeqCst);
+                            async { Ok(CallToolResult::text("written")) }
+                        })
+                        .build(),
+                )
+                .tool(
+                    ToolBuilder::new("delete")
+                        .handler(move |_: Value| {
+                            delete_count.fetch_add(1, Ordering::SeqCst);
+                            async { Ok(CallToolResult::text("deleted")) }
+                        })
+                        .build(),
+                )
+                .tool(
+                    ToolBuilder::new("ping")
+                        .handler(move |_: Value| {
+                            count.fetch_add(1, Ordering::SeqCst);
+                            async { Ok(CallToolResult::text("pong")) }
+                        })
+                        .build(),
+                ),
         )
         .into_router(),
     )
@@ -283,6 +310,7 @@ client_id = "fixture"
 client_secret = "fixture-secret"
 required_scopes = ["tools", "read"]
 {endpoints}
+{policy}
 [[backends]]
 name = "api"
 transport = "http"
@@ -522,4 +550,168 @@ async fn authentication_network_work_is_bounded_and_large_introspection_is_rejec
             .expect("introspection must finish within its request deadline")
             .is_err()
     );
+}
+
+const RBAC_POLICY: &str = r#"
+[[auth.roles]]
+name = "reader"
+allow_tools = ["api/ping"]
+[[auth.roles]]
+name = "writer"
+allow_tools = ["api/write"]
+deny_tools = ["api/delete"]
+[[auth.roles]]
+name = "admin"
+[[auth.roles]]
+name = "blocked"
+deny_tools = ["api/write"]
+[auth.role_mapping]
+claim = "scope"
+default_deny = true
+[auth.role_mapping.mapping]
+read = "reader"
+write = "writer"
+admin = "admin"
+blocked = "blocked"
+"#;
+
+fn issued(authority: &Authority, strategy: &str, claims: Value) -> String {
+    if strategy == "introspection" {
+        // Unique opaque tokens let concurrent sessions retain their own claims.
+        let name = format!("opaque-{}", authority.state.tokens.lock().unwrap().len());
+        authority.opaque(&name, claims)
+    } else {
+        authority.jwt(&claims)
+    }
+}
+
+async fn assert_tools(session: &Session, expected: &[&str]) {
+    let listed = session.rpc("tools/list", json!({})).await;
+    success(&listed);
+    let mut names: Vec<_> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, expected);
+    for name in ["api/delete", "api/ping", "api/write"] {
+        let response = session
+            .rpc("tools/call", json!({"name":name,"arguments":{}}))
+            .await;
+        if expected.contains(&name) {
+            success(&response);
+        } else {
+            assert!(response.get("error").is_some(), "denied {name}: {response}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn rbac_scopes_combine_grants_and_denies_independent_of_order() {
+    for strategy in ["jwt", "introspection"] {
+        let authority = Authority::new().await;
+        let fixture = proxy_with_policy(&authority, strategy, true, RBAC_POLICY)
+            .await
+            .unwrap();
+        let mut expected_calls = 0;
+        for scopes in [
+            "tools read write",
+            "write tools read",
+            "read write tools",
+            "tools read admin blocked",
+            "blocked admin read tools",
+            "admin tools blocked read",
+        ] {
+            let mut claims = authority.claims("rbac-owner");
+            claims["scope"] = json!(scopes);
+            let token = issued(&authority, strategy, claims);
+            let session = Session::start(&fixture.server.url, &token).await;
+            let expected: &[&str] = if scopes.contains("admin") {
+                &["api/delete", "api/ping"]
+            } else {
+                &["api/ping", "api/write"]
+            };
+            // Repeated identical claims must never vary across hash iterations.
+            for _ in 0..8 {
+                assert_tools(&session, expected).await;
+                expected_calls += 2;
+            }
+        }
+        assert_eq!(
+            fixture.calls.load(Ordering::SeqCst),
+            expected_calls,
+            "rejected calls must not reach the backend"
+        );
+    }
+}
+
+#[tokio::test]
+async fn rbac_custom_groups_survive_introspection_and_invalid_claims_fail_closed() {
+    for strategy in ["jwt", "introspection"] {
+        for default_deny in [true, false] {
+            let authority = Authority::new().await;
+            let policy = RBAC_POLICY
+                .replace("claim = \"scope\"", "claim = \"groups\"")
+                .replace(
+                    "default_deny = true",
+                    &format!("default_deny = {default_deny}"),
+                );
+            let fixture = proxy_with_policy(&authority, strategy, true, &policy)
+                .await
+                .unwrap();
+            let mut expected_calls = 0;
+            for groups in [
+                json!(["read", "write"]),
+                json!(["write", "read"]),
+                json!(["admin", "blocked"]),
+                json!(["blocked", "admin"]),
+                json!("read write"),
+                json!("write read"),
+            ] {
+                let mut claims = authority.claims("group-owner");
+                claims["groups"] = groups.clone();
+                let token = issued(&authority, strategy, claims);
+                let session = Session::start(&fixture.server.url, &token).await;
+                let expected: &[&str] = if groups.to_string().contains("admin") {
+                    &["api/delete", "api/ping"]
+                } else {
+                    &["api/ping", "api/write"]
+                };
+                assert_tools(&session, expected).await;
+                expected_calls += 2;
+            }
+            // No group or an unmapped group follows the explicit default policy.
+            // JSON null, objects, numbers, and mixed arrays are always malformed.
+            for (groups, malformed) in [
+                (None, false),
+                (Some(json!(["unknown"])), false),
+                (Some(Value::Null), true),
+                (Some(json!({"role":"admin"})), true),
+                (Some(json!(1)), true),
+                (Some(json!(["admin", 1])), true),
+            ] {
+                let mut claims = authority.claims("unmapped-owner");
+                if let Some(groups) = groups {
+                    claims["groups"] = groups;
+                }
+                let token = issued(&authority, strategy, claims);
+                if default_deny || malformed {
+                    let request = Session::unaffiliated(&fixture.server.url, &token);
+                    let response = request
+                        .request("initialize", initialization(), &token)
+                        .await;
+                    assert!(response.headers().get("mcp-session-id").is_none());
+                    let response = payload(response).await;
+                    assert!(response.get("error").is_some(), "{strategy}: {response}");
+                } else {
+                    let session = Session::start(&fixture.server.url, &token).await;
+                    assert_tools(&session, &["api/delete", "api/ping", "api/write"]).await;
+                    expected_calls += 3;
+                }
+            }
+            assert_eq!(fixture.calls.load(Ordering::SeqCst), expected_calls);
+        }
+    }
 }

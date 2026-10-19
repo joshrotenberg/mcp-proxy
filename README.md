@@ -263,6 +263,28 @@ string/array audiences, rejects expired active responses and mismatched issuers,
 and binds an omitted optional `iss` to the configured trusted introspection
 issuer. Required scopes and credential-bound session ownership remain enforced.
 
+### RBAC role policies
+
+JWT/OAuth RBAC requires both nonempty `auth.roles` and `auth.role_mapping`.
+Role names must be unique and nonempty, and every mapping must reference a
+defined role. Incomplete policies and mapping typos fail configuration validation.
+Library callers must now handle `RbacConfig::new(&roles, &mapping)` returning a
+`Result`.
+
+All mapped roles contribute grants, independent of scope/group order. An empty
+allow list grants every tool; an explicit deny in **any** mapped role overrides
+all grants, including an unrestricted admin role. For example, a reader plus a
+writer can use both allow lists, but a deny on deletion in either role still
+blocks deletion. Listings and calls use the same combined policy.
+
+Scopes are space-delimited. Custom claims accept a string (exact mapping first,
+otherwise space-delimited values) or a string array (exact element mappings).
+Custom introspection claims such as `groups` are preserved. An installed RBAC
+layer rejects missing verified claims, malformed custom claims, and unknown
+roles. Valid claims with no mapped values, including an absent role claim,
+follow `default_deny`; set it to `true` for gateways. Its legacy default of
+`false` permits those unmapped principals without RBAC restrictions.
+
 ### Upgrading to 0.6
 
 Version 0.6 uses tower-mcp 0.23. Library applications that exchange

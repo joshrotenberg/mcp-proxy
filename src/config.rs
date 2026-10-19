@@ -783,12 +783,13 @@ pub struct BearerTokenConfig {
 /// RBAC role definition.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RoleConfig {
-    /// Role name, referenced by `RoleMappingConfig`.
+    /// Unique, nonempty role name, referenced by `RoleMappingConfig`.
     pub name: String,
-    /// Tools this role can access (namespaced, e.g. "files/read_file")
+    /// Tools this role grants (namespaced, e.g. "files/read_file").
+    /// Empty grants all tools. Grants from all mapped roles are combined.
     #[serde(default)]
     pub allow_tools: Vec<String>,
-    /// Tools this role cannot access
+    /// Tools denied by this role. A deny overrides grants from every mapped role.
     #[serde(default)]
     pub deny_tools: Vec<String>,
 }
@@ -796,9 +797,13 @@ pub struct RoleConfig {
 /// Maps JWT claim values to RBAC role names.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RoleMappingConfig {
-    /// JWT claim to read for role resolution (e.g. "scope", "role", "groups")
+    /// Verified token claim to read (e.g. "scope", "role", "groups").
+    /// Scopes are space-delimited. Custom claims accept a string or string array;
+    /// strings use an exact mapping if present, otherwise whitespace splitting.
+    /// Array elements match exactly. Other JSON types are rejected.
     pub claim: String,
-    /// Map claim values to role names
+    /// Nonempty mapping from claim values to defined role names. All matching
+    /// roles contribute grants; any role's explicit deny overrides every grant.
     pub mapping: HashMap<String, String>,
     /// Default-deny policy for authenticated principals whose claim value is
     /// not present in `mapping`.
@@ -809,8 +814,9 @@ pub struct RoleMappingConfig {
     ///
     /// Recommended `true` for gateway deployments: an authenticated principal
     /// carrying an unrecognized scope should not get unrestricted access. This
-    /// only governs requests that already carry token claims; requests with no
-    /// claims at all (no JWT/RBAC configured) always pass through.
+    /// only governs valid but unmapped claims. An installed RBAC layer always
+    /// rejects missing verified claims and malformed role claims. Roles and
+    /// mappings must be configured together and reference defined, unique roles.
     #[serde(default)]
     pub default_deny: bool,
 }
@@ -1296,6 +1302,45 @@ pub(crate) fn validate_oauth_identity(value: &str, field: &str) -> Result<url::U
     Ok(parsed)
 }
 
+/// Validate RBAC even in builds without the OAuth runtime feature.
+pub(crate) fn validate_rbac(
+    roles: &[RoleConfig],
+    mapping: Option<&RoleMappingConfig>,
+) -> Result<()> {
+    if roles.is_empty() && mapping.is_none() {
+        return Ok(());
+    }
+    let mapping =
+        mapping.ok_or_else(|| anyhow::anyhow!("auth.roles requires auth.role_mapping"))?;
+    if roles.is_empty() {
+        anyhow::bail!("auth.role_mapping requires nonempty auth.roles");
+    }
+    let mut names = std::collections::HashSet::new();
+    for role in roles {
+        if role.name.trim().is_empty() || role.name.trim() != role.name {
+            anyhow::bail!("auth.roles names must be nonempty and have no surrounding whitespace");
+        }
+        if !names.insert(role.name.as_str()) {
+            anyhow::bail!("auth.roles contains duplicate role definitions");
+        }
+    }
+    if mapping.claim.trim().is_empty() || mapping.claim.trim() != mapping.claim {
+        anyhow::bail!("auth.role_mapping.claim must be nonempty without surrounding whitespace");
+    }
+    if mapping.mapping.is_empty() {
+        anyhow::bail!("auth.role_mapping.mapping must be nonempty");
+    }
+    for (value, role) in &mapping.mapping {
+        if value.trim().is_empty() {
+            anyhow::bail!("auth.role_mapping.mapping contains an empty claim value");
+        }
+        if !names.contains(role.as_str()) {
+            anyhow::bail!("auth.role_mapping.mapping references an undefined role");
+        }
+    }
+    Ok(())
+}
+
 impl ProxyConfig {
     // Parser errors can include entire source lines or rejected string values.
     // Keep positions, but never retain the original error in the anyhow chain.
@@ -1500,15 +1545,24 @@ impl ProxyConfig {
     fn validate(&self) -> Result<()> {
         if let Some(
             AuthConfig::Jwt {
-                issuer, audience, ..
+                issuer,
+                audience,
+                roles,
+                role_mapping,
+                ..
             }
             | AuthConfig::OAuth {
-                issuer, audience, ..
+                issuer,
+                audience,
+                roles,
+                role_mapping,
+                ..
             },
         ) = &self.auth
         {
             validate_oauth_identity(issuer, "auth.issuer")?;
             validate_oauth_identity(audience, "auth.audience")?;
+            validate_rbac(roles, role_mapping.as_ref())?;
         }
 
         crate::management::validate(self)?;
@@ -2053,6 +2107,51 @@ impl ProxyConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rbac_configuration_rejects_incomplete_and_ambiguous_policies() {
+        let base = r#"
+[proxy]
+name = "rbac-validation"
+[proxy.listen]
+[security]
+admin_token = "fixture-admin"
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://127.0.0.1:9999/"
+[auth]
+type = "AUTH_TYPE"
+issuer = "https://issuer.example.test"
+audience = "https://resource.example.test/mcp"
+jwks_uri = "https://issuer.example.test/keys"
+"#;
+        let roles = "[[auth.roles]]\nname = 'reader'\n";
+        let mapping = "[auth.role_mapping]\nclaim = 'scope'\nmapping = { read = 'reader' }\n";
+        for auth_type in ["jwt", "oauth"] {
+            let base = base.replace("AUTH_TYPE", auth_type);
+            ProxyConfig::parse(&base).unwrap();
+            assert!(ProxyConfig::parse(&format!("{base}{roles}{mapping}")).is_ok());
+            for policy in [
+                roles.to_string(),
+                mapping.to_string(),
+                format!("{roles}{roles}{mapping}"),
+                format!("{}{mapping}", roles.replace("'reader'", "''")),
+                format!("{}{mapping}", roles.replace("'reader'", "' reader'")),
+                format!("{roles}{}", mapping.replace("'scope'", "''")),
+                format!("{roles}{}", mapping.replace("read = 'reader'", "")),
+                format!(
+                    "{roles}{}",
+                    mapping.replace("read = 'reader'", "read = 'sentinel-undefined'")
+                ),
+                format!("{roles}{}", mapping.replace("read =", "'' =")),
+            ] {
+                let error = ProxyConfig::parse(&format!("{base}{policy}")).unwrap_err();
+                assert!(error.to_string().contains("auth.role"), "{error}");
+                assert!(!format!("{error:#} {error:?}").contains("sentinel-undefined"));
+            }
+        }
+    }
+
     #[test]
     fn oauth_identities_are_public_urls_with_loopback_development_support() {
         for value in [

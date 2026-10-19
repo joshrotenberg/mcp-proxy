@@ -237,6 +237,9 @@ struct IntrospectionResponse {
     /// Client ID.
     #[serde(default)]
     client_id: Option<String>,
+    /// Provider-specific claims, including role/group mappings.
+    #[serde(flatten)]
+    extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 impl IntrospectionValidator {
@@ -369,7 +372,7 @@ impl TokenValidator for IntrospectionValidator {
             exp: introspection.exp,
             scope: introspection.scope,
             client_id: introspection.client_id,
-            extra: std::collections::HashMap::new(),
+            extra: introspection.extra,
         })
     }
 }

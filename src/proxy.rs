@@ -656,7 +656,7 @@ fn oauth_scope_layer(
 fn invocation_policy(
     config: &ProxyConfig,
     #[allow(unused_mut)] mut service: BoxCloneService<RouterRequest, RouterResponse, Infallible>,
-) -> BoxCloneService<RouterRequest, RouterResponse, Infallible> {
+) -> Result<BoxCloneService<RouterRequest, RouterResponse, Infallible>> {
     // Bearer token scoping (per-token allow/deny lists)
     #[cfg(feature = "oauth")]
     if matches!(
@@ -670,7 +670,7 @@ fn invocation_policy(
         service = BoxCloneService::new(crate::bearer_scope::BearerScopingService::new(service));
     }
 
-    // RBAC (JWT auth only)
+    // RBAC for verified JWT or introspection claims
     #[cfg(feature = "oauth")]
     {
         let rbac_config = match &config.auth {
@@ -685,13 +685,13 @@ fn invocation_policy(
                     role_mapping: Some(mapping),
                     ..
                 },
-            ) if !roles.is_empty() => {
+            ) => {
                 tracing::info!(
                     roles = roles.len(),
                     claim = %mapping.claim,
                     "Enabling RBAC"
                 );
-                Some(RbacConfig::new(roles, mapping))
+                Some(RbacConfig::new(roles, mapping)?)
             }
             _ => None,
         };
@@ -740,11 +740,11 @@ fn invocation_policy(
         }
     }
 
-    BoxCloneService::new(crate::management::Guard::new(
+    Ok(BoxCloneService::new(crate::management::Guard::new(
         service,
         &config.proxy.separator,
         false,
-    ))
+    )))
 }
 
 /// Build the MCP-level middleware stack around the proxy.
@@ -1017,7 +1017,7 @@ fn build_middleware_stack(
         tracing::info!(composite_tools = count, "Applying composite tool fan-out");
         // Each delegated target must pass the same caller policy independently.
         // The target service excludes composites, so delegation cannot recurse.
-        let targets = invocation_policy(config, service.clone());
+        let targets = invocation_policy(config, service.clone())?;
         service = BoxCloneService::new(crate::composite::CompositeService::with_targets(
             service,
             config.composite_tools.clone(),
@@ -1025,7 +1025,7 @@ fn build_middleware_stack(
         ));
     }
 
-    service = invocation_policy(config, service);
+    service = invocation_policy(config, service)?;
 
     // Resolve the search wrapper before the ordinary target's policy stack.
     if config.proxy.tool_exposure == crate::config::ToolExposure::Search {
