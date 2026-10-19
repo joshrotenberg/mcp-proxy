@@ -166,7 +166,13 @@ All config is in `config.rs`. The top-level type is `ProxyConfig`:
 
 Config maps directly to runtime: each optional config section (timeout, rate_limit, circuit_breaker, etc.) gates whether that middleware layer is applied.
 
-Environment variable substitution: `${VAR_NAME}` in string values is resolved via `config.resolve_env_vars()`.
+Environment variable substitution: supported whole-value `${VAR_NAME}` references
+are resolved via fallible `config.resolve_env_vars()?` before runtime use. The
+resolver stages changes, rejects missing/empty/invalid references, validates
+resolved tokens/headers, and restores the original config on failure. Parsing
+permits templates; CLI startup/check, Proxy::from_config, management validation/
+update, and reload require successful resolution. Stored configuration retains
+references. `config_env.rs` owns redacted structured resolution errors.
 
 ### Testing
 

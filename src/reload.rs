@@ -94,7 +94,7 @@ async fn watch_loop(
 
     // Track known backends and their config fingerprints for change detection
     let mut backend_fingerprints: HashMap<String, String> = {
-        if let Ok(config) = ProxyConfig::load(&config_path) {
+        if let Ok(config) = load_runtime_config(&config_path) {
             config
                 .backends
                 .iter()
@@ -129,14 +129,13 @@ async fn watch_loop(
 
         tracing::info!("Config file changed, reloading backends");
 
-        let mut new_config = match ProxyConfig::load(&config_path) {
+        let new_config = match load_runtime_config(&config_path) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to parse updated config, skipping reload");
                 continue;
             }
         };
-        new_config.resolve_env_vars();
 
         let new_fingerprints: HashMap<String, String> = new_config
             .backends
@@ -213,6 +212,13 @@ async fn watch_loop(
                 .await;
         }
     }
+}
+
+// Resolve and validate the entire revision before any backend mutation.
+fn load_runtime_config(path: &std::path::Path) -> anyhow::Result<ProxyConfig> {
+    let mut config = ProxyConfig::load(path)?;
+    config.resolve_env_vars()?;
+    Ok(config)
 }
 
 /// Generate a fingerprint for a backend config to detect changes.

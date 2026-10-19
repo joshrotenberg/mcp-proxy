@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
 
     // Load and resolve config
     let mut config = mcp_proxy::ProxyConfig::load(&cli.config)?;
-    config.resolve_env_vars();
+    config.resolve_env_vars()?;
 
     let addr = format!("{}:{}", config.proxy.listen.host, config.proxy.listen.port);
 

@@ -66,22 +66,10 @@ async fn main() -> Result<()> {
         config
     };
 
+    config.resolve_env_vars()?;
     if cli.check {
-        // Check for unset env vars before resolving them
-        let env_warnings = config.check_env_vars();
-        config.resolve_env_vars();
-        let result = print_config_summary(&config);
-        if !env_warnings.is_empty() {
-            println!();
-            println!("  Warnings:");
-            for warning in &env_warnings {
-                println!("    - {}", warning);
-            }
-        }
-        return result;
+        return print_config_summary(&config);
     }
-
-    config.resolve_env_vars();
 
     init_logging(&config);
 

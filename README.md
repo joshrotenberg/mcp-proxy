@@ -194,6 +194,23 @@ url = "https://mcp.example.com"
 headers = { "X-API-Key" = "${API_KEY}" }
 ```
 
+Environment references must occupy the whole value, such as `"${API_KEY}"`,
+using a variable name made of letters, digits, and underscores (not starting with
+a digit). Embedded forms such as `"Bearer ${API_KEY}"` are rejected. Resolution
+applies to backend `env`, `headers`, and `bearer_token`, inbound bearer/scoped
+tokens, `security.admin_token`, and OAuth `client_secret`. Missing, empty,
+non-Unicode, malformed, and recursively unresolved references fail startup and
+`--check`; diagnostics identify the configuration field without printing the
+reference or secret. Literal empty backend environment/header values remain valid.
+
+Library callers must handle the result of `config.resolve_env_vars()?`; it now
+returns an error and revalidates resolved values, including duplicate tokens and
+invalid headers. `Proxy::from_config` (including `ProxyBuilder::build`) resolves
+and validates before contacting any backend. Parsing/loading still permits
+unresolved templates. Management validation/update and hot reload use the same
+strict checks, retaining the original template on disk and the active backends
+when a reload revision is invalid.
+
 An explicit `Authorization` header overrides `bearer_token` regardless of casing.
 Rust callers upgrading from 0.4 to 0.5 who construct `BackendConfig` literals
 need to add `headers: Default::default()`; TOML and YAML configs can omit the map.

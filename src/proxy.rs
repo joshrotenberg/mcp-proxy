@@ -45,8 +45,8 @@ impl Proxy {
     /// Connects to all backends, builds the middleware stack, and prepares
     /// the axum router. Call [`serve()`](Self::serve) to run standalone or
     /// [`into_router()`](Self::into_router) to embed in an existing app.
-    pub async fn from_config(config: ProxyConfig) -> Result<Self> {
-        crate::management::validate(&config)?;
+    pub async fn from_config(mut config: ProxyConfig) -> Result<Self> {
+        config.resolve_env_vars()?;
         let (mcp_proxy, cb_handles) = build_mcp_proxy(&config).await?;
         let proxy_for_admin = mcp_proxy.clone();
         // Only the discovery index build mutates this clone.

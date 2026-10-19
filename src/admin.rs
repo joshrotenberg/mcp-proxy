@@ -436,8 +436,15 @@ async fn handle_get_config(
     config_toml.as_str().to_string()
 }
 
+fn resolve_config(
+    mut config: crate::config::ProxyConfig,
+) -> anyhow::Result<crate::config::ProxyConfig> {
+    config.resolve_env_vars()?;
+    Ok(config)
+}
+
 async fn handle_validate_config(body: String) -> (StatusCode, Json<BackendOpResponse>) {
-    match crate::config::ProxyConfig::parse(&body) {
+    match crate::config::ProxyConfig::parse(&body).and_then(resolve_config) {
         Ok(config) => (
             StatusCode::OK,
             Json(BackendOpResponse {
@@ -648,7 +655,7 @@ async fn handle_update_config(
         crate::config::ProxyConfig::parse(&body)
     };
 
-    let config = match config {
+    let config = match config.and_then(resolve_config) {
         Ok(c) => c,
         Err(e) => {
             return (

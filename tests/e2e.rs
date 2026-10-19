@@ -1087,7 +1087,7 @@ mod config_tests {
         bearer_token = "${TEST_MCP_TOKEN}"
         "#;
         let mut config = ProxyConfig::parse(toml).unwrap();
-        config.resolve_env_vars();
+        config.resolve_env_vars().unwrap();
         assert_eq!(
             config.backends[0].bearer_token.as_deref(),
             Some("secret123")

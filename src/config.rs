@@ -218,10 +218,14 @@
 //!
 //! # Environment Variables
 //!
-//! Any config value can reference environment variables with `${VAR_NAME}` syntax.
-//! The `--check` flag warns about unset variables. Supported in: `bearer_token`,
-//! `env` values, auth `tokens`, `scoped_tokens[].token`, `client_secret`,
-//! `admin_token`.
+//! Supported fields accept whole-value `${VAR_NAME}` references: `bearer_token`,
+//! `headers`, `env` values, auth `tokens`, `scoped_tokens[].token`, `client_secret`,
+//! `admin_token`. Runtime resolution is strict and fallible: call
+//! [`ProxyConfig::resolve_env_vars`] and handle its result. Missing/empty values,
+//! malformed or embedded references, and invalid resolved credentials/headers
+//! fail before runtime use; parsing/loading alone still permits templates.
+
+pub use crate::config_env::{EnvResolutionError, EnvResolutionErrorKind};
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -1864,79 +1868,32 @@ impl ProxyConfig {
         Ok(())
     }
 
-    /// Resolve environment variable references in config values.
-    /// Replaces `${VAR_NAME}` with the value of the environment variable.
-    pub fn resolve_env_vars(&mut self) {
-        for backend in &mut self.backends {
-            for value in backend.env.values_mut() {
-                if let Some(var_name) = value.strip_prefix("${").and_then(|s| s.strip_suffix('}'))
-                    && let Ok(env_val) = std::env::var(var_name)
-                {
-                    *value = env_val;
-                }
-            }
-            if let Some(ref mut token) = backend.bearer_token
-                && let Some(var_name) = token.strip_prefix("${").and_then(|s| s.strip_suffix('}'))
-                && let Ok(env_val) = std::env::var(var_name)
-            {
-                *token = env_val;
-            }
-            for value in backend.headers.values_mut() {
-                if let Some(var_name) = value.strip_prefix("${").and_then(|s| s.strip_suffix('}'))
-                    && let Ok(env_val) = std::env::var(var_name)
-                {
-                    *value = env_val;
-                }
-            }
+    /// Resolve required whole-value `${VAR_NAME}` references and validate runtime values.
+    ///
+    /// Applies to backend environment values, headers and bearer credentials,
+    /// inbound bearer/scoped tokens, `security.admin_token`, and OAuth client
+    /// secrets. Missing, empty, non-Unicode, malformed, embedded, and recursively
+    /// unresolved references fail with a redacted [`EnvResolutionError`].
+    /// Resolved credentials, token uniqueness, and header values are validated
+    /// before use. On any failure, the original configuration is retained.
+    ///
+    /// Parsing/loading permits templates. CLI startup and `--check`, library
+    /// construction, management validation/update, and reload require resolution.
+    /// Library callers using this method directly must now handle its result.
+    pub fn resolve_env_vars(&mut self) -> Result<()> {
+        let originals = crate::config_env::resolve(self)?;
+        if let Err(error) = self.validate() {
+            crate::config_env::restore(self, originals);
+            return Err(error);
         }
-
-        // Resolve env vars in auth config
-        if let Some(AuthConfig::Bearer {
-            tokens,
-            scoped_tokens,
-        }) = &mut self.auth
-        {
-            for token in tokens.iter_mut() {
-                if let Some(var_name) = token.strip_prefix("${").and_then(|s| s.strip_suffix('}'))
-                    && let Ok(env_val) = std::env::var(var_name)
-                {
-                    *token = env_val;
-                }
-            }
-            for st in scoped_tokens.iter_mut() {
-                if let Some(var_name) = st
-                    .token
-                    .strip_prefix("${")
-                    .and_then(|s| s.strip_suffix('}'))
-                    && let Ok(env_val) = std::env::var(var_name)
-                {
-                    st.token = env_val;
-                }
-            }
-        }
-
-        // Resolve env vars in admin_token
-        if let Some(ref mut token) = self.security.admin_token
-            && let Some(var_name) = token.strip_prefix("${").and_then(|s| s.strip_suffix('}'))
-            && let Ok(env_val) = std::env::var(var_name)
-        {
-            *token = env_val;
-        }
-
-        // Resolve env vars in OAuth config
-        if let Some(AuthConfig::OAuth { client_secret, .. }) = &mut self.auth
-            && let Some(secret) = client_secret
-            && let Some(var_name) = secret.strip_prefix("${").and_then(|s| s.strip_suffix('}'))
-            && let Ok(env_val) = std::env::var(var_name)
-        {
-            *secret = env_val;
-        }
+        Ok(())
     }
 
     /// Check for `${VAR}` references where the environment variable is not set.
     ///
     /// Returns a list of human-readable warning strings. This method does not
-    /// modify the config or fail -- it only reports potential issues.
+    /// modify the config or fail -- it only reports potential issues. It is not
+    /// runtime validation; use [`Self::resolve_env_vars`] and handle its result.
     ///
     /// # Example
     ///
@@ -1999,6 +1956,15 @@ impl ProxyConfig {
                     ));
                 }
             }
+        }
+
+        if let Some(token) = &self.security.admin_token
+            && let Some(var) = is_unset_env_ref(token)
+        {
+            warnings.push(format!(
+                "security.admin_token references unset env var '{}'",
+                var
+            ));
         }
 
         match &self.auth {
@@ -2507,7 +2473,7 @@ mod tests {
         "#;
 
         let mut config = ProxyConfig::parse(toml).unwrap();
-        config.resolve_env_vars();
+        config.resolve_env_vars().unwrap();
 
         assert_eq!(
             config.backends[0].env.get("API_TOKEN").unwrap(),
@@ -2598,7 +2564,7 @@ mod tests {
         "X-Literal" = "plain"
         "#;
         let mut config = ProxyConfig::parse(toml).unwrap();
-        config.resolve_env_vars();
+        config.resolve_env_vars().unwrap();
         unsafe { std::env::remove_var("MCP_GW_TEST_HEADER") };
         let headers = &config.backends[0].headers;
         assert_eq!(
@@ -2655,7 +2621,7 @@ mod tests {
         "#;
 
         let mut config = ProxyConfig::parse(toml).unwrap();
-        config.resolve_env_vars();
+        config.resolve_env_vars().unwrap();
 
         assert_eq!(
             config.backends[0].bearer_token.as_deref(),
