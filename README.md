@@ -268,6 +268,38 @@ cancellation or expiry; remote execution or side effects may already have occurr
 This adds a finite deadline to coalesced operations, including leaders; raise it
 explicitly for legitimately long operations. Changes to these limits require restart.
 
+### MCP request logging
+
+```toml
+[observability]
+log_level = "warn" # General application/dependency verbosity
+json_logs = true
+audit = true
+
+[observability.access_log]
+enabled = true
+```
+
+The CLI emits enabled audit (`mcp::audit`) and access (`mcp::access`) records at
+INFO independently of `log_level`. Each flag defaults to false and controls its
+own target. This applies to text, JSON and OpenTelemetry subscriber paths;
+records go to stderr. The CLI uses these configuration settings rather than
+`RUST_LOG`. Embedded library users configure their own tracing subscriber and
+must enable the desired targets at INFO.
+
+Access records contain method, target, backend when identifiable, duration and
+JSON-RPC status (`ok`/`error`). Audit records contain method, request ID, target,
+duration, JSON-RPC status, error code and annotation hints when available. Audit
+status is `success`, `denied` for invalid-params errors, or `error` for other
+JSON-RPC errors. These statuses describe the envelope; tool-level errors inside
+a successful envelope are not classified separately yet.
+
+Arguments, credential headers, response bodies and free-form backend error
+messages are omitted. Request IDs and tool/resource/prompt identifiers remain
+logged fields. Records are emitted when the MCP service completes. HTTP
+authentication rejections occur before this middleware and are not included;
+these records do not yet attribute callers.
+
 ### Supported hot reload changes
 
 The CLI watches its file when `proxy.hot_reload = true`. Library users call

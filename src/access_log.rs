@@ -3,6 +3,9 @@
 //! Logs each MCP request with structured fields including method, tool/resource
 //! name, backend name, duration, and status. Uses the `mcp::access` tracing
 //! target so operators can filter access logs independently.
+//! The CLI enables this INFO target independently of application verbosity when
+//! `observability.access_log.enabled` is true. Arguments, credential headers and
+//! response bodies are omitted; request target identifiers remain logged.
 //!
 //! The backend name is derived from the namespace prefix of the tool name. For
 //! example, with separator `/`, a tool named `math/add` belongs to backend

@@ -170,6 +170,15 @@
 //!
 //! Minimal build: `cargo install mcp-proxy --no-default-features`
 //!
+//! # Request logging
+//!
+//! Configured audit/access middleware emits INFO completion events on
+//! `mcp::audit` and `mcp::access`. The CLI enables each target independently of
+//! application verbosity. Embedded users must enable them in their subscriber.
+//! Records omit arguments, credential headers and response/error bodies while
+//! retaining target identifiers. HTTP authentication rejections happen outside
+//! this middleware; caller attribution is not provided.
+//!
 //! # Performance
 //!
 //! Optional request coalescing bounds active keys, followers and whole-group
@@ -186,6 +195,7 @@ pub mod access_log;
 pub mod admin;
 pub mod admin_tools;
 pub mod alias;
+mod audit;
 #[cfg(feature = "oauth")]
 pub mod bearer_scope;
 pub mod builder;

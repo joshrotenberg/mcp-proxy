@@ -954,10 +954,14 @@ pub struct SecurityConfig {
 /// Logging, metrics, and distributed tracing configuration.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct ObservabilityConfig {
-    /// Enable audit logging of all MCP requests (default: false).
+    /// Enable INFO audit records for completed MCP requests (default: false).
+    /// Includes identifiers, duration, JSON-RPC status/error code and annotation
+    /// hints; excludes arguments, response bodies and free-form error messages.
+    /// The CLI enables this target independently of `log_level`.
     #[serde(default)]
     pub audit: bool,
-    /// Log level filter (default: "info").
+    /// Application log level filter (default: "info"). Enabled CLI audit/access
+    /// records use INFO independently of this setting.
     #[serde(default = "default_log_level")]
     pub log_level: String,
     /// Emit structured JSON logs (default: false).
@@ -977,7 +981,8 @@ pub struct ObservabilityConfig {
 /// Structured access log configuration.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct AccessLogConfig {
-    /// Enable structured access logging (default: false).
+    /// Enable INFO access records for completed MCP requests (default: false).
+    /// The CLI enables this target independently of the application log level.
     #[serde(default)]
     pub enabled: bool,
 }

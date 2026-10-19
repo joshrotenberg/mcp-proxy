@@ -27,6 +27,7 @@ src/
 
   # Global middleware (wraps the entire proxy, applied in proxy.rs)
   access_log.rs    # Structured access logging (AccessLogService, target: mcp::access)
+  audit.rs         # Audit completion metadata/error codes, excluding private bodies
   alias.rs         # Tool renaming (AliasService)
   filter.rs        # Capability filtering -- allow/deny lists, glob patterns (CapabilityFilterService)
   inject.rs        # Argument injection into tool calls (InjectArgsService)
@@ -57,6 +58,7 @@ tests/
   health_probes.rs # Configured proxy process probes and auth boundaries
   reload_runtime.rs # Watched-file CLI add/replace tests and watcher ownership
   coalesce_runtime.rs # Configured HTTP/MCP capacity, expiry and recovery
+  cli_logging.rs   # Real CLI JSON/text/OTel request records and privacy regressions
   outbound_headers.rs # Actual HTTP requests and WebSocket handshake headers
   discovery_schemas.rs # Tool schema retrieval and reindex behavior
   chaos.rs         # Fault injection and resilience recovery regressions
@@ -183,6 +185,12 @@ update, and reload require successful resolution. Stored configuration retains
 references. `config_env.rs` owns redacted structured resolution errors.
 
 ### Testing
+
+CLI audit/access targets are independently enabled at INFO by their flags in
+every subscriber path. Audit records must omit raw backend error messages as
+well as arguments/response bodies; failures may echo private values. Keep these
+invariants covered through actual initialized CLI MCP sessions, including policy
+denials, disabled flags and builds without default features.
 
 Coalescing uses atomic registration and generation-aware synchronous cleanup;
 the sole result sender belongs to the leader. Cancellation must wake followers

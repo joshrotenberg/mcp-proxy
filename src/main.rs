@@ -214,11 +214,27 @@ fn print_config_summary(config: &ProxyConfig) -> Result<()> {
     Ok(())
 }
 
+fn logging_filter(config: &ProxyConfig) -> String {
+    // Request records are explicitly enabled at INFO, independently of general
+    // application verbosity. Keep disabled request targets off in every format.
+    format!(
+        "tower_mcp={level},mcp_proxy={level},mcp::audit={audit},mcp::access={access}",
+        level = config.observability.log_level,
+        audit = if config.observability.audit {
+            "info"
+        } else {
+            "off"
+        },
+        access = if config.observability.access_log.enabled {
+            "info"
+        } else {
+            "off"
+        },
+    )
+}
+
 fn init_logging(config: &ProxyConfig) {
-    let env_filter = format!(
-        "tower_mcp={level},mcp_proxy={level}",
-        level = config.observability.log_level
-    );
+    let env_filter = logging_filter(config);
 
     #[cfg(feature = "otel")]
     if config.observability.tracing.enabled {

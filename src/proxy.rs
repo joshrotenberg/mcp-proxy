@@ -1090,8 +1090,7 @@ fn build_middleware_stack(
     // Audit logging
     if config.observability.audit {
         tracing::info!("Audit logging enabled (target: mcp::audit)");
-        let audited = tower::Layer::layer(&tower_mcp::AuditLayer::new(), service);
-        service = BoxCloneService::new(tower_mcp::CatchError::new(audited));
+        service = BoxCloneService::new(crate::audit::AuditService::new(service));
     }
 
     // Global rate limit (outermost -- protects entire proxy)
