@@ -111,10 +111,13 @@ pub(crate) async fn register_admin_tools_with_policy(
     #[cfg(not(feature = "skills"))]
     let skills: Vec<tower_mcp::Prompt> = vec![];
 
+    let state_connections = state.reload_policy.connections().clone();
     let router = build_admin_router(state, discovery_tools, search_mode, skills);
     let transport = ChannelTransport::new(router);
 
-    proxy.add_backend("proxy", transport).await
+    proxy
+        .add_backend("proxy", state_connections.wrap(transport))
+        .await
 }
 
 fn build_admin_router(
@@ -230,7 +233,11 @@ fn build_admin_router(
                     return Ok(CallToolResult::error(error.to_string()));
                 }
                 let transport = tower_mcp::client::HttpClientTransport::new(&input.url);
-                match s.proxy.add_backend(&input.name, transport).await {
+                match s
+                    .proxy
+                    .add_backend(&input.name, s.reload_policy.connections().wrap(transport))
+                    .await
+                {
                     Ok(()) => Ok(CallToolResult::text(format!(
                         "Backend '{}' added successfully",
                         input.name

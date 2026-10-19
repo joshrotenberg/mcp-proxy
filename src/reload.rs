@@ -123,6 +123,8 @@ pub(crate) fn spawn_config_watcher_with_policy(
             return;
         };
         let worker_policy = policy.clone();
+        let connections = policy.connections().child();
+        let worker_connections = connections.clone();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -137,8 +139,11 @@ pub(crate) fn spawn_config_watcher_with_policy(
                     #[cfg(feature = "discovery")]
                     discovery_index,
                     worker_policy,
+                    worker_connections,
                 ) => {},
             }
+            connections.stop();
+            connections.closed().await;
         });
         drop(rt);
         policy.stopped();
@@ -159,6 +164,7 @@ async fn watch_loop(
         String,
     )>,
     policy: ReloadPolicy,
+    connections: crate::lifecycle::Connections,
 ) {
     // Only the fact of a write matters: each reload reads the newest revision.
     // One pending notification coalesces bursts without an unbounded event queue.
@@ -256,7 +262,7 @@ async fn watch_loop(
 
                     // Remove old, add new
                     proxy.remove_backend(&backend.name).await;
-                    if let Err(e) = add_backend(&proxy, backend).await {
+                    if let Err(e) = add_backend(&proxy, backend, &connections).await {
                         failed = true;
                         tracing::error!(
                             backend = %backend.name,
@@ -276,7 +282,7 @@ async fn watch_loop(
                 "Adding new backend via hot reload"
             );
 
-            if let Err(e) = add_backend(&proxy, backend).await {
+            if let Err(e) = add_backend(&proxy, backend, &connections).await {
                 failed = true;
                 tracing::error!(
                     backend = %backend.name,
@@ -318,7 +324,11 @@ fn config_fingerprint(backend: &BackendConfig) -> String {
 }
 
 /// Connect and add an admitted policy-free backend using startup transport builders.
-async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Result<()> {
+async fn add_backend(
+    proxy: &McpProxy,
+    backend: &BackendConfig,
+    connections: &crate::lifecycle::Connections,
+) -> anyhow::Result<()> {
     // Admission rejects every policy-bearing backend before any mutation.
     match backend.transport {
         TransportType::Stdio => {
@@ -334,11 +344,12 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
                 cmd.env(key, value);
             }
 
-            let transport =
-                tower_mcp::client::StdioClientTransport::spawn_command(&mut cmd).await?;
+            let transport = tower_mcp::client::StdioClientTransport::spawn_command(&mut cmd)
+                .await?
+                .close_timeout(Duration::from_millis(100));
 
             proxy
-                .add_backend(&backend.name, transport)
+                .add_backend(&backend.name, connections.wrap(transport))
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
@@ -350,7 +361,7 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
             let transport = crate::proxy::build_http_transport(url, backend);
 
             proxy
-                .add_backend(&backend.name, transport)
+                .add_backend(&backend.name, connections.wrap(transport))
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
@@ -368,7 +379,7 @@ async fn add_backend(proxy: &McpProxy, backend: &BackendConfig) -> anyhow::Resul
             .await?;
 
             proxy
-                .add_backend(&backend.name, transport)
+                .add_backend(&backend.name, connections.wrap(transport))
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
         }

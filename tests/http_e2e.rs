@@ -104,7 +104,7 @@ async fn spawn_proxy_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     ]
     .into();
 
-    let admin_state = admin::spawn_health_checker(
+    let (admin_state, health_checker) = admin::spawn_health_checker(
         proxy_for_admin,
         "test-proxy".into(),
         "1.0.0".into(),
@@ -154,6 +154,7 @@ async fn spawn_proxy_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let addr = listener.local_addr().unwrap();
 
     let handle = tokio::spawn(async move {
+        let _health_checker = health_checker;
         axum::serve(listener, router).await.ok();
     });
 
@@ -209,7 +210,7 @@ async fn spawn_proxy_server_with_bearer(token: &str) -> (SocketAddr, tokio::task
     ]
     .into();
 
-    let admin_state = admin::spawn_health_checker(
+    let (admin_state, health_checker) = admin::spawn_health_checker(
         proxy_for_admin,
         "test-proxy".into(),
         "1.0.0".into(),
@@ -261,6 +262,7 @@ async fn spawn_proxy_server_with_bearer(token: &str) -> (SocketAddr, tokio::task
     let addr = listener.local_addr().unwrap();
 
     let handle = tokio::spawn(async move {
+        let _health_checker = health_checker;
         axum::serve(listener, router).await.ok();
     });
 

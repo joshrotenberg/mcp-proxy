@@ -33,7 +33,7 @@ pub struct Proxy {
     session_handle: SessionHandle,
     inner: McpProxy,
     config: ProxyConfig,
-    config_watcher: std::sync::Mutex<Option<crate::reload::ConfigWatcher>>,
+    runtime: std::sync::Arc<crate::lifecycle::Runtime>,
     reload_policy: crate::reload_policy::ReloadPolicy,
     #[cfg(feature = "discovery")]
     discovery_index: Option<crate::discovery::SharedDiscoveryIndex>,
@@ -50,7 +50,21 @@ impl Proxy {
     pub async fn from_config(mut config: ProxyConfig) -> Result<Self> {
         config.resolve_env_vars()?;
         let reload_policy = crate::reload_policy::ReloadPolicy::new(&config);
-        let (mcp_proxy, cb_handles) = build_mcp_proxy(&config).await?;
+        let runtime = crate::lifecycle::Runtime::new(reload_policy.connections().clone());
+        let result = Self::construct(config, reload_policy, runtime.clone()).await;
+        if result.is_err() && runtime.shutdown().await.is_err() {
+            tracing::error!("Proxy cleanup after construction failure failed");
+        }
+        result
+    }
+
+    async fn construct(
+        config: ProxyConfig,
+        reload_policy: crate::reload_policy::ReloadPolicy,
+        runtime: std::sync::Arc<crate::lifecycle::Runtime>,
+    ) -> Result<Self> {
+        let (mcp_proxy, cb_handles) = build_mcp_proxy(&config, &runtime.connections).await?;
+        *runtime.proxy.lock().expect("backend owner") = Some(mcp_proxy.clone());
         let proxy_for_admin = mcp_proxy.clone();
         // Only the discovery index build mutates this clone.
         #[cfg_attr(not(feature = "discovery"), allow(unused_mut))]
@@ -100,13 +114,15 @@ impl Proxy {
             .collect();
 
         // Admin API
-        let admin_state = crate::admin::spawn_health_checker(
+        *runtime.sessions.lock().expect("session owner") = Some(session_handle.clone());
+        let (admin_state, health_checker) = crate::admin::spawn_health_checker(
             proxy_for_admin,
             config.proxy.name.clone(),
             config.proxy.version.clone(),
             config.backends.len(),
             backend_meta,
         );
+        *runtime.health.lock().expect("health checker owner") = Some(health_checker);
         let router = router.nest(
             "/admin",
             crate::admin::admin_router_with_policy(
@@ -177,7 +193,7 @@ impl Proxy {
             session_handle,
             inner: proxy_for_caller,
             config,
-            config_watcher: std::sync::Mutex::new(None),
+            runtime,
             reload_policy,
             #[cfg(feature = "discovery")]
             discovery_index,
@@ -196,6 +212,9 @@ impl Proxy {
     /// Use this trusted administration handle to add backends dynamically via
     /// [`McpProxy::add_backend()`]. It bypasses the configured HTTP/MCP credential
     /// boundary; expose [`Self::into_router`] to untrusted clients instead.
+    /// Retain a proxy/router/shutdown owner while using a raw clone. Transports
+    /// added directly through this upstream API bypass managed transport
+    /// registration and remain the trusted caller's cleanup responsibility.
     pub fn mcp_proxy(&self) -> &McpProxy {
         &self.inner
     }
@@ -207,8 +226,8 @@ impl Proxy {
     /// [`Self::into_router`] transfers ownership to the router and its clones.
     /// Repeated calls keep the first watcher instead of creating duplicate writers.
     pub fn enable_hot_reload(&self, config_path: std::path::PathBuf) {
-        let mut watcher = self.config_watcher.lock().expect("config watcher owner");
-        if watcher.is_some() {
+        let mut watcher = self.runtime.watcher.lock().expect("config watcher owner");
+        if watcher.is_some() || self.runtime.connections.stopped() {
             return;
         }
         tracing::info!("Hot reload enabled, watching config file for changes");
@@ -245,43 +264,74 @@ impl Proxy {
     /// # }
     /// ```
     pub fn into_router(self) -> (Router, SessionHandle) {
+        let runtime = self.runtime;
+        let gate = runtime.clone();
         let router = self
             .router
-            .layer(axum::Extension(std::sync::Arc::new(self.config_watcher)));
+            .layer(axum::middleware::from_fn(
+                move |request: axum::extract::Request, next: axum::middleware::Next| {
+                    let runtime = gate.clone();
+                    async move {
+                        if runtime.connections.stopped() {
+                            axum::response::IntoResponse::into_response(
+                                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            )
+                        } else {
+                            next.run(request).await
+                        }
+                    }
+                },
+            ))
+            .layer(axum::Extension(runtime));
         (router, self.session_handle)
     }
 
-    /// Serve the proxy on the configured listen address.
+    /// Retain an explicit shutdown handle before embedding or serving.
     ///
-    /// Blocks until a shutdown signal (SIGTERM/SIGINT) is received,
-    /// then drains connections for the configured timeout period.
+    /// Router clones share ownership. Stop/drain the host's requests before
+    /// awaiting the handle; last-owner drop also cancels without waiting.
+    pub fn shutdown_handle(&self) -> crate::ShutdownHandle {
+        crate::ShutdownHandle(self.runtime.clone())
+    }
+
+    /// Close sessions/backends and cancel/join owned workers without serving.
+    ///
+    /// For embedding, retain [`Self::shutdown_handle`] before [`Self::into_router`].
+    /// Managed transports are interrupted after HTTP draining; remote side
+    /// effects cannot be undone. Raw transports added through [`Self::mcp_proxy`]
+    /// remain the trusted caller's responsibility.
+    pub async fn shutdown(self) -> Result<()> {
+        self.runtime.shutdown().await
+    }
+
+    /// Serve until SIGTERM/SIGINT, draining at most the configured timeout.
+    ///
+    /// At the deadline all owned connection and HTTP/2 stream tasks are cancelled,
+    /// including pending tools and open SSE. Backend transports then stop and
+    /// health/reload workers are joined. A short completed request drains normally.
     pub async fn serve(self) -> Result<()> {
         let addr = format!(
             "{}:{}",
             self.config.proxy.listen.host, self.config.proxy.listen.port
         );
-
+        let timeout = Duration::from_secs(self.config.proxy.shutdown_timeout_seconds);
+        let runtime = self.runtime.clone();
+        let listener = match tokio::net::TcpListener::bind(&addr).await {
+            Ok(listener) => listener,
+            Err(error) => {
+                if runtime.shutdown().await.is_err() {
+                    tracing::error!("Proxy cleanup after bind failure failed");
+                }
+                return Err(error).with_context(|| format!("binding to {}", addr));
+            }
+        };
         tracing::info!(listen = %addr, "Proxy ready");
-
-        let listener = tokio::net::TcpListener::bind(&addr)
-            .await
-            .with_context(|| format!("binding to {}", addr))?;
-
-        let shutdown_timeout = Duration::from_secs(self.config.proxy.shutdown_timeout_seconds);
-        let result = axum::serve(listener, self.router)
-            .with_graceful_shutdown(shutdown_signal(shutdown_timeout))
-            .await
-            .context("server error");
-        // Drivers stay alive during draining, then the owned watcher is joined.
-        if let Some(watcher) = self
-            .config_watcher
-            .into_inner()
-            .expect("config watcher owner")
-        {
-            watcher.shutdown().await?;
-        }
+        let (router, _) = self.into_router();
+        let result =
+            crate::server::serve(listener, router, shutdown_signal(timeout), timeout).await;
+        let cleanup = runtime.shutdown().await;
         result?;
-
+        cleanup?;
         tracing::info!("Proxy shut down");
         Ok(())
     }
@@ -460,7 +510,10 @@ pub(crate) fn build_http_transport(url: &str, backend: &BackendConfig) -> HttpCl
 
 /// Build the McpProxy with all backends and per-backend middleware.
 /// Returns the proxy and a map of backend name -> circuit breaker handle.
-async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<String, CbHandle>)> {
+async fn build_mcp_proxy(
+    config: &ProxyConfig,
+    connections: &crate::lifecycle::Connections,
+) -> Result<(McpProxy, HashMap<String, CbHandle>)> {
     let mut builder = McpProxy::builder(&config.proxy.name, &config.proxy.version)
         .separator(&config.proxy.separator);
     let mut cb_handles: HashMap<String, CbHandle> = HashMap::new();
@@ -498,15 +551,20 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
 
                 let transport = StdioClientTransport::spawn_command(&mut cmd)
                     .await
-                    .with_context(|| format!("spawning backend '{}'", backend.name))?;
+                    .with_context(|| format!("spawning backend '{}'", backend.name))?
+                    .close_timeout(Duration::from_millis(100));
 
-                builder = builder.backend(&backend.name, transport).await;
+                builder = builder
+                    .backend(&backend.name, connections.wrap(transport))
+                    .await;
             }
             TransportType::Http => {
                 let url = backend.url.as_deref().unwrap();
                 let transport = build_http_transport(url, backend);
 
-                builder = builder.backend(&backend.name, transport).await;
+                builder = builder
+                    .backend(&backend.name, connections.wrap(transport))
+                    .await;
             }
             #[cfg(feature = "websocket")]
             TransportType::Websocket => {
@@ -520,7 +578,9 @@ async fn build_mcp_proxy(config: &ProxyConfig) -> Result<(McpProxy, HashMap<Stri
                     )
                     .await?;
 
-                builder = builder.backend(&backend.name, transport).await;
+                builder = builder
+                    .backend(&backend.name, connections.wrap(transport))
+                    .await;
             }
             #[cfg(not(feature = "websocket"))]
             TransportType::Websocket => {

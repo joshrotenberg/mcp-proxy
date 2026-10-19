@@ -157,6 +157,45 @@
 //! endpoints report restart-required or pending outcomes explicitly; authenticated
 //! `/admin/config/status` reports the last reload attempt without credentials.
 //!
+//! # Shutdown and Embedding
+//!
+//! Standalone serving enforces `proxy.shutdown_timeout_seconds` (default 30)
+//! as an HTTP drain limit after SIGTERM/SIGINT. Short requests finish; at the
+//! deadline owned connection and HTTP/2 stream tasks are cancelled, including
+//! pending tools and SSE. Managed transports then close concurrently (250 ms
+//! bound each); stdio children get 100 ms after EOF, then are killed and reaped
+//! with another 100 ms wait. Only the direct child is managed, not descendants
+//! launched in independent process groups. Health/reload workers are joined.
+//!
+//! Proxy/router/retained [`ShutdownHandle`] clones share resource ownership.
+//! Last-owner drop cancels without waiting. For explicit joined cleanup, retain
+//! a handle before embedding, stop accepting and drain the host's requests, then:
+//!
+//! ```rust,no_run
+//! # async fn example(proxy: mcp_proxy::Proxy) -> anyhow::Result<()> {
+//! let shutdown = proxy.shutdown_handle();
+//! let (_router, _sessions) = proxy.into_router();
+//! // Host serves the router and later stops/drains its requests.
+//! shutdown.shutdown().await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! [`Proxy::shutdown`] also cleans up without embedding. Shutdown closes MCP
+//! sessions and managed backends, joins workers, and returns HTTP 503 for new
+//! requests through retained proxy routers. It is idempotent across handles;
+//! the host retains ownership of its own listener and other routes. Cleanup
+//! requires an active Tokio runtime. Aborted operations are not replayed and
+//! remote side effects cannot be undone. Failed/cancelled construction also
+//! closes created transports. Retain an owner while using raw `mcp_proxy()`
+//! clones; transports added directly through that trusted upstream API bypass
+//! managed registration and remain the caller's responsibility.
+//!
+//! Low-level [`admin::spawn_health_checker`] now returns `(AdminState,
+//! HealthChecker)`: retain the handle or checking stops, and await its shutdown
+//! method for joined cleanup. Health-check and initialization timeouts are
+//! independent of shutdown cancellation.
+//!
 //! # Feature Flags
 //!
 //! | Feature | Default | Description |
@@ -243,8 +282,11 @@ pub mod ws_transport;
 #[cfg(test)]
 mod test_util;
 
+mod lifecycle;
 mod proxy;
+mod server;
 
 pub use builder::ProxyBuilder;
 pub use config::ProxyConfig;
+pub use lifecycle::ShutdownHandle;
 pub use proxy::Proxy;

@@ -13,6 +13,8 @@ src/
   main.rs          # CLI entry point (clap), logging setup
   lib.rs           # Library root, re-exports Proxy and ProxyConfig
   proxy.rs         # Core: builds proxy, middleware stack, and axum router
+  lifecycle.rs     # Shared runtime owner, scoped transport cancellation and cleanup leases
+  server.rs        # Owned HTTP1/HTTP2 connection/stream tasks and bounded drain
   config.rs        # TOML/YAML config parsing, validation, all config types
   builder.rs       # Fluent programmatic configuration builder
   discovery.rs     # Search index and complete tool schema store
@@ -60,6 +62,7 @@ tests/
   reload_runtime.rs # Watched-file CLI add/replace tests and watcher ownership
   coalesce_runtime.rs # Configured HTTP/MCP capacity, expiry and recovery
   outcome_runtime.rs # Configured cache recovery, breaker state, hedge winners and metrics
+  shutdown_runtime.rs # SIGTERM/SSE, short drain, construction/drop and stdio reap regressions
   cli_logging.rs   # Real CLI JSON/text/OTel request records and privacy regressions
   outbound_headers.rs # Actual HTTP requests and WebSocket handshake headers
   discovery_schemas.rs # Tool schema retrieval and reindex behavior
@@ -208,6 +211,18 @@ the sole result sender belongs to the leader. Cancellation must wake followers
 without replaying tool calls. Preserve positive entry/waiter bounds, the group
 deadline (including readiness), and each caller's request ID. Concurrency tests
 use controlled backend completions rather than assuming scheduling order.
+
+Shutdown owns both connection and Hyper HTTP/2 stream tasks; dropping an axum
+serve future alone does not stop detached connections. Enforce the configured
+drain limit before forcing pending requests/SSE closed. Managed transports share
+cancellation without retaining the runtime owner; startup/reload/REST/MCP additions
+must use the same registry. Completion leases survive aborted close/construction
+and cover bounded close/reap. Reload uses a child registry and drains it before
+dropping its runtime. Health state must not retain its worker owner (management
+backends capture state and would create cycles). Last-owner drop cancels;
+ShutdownHandle joins resources explicitly. Keep HTTP1/HTTP2 cancellation, hostile
+EOF child PID/reap, repeated ownership, construction failure/cancellation and
+reload-initialize cancellation tests. Tests must clean up their own fixtures.
 
 Every feature gets tests. No exceptions.
 

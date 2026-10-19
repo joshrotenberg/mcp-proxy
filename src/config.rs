@@ -316,7 +316,9 @@ pub struct ProxySettings {
     pub listen: ListenConfig,
     /// Optional instructions text sent to MCP clients.
     pub instructions: Option<String>,
-    /// Graceful shutdown timeout in seconds (default: 30)
+    /// HTTP drain limit after SIGTERM/SIGINT in seconds (default: 30).
+    /// At expiry remaining connection/HTTP2 tasks are cancelled, then managed
+    /// transports close and owned workers are joined. See [`crate::ShutdownHandle`].
     #[serde(default = "default_shutdown_timeout")]
     pub shutdown_timeout_seconds: u64,
     /// Enable hot reload: watch config file for new backends

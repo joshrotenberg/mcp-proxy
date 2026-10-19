@@ -164,21 +164,58 @@ pub struct BackendMeta {
     pub transport: String,
 }
 
-/// Spawn a background task that periodically health-checks backends.
-/// Returns the AdminState that admin endpoints read from.
+/// Owns a health worker and its runtime. Drop cancels without blocking.
+/// Retain this handle while health checking is needed; use [`Self::shutdown`]
+/// to cancel and join the worker explicitly.
+#[must_use = "dropping this handle cancels health checking"]
+pub struct HealthChecker {
+    stop: tokio::sync::watch::Sender<bool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl HealthChecker {
+    pub(crate) fn cancel(&self) {
+        self.stop.send_replace(true);
+    }
+    /// Cancel and join the health worker without blocking the Tokio runtime.
+    pub async fn shutdown(mut self) -> anyhow::Result<()> {
+        self.cancel();
+        if let Some(thread) = self.thread.take() {
+            tokio::task::spawn_blocking(move || thread.join())
+                .await
+                .map_err(|_| anyhow::anyhow!("joining health checker task failed"))?
+                .map_err(|_| anyhow::anyhow!("health checker thread panicked"))?;
+        }
+        Ok(())
+    }
+}
+impl Drop for HealthChecker {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+/// Spawn an owned worker that periodically health-checks backends.
+///
+/// Returns cached state and a lifetime handle. Low-level callers must retain
+/// the handle (a change from the previous detached-worker API). [`crate::Proxy`]
+/// owns it for configured applications. Cancellation interrupts even a pending
+/// health check; ordinary health checks keep their existing timeout policy.
 pub fn spawn_health_checker(
     proxy: McpProxy,
     proxy_name: String,
     proxy_version: String,
     backend_count: usize,
     backend_meta: HashMap<String, BackendMeta>,
-) -> AdminState {
+) -> (AdminState, HealthChecker) {
     let health: Arc<RwLock<Vec<BackendStatus>>> = Arc::new(RwLock::new(Vec::new()));
     let health_writer = Arc::clone(&health);
     let health_history: Arc<RwLock<Vec<HealthEvent>>> = Arc::new(RwLock::new(Vec::new()));
     let history_writer = Arc::clone(&health_history);
 
-    std::thread::spawn(move || {
+    let (stop, mut stopped) = tokio::sync::watch::channel(false);
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
+    let thread = std::thread::spawn(move || {
+        let _guard = tracing::dispatcher::set_default(&dispatch);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -189,7 +226,10 @@ pub fn spawn_health_checker(
         let mut prev_healthy: HashMap<String, bool> = HashMap::new();
 
         rt.block_on(async move {
-            loop {
+            tokio::select! {
+                biased;
+                _ = stopped.wait_for(|stopped| *stopped) => {},
+                _ = async move { loop {
                 let results = proxy.health_check().await;
                 let now = Utc::now();
                 let mut transitions = Vec::new();
@@ -245,17 +285,26 @@ pub fn spawn_health_checker(
                 }
 
                 tokio::time::sleep(Duration::from_secs(10)).await;
+            }} => {},
             }
         });
+        drop(rt);
+        tracing::info!("Health checker stopped");
     });
 
-    AdminState {
-        health,
-        health_history,
-        proxy_name,
-        proxy_version,
-        backend_count,
-    }
+    (
+        AdminState {
+            health,
+            health_history,
+            proxy_name,
+            proxy_version,
+            backend_count,
+        },
+        HealthChecker {
+            stop,
+            thread: Some(thread),
+        },
+    )
 }
 
 async fn handle_backends(
@@ -400,7 +449,10 @@ async fn handle_add_backend(
         transport = transport.bearer_token(token);
     }
 
-    match proxy.add_backend(&req.name, transport).await {
+    match proxy
+        .add_backend(&req.name, policy.connections().wrap(transport))
+        .await
+    {
         Ok(()) => (
             StatusCode::CREATED,
             Json(BackendOpResponse {
@@ -584,7 +636,7 @@ async fn handle_update_backend(
         transport = transport.bearer_token(token);
     }
 
-    match proxy.add_backend(&name, transport).await {
+    match proxy.add_backend(&name, policy.connections().wrap(transport)).await {
         Ok(()) => (
             StatusCode::OK,
             Json(BackendOpResponse {
@@ -1530,5 +1582,65 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+    #[tokio::test]
+    async fn cancelling_or_dropping_health_owner_joins_even_a_pending_ping() {
+        use tower_mcp::{McpRouter, RouterRequest};
+        for explicit in [false, true, false, true] {
+            let started = Arc::new(tokio::sync::Notify::new());
+            let ready = started.clone();
+            let release = Arc::new(tokio::sync::Notify::new());
+            let released = release.clone();
+            let service = tower::service_fn(move |request: RouterRequest| {
+                let ready = ready.clone();
+                let released = released.clone();
+                async move {
+                    if matches!(&request.inner, tower_mcp::McpRequest::Ping) {
+                        ready.notify_one();
+                        released.notified().await;
+                    }
+                    McpRouter::new().oneshot(request).await
+                }
+            });
+            let proxy = McpProxy::builder("health-owner", "1")
+                .backend(
+                    "fixture",
+                    tower_mcp::client::ChannelTransport::layer(
+                        McpRouter::new(),
+                        tower::layer::layer_fn(move |_: McpRouter| service.clone()),
+                    ),
+                )
+                .await
+                .build_strict()
+                .await
+                .unwrap();
+            let (state, mut checker) =
+                spawn_health_checker(proxy, "health-owner".into(), "1".into(), 1, HashMap::new());
+            tokio::time::timeout(Duration::from_secs(1), started.notified())
+                .await
+                .unwrap();
+            if explicit {
+                tokio::time::timeout(Duration::from_secs(1), checker.shutdown())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            } else {
+                let thread = checker.thread.take().unwrap();
+                drop(checker);
+                tokio::time::timeout(
+                    Duration::from_secs(1),
+                    tokio::task::spawn_blocking(move || thread.join()),
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            }
+            release.notify_one();
+            assert!(
+                state.health().await.is_empty(),
+                "cancelled ping wrote a completed health result"
+            );
+        }
     }
 }

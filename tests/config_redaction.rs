@@ -136,7 +136,7 @@ async fn authenticated_http_admin_gets_only_redacted_diagnostics() {
     let service = tower::util::BoxCloneService::new(proxy.clone());
     let (_, sessions) =
         tower_mcp::transport::http::HttpTransport::from_service(service).into_router_with_handle();
-    let state = mcp_proxy::admin::spawn_health_checker(
+    let (state, _health_checker) = mcp_proxy::admin::spawn_health_checker(
         proxy.clone(),
         "redaction-test".into(),
         "1".into(),

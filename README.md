@@ -344,6 +344,45 @@ The public `admin::admin_router` breaker-handle map now uses
 those handles must use that classifier rather than the default service-error-only
 classifier. Configuration fields are unchanged.
 
+### Shutdown and embedding
+
+`[proxy].shutdown_timeout_seconds` (default 30) bounds HTTP draining after SIGTERM
+or SIGINT. The standalone server stops accepting, lets short requests finish,
+then cancels remaining connection and HTTP/2 stream tasks at the deadline,
+including pending tools and open SSE. Managed backend transports close next;
+health and reload workers are cancelled and joined. Transport cleanup runs
+concurrently with a 250 ms close bound per transport. Configured stdio children
+get 100 ms to exit after EOF, then are killed and reaped (with another 100 ms
+wait). This owns the direct child process; descendants launched independently
+are not managed as a process group.
+
+`Proxy`, its returned router clones, and retained `ShutdownHandle` clones share
+runtime ownership. Last-owner drop cancels workers and schedules bounded transport
+cleanup without blocking. For joined cleanup, keep a handle before embedding,
+stop accepting and drain your host's requests, then call it:
+
+```rust,ignore
+let shutdown = proxy.shutdown_handle();
+let (router, sessions) = proxy.into_router();
+// Serve router in the host app, then stop/drain its requests.
+shutdown.shutdown().await?;
+```
+
+The handle closes MCP sessions and managed backends and rejects new requests
+through retained proxy routers with HTTP 503. It is idempotent across clones;
+other host routes/listeners remain owned by the host. `Proxy::shutdown().await`
+provides the same cleanup without embedding. An active Tokio runtime is required
+for asynchronous cleanup. Aborted operations are not replayed; remote side effects
+may already have occurred. Construction errors and cancellation also close
+already-created transports. Keep a proxy/router/shutdown owner while using a raw
+`mcp_proxy()` clone. Transports added directly through that trusted upstream handle
+bypass managed registration and remain the caller's responsibility.
+
+Low-level API migration: `admin::spawn_health_checker` now returns
+`(AdminState, HealthChecker)`; retain the second value or health checking stops.
+Use `HealthChecker::shutdown().await` to cancel even a pending ping and join its
+worker. Health-check/initialization time budgets remain separate work (#283).
+
 ### Supported hot reload changes
 
 The CLI watches its file when `proxy.hot_reload = true`. Library users call

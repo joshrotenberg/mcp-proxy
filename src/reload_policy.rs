@@ -31,6 +31,7 @@ pub(crate) struct ReloadStatus {
 struct Inner {
     // Never serialize or Debug-format these credential-bearing snapshots.
     startup: Value,
+    connections: crate::lifecycle::Connections,
     plain_policy: Value,
     status: Mutex<ReloadStatus>,
 }
@@ -65,6 +66,7 @@ impl ReloadPolicy {
         startup.sort_all_objects();
         Self(Arc::new(Inner {
             startup,
+            connections: crate::lifecycle::Connections::new(),
             plain_policy: policy_projection(
                 serde_json::to_value(plain).expect("serializable backend"),
             ),
@@ -75,6 +77,9 @@ impl ReloadPolicy {
                 restart_required: false,
             }),
         }))
+    }
+    pub fn connections(&self) -> &crate::lifecycle::Connections {
+        &self.0.connections
     }
     pub fn status(&self) -> ReloadStatus {
         self.0.status.lock().expect("reload status").clone()
