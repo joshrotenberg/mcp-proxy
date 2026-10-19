@@ -1,4 +1,6 @@
 //! Search wrappers and composites must delegate with the caller's authority.
+#![cfg(feature = "discovery")]
+
 use std::sync::{Arc, Mutex};
 
 use reqwest::Client;
@@ -191,8 +193,7 @@ tools = ["allowed_composite"]
     }
 }
 
-// This also runs without default features: search invocation has no dependency
-// on the optional discovery index or OAuth machinery.
+// Also runs with discovery alone, without the OAuth/default feature bundle.
 #[tokio::test]
 async fn wrapper_matches_direct_filters_transforms_limits_and_cache() {
     for separator in ["/", "::"] {

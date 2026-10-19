@@ -56,6 +56,8 @@ struct SessionResult {
 /// This low-level registration does not authenticate callers. Use
 /// [`crate::Proxy::from_config`] for the configured HTTP/MCP authority boundary;
 /// callers exposing a raw [`McpProxy`] must install their own authorization.
+/// The search-mode `proxy/call_tool` definition is resolved by that configured
+/// service before backend dispatch; calling it on a raw proxy returns an error.
 ///
 /// Tools are added under the `proxy/` namespace:
 /// - `proxy/list_backends` -- list backends with health status
