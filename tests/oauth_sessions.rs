@@ -1,152 +1,22 @@
 //! Real configured OAuth sessions with an HTTPS public identity on a local bind.
 #![cfg(feature = "oauth")]
 
-use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::{
-    Form, Json, Router,
-    extract::State,
-    http::{StatusCode, Uri},
-    response::IntoResponse,
-    routing::{get, post},
-};
+use axum::{Router, http::StatusCode};
 use serde_json::{Value, json};
 use tower_mcp::{CallToolResult, HttpTransport, McpRouter, ToolBuilder};
 
-const RESOURCE: &str = "https://public.example.test/mcp";
-
-struct Server {
-    url: String,
-    task: tokio::task::JoinHandle<()>,
-}
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
+#[path = "support/http.rs"]
+mod http;
+#[path = "support/oauth.rs"]
+mod oauth;
+use http::Server;
+use oauth::{Authority, RESOURCE};
 async fn serve(router: Router) -> Server {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    launch(listener, router)
-}
-fn launch(listener: tokio::net::TcpListener, router: Router) -> Server {
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    Server { url, task }
-}
-
-#[derive(Clone)]
-struct AuthorityState {
-    issuer: String,
-    base: String,
-    mode: Arc<AtomicUsize>,
-    discovery: Arc<AtomicUsize>,
-    introspection: Arc<AtomicUsize>,
-    tokens: Arc<Mutex<HashMap<String, Value>>>,
-}
-struct Authority {
-    server: Server,
-    state: AuthorityState,
-}
-impl Authority {
-    async fn new() -> Self {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let state = AuthorityState {
-            issuer: format!("{base}/tenant"),
-            base,
-            mode: Arc::new(AtomicUsize::new(0)),
-            discovery: Arc::new(AtomicUsize::new(0)),
-            introspection: Arc::new(AtomicUsize::new(0)),
-            tokens: Arc::new(Mutex::new(HashMap::new())),
-        };
-        let router = Router::new()
-            .route(
-                "/.well-known/oauth-authorization-server/tenant",
-                get(metadata),
-            )
-            .route("/tenant/.well-known/openid-configuration", get(metadata))
-            .route(
-                "/keys",
-                get(|| async {
-                    let key: Value =
-                        serde_json::from_str(include_str!("fixtures/rsa_public.jwk.json")).unwrap();
-                    Json(json!({"keys":[key]}))
-                }),
-            )
-            .route("/inspect", post(inspect))
-            .with_state(state.clone());
-        Self {
-            server: launch(listener, router),
-            state,
-        }
-    }
-    fn claims(&self, subject: &str) -> Value {
-        let exp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 300;
-        json!({"active":true,"iss":self.state.issuer,"sub":subject,"aud":RESOURCE,"scope":"tools read","exp":exp})
-    }
-    fn opaque(&self, name: &str, claims: Value) -> String {
-        self.state
-            .tokens
-            .lock()
-            .unwrap()
-            .insert(name.into(), claims);
-        name.into()
-    }
-    fn jwt(&self, claims: &Value) -> String {
-        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
-        header.kid = Some("test-key-1".into());
-        jsonwebtoken::encode(
-            &header,
-            claims,
-            &jsonwebtoken::EncodingKey::from_rsa_pem(include_bytes!("fixtures/rsa_private.pem"))
-                .unwrap(),
-        )
-        .unwrap()
-    }
-}
-async fn metadata(State(state): State<AuthorityState>, uri: Uri) -> axum::response::Response {
-    state.discovery.fetch_add(1, Ordering::SeqCst);
-    let mode = state.mode.load(Ordering::SeqCst);
-    if mode == 3 {
-        tokio::time::sleep(Duration::from_secs(30)).await;
-    }
-    if mode == 1 && uri.path().contains("oauth-authorization-server") {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    Json(json!({
-        "issuer":if mode == 2 { "https://different.example.test" } else { &state.issuer },
-        "jwks_uri":format!("{}/keys",state.base),
-        "introspection_endpoint":format!("{}/inspect",state.base)
-    }))
-    .into_response()
-}
-async fn inspect(
-    State(state): State<AuthorityState>,
-    Form(form): Form<HashMap<String, String>>,
-) -> Json<Value> {
-    state.introspection.fetch_add(1, Ordering::SeqCst);
-    let token = form.get("token").unwrap();
-    if token == "slow" {
-        tokio::time::sleep(Duration::from_secs(30)).await;
-    }
-    if token == "oversized" {
-        return Json(json!({"active":true,"padding":"x".repeat(70_000)}));
-    }
-    let response = state
-        .tokens
-        .lock()
-        .unwrap()
-        .get(token)
-        .cloned()
-        .unwrap_or(json!({"active":false}));
-    Json(response)
+    Server::start(router).await
 }
 
 struct Session {

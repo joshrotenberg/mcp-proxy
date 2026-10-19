@@ -1,13 +1,26 @@
 //! Real watched-file reloads must leave backend transport drivers runnable.
+#[path = "support/http.rs"]
+mod http;
+use http::WireTrace;
 use std::time::Duration;
 
 use mcp_proxy::{Proxy, ProxyConfig};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tower_mcp::{CallToolResult, HttpTransport, McpRouter, ToolBuilder};
 
-struct Server(tokio::task::JoinHandle<()>);
+struct Server(tokio::task::JoinHandle<()>, Option<WireTrace>);
+impl Server {
+    fn new(task: tokio::task::JoinHandle<()>) -> Self {
+        Self(task, None)
+    }
+}
 impl Drop for Server {
     fn drop(&mut self) {
+        if std::thread::panicking()
+            && let Some(trace) = &self.1
+        {
+            eprintln!("reload backend wire: {:?}", trace.snapshot());
+        }
         self.0.abort();
     }
 }
@@ -55,8 +68,16 @@ async fn backend(kind: &str, revision: &str) -> (String, Option<Server>) {
             })
             .build(),
     );
+    let trace = WireTrace::new();
     let app = if kind == "http" {
-        HttpTransport::new(router).into_router()
+        trace.layer(
+            HttpTransport::new(router)
+                .session_config(tower_mcp::transport::http::SessionConfig {
+                    strict_initialization: true,
+                    ..Default::default()
+                })
+                .into_router(),
+        )
     } else {
         tower_mcp::transport::websocket::WebSocketTransport::new(router).into_router()
     };
@@ -65,9 +86,12 @@ async fn backend(kind: &str, revision: &str) -> (String, Option<Server>) {
     let scheme = if kind == "http" { "http" } else { "ws" };
     (
         format!("url = '{scheme}://{addr}/'"),
-        Some(Server(tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        }))),
+        Some(Server(
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            }),
+            Some(trace),
+        )),
     )
 }
 fn config(kind: &str, original: &str, dynamic: Option<&str>, port: u16) -> String {
@@ -120,7 +144,7 @@ async fn watched_reload(kind: &str) {
         .unwrap();
     let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
     let (tx, logs) = tokio::sync::mpsc::unbounded_channel();
-    let log_task = Server(tokio::spawn(async move {
+    let log_task = Server::new(tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
             if tx.send(line).is_err() {
                 break;
@@ -248,7 +272,7 @@ async fn embedded_router_owns_one_watcher_until_its_last_clone_drops() {
     drop(router);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
-    let mut server = Server(tokio::spawn(async move {
+    let mut server = Server::new(tokio::spawn(async move {
         axum::serve(listener, retained).await.unwrap();
     }));
     wait_log(&mut logs, "Hot reload watching config file").await;
@@ -332,7 +356,7 @@ impl PolicyFixture {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let router = proxy.into_router().0;
-        let server = Server(tokio::spawn(async move {
+        let server = Server::new(tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         }));
         let fixture = Self {
@@ -549,7 +573,7 @@ async fn faulty_backend(
     let fields = format!("url = 'http://{}/'", listener.local_addr().unwrap());
     (
         fields,
-        Server(tokio::spawn(async move {
+        Server::new(tokio::spawn(async move {
             axum::serve(listener, HttpTransport::from_service(service).into_router())
                 .await
                 .unwrap();

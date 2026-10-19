@@ -1,9 +1,15 @@
 //! Process probes remain available while MCP and admin routes require auth.
+#[path = "support/http.rs"]
+mod http;
 use tower::ServiceExt;
 
 #[tokio::test]
 async fn probes_do_not_bypass_admin_or_mcp_authentication() {
-    let backend = tower_mcp::McpRouter::new();
+    let backend = tower_mcp::McpRouter::new().tool(
+        tower_mcp::ToolBuilder::new("ping")
+            .handler(|_: serde_json::Value| async { Ok(tower_mcp::CallToolResult::text("pong")) })
+            .build(),
+    );
     let transport = tower_mcp::transport::http::HttpTransport::new(backend).into_router();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -73,18 +79,13 @@ async fn probes_do_not_bypass_admin_or_mcp_authentication() {
         .await
         .unwrap();
     assert_eq!(response.status(), axum::http::StatusCode::OK);
-    let initialized = router.oneshot(
-        axum::http::Request::builder().method("POST").uri("/")
-            .header("authorization", "Bearer mcp-token")
-            .header("content-type", "application/json")
-            .header("accept", "application/json, text/event-stream")
-            .body(axum::body::Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"probe-client","version":"1"}}}"#)).unwrap()
-    ).await.unwrap();
-    assert_eq!(initialized.status(), axum::http::StatusCode::OK);
-    let body = axum::body::to_bytes(initialized.into_body(), 16384)
-        .await
-        .unwrap();
-    let reply: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(reply["result"]["protocolVersion"], "2025-11-25");
+    let mut frontend = http::Server::start(router).await;
+    let session = http::Session::start(&frontend.url, "mcp-token").await;
+    let listed = session.rpc("tools/list", serde_json::json!({})).await;
+    assert_eq!(http::success(&listed)["tools"][0]["name"], "api/ping");
+    let called = session.call("api/ping", serde_json::json!({})).await;
+    assert_eq!(http::success(&called)["content"][0]["text"], "pong");
+    session.terminate().await;
+    frontend.stop().await;
     server.abort();
 }

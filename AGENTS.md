@@ -58,6 +58,8 @@ tests/
   integration.rs   # Middleware composition tests with in-process backends via ChannelTransport
   e2e.rs           # Full proxy pipeline tests with in-process backends
   http_e2e.rs      # Real HTTP transport and authentication tests
+  configured_sessions.rs # Configured embedding/CLI full-session transport and policy matrix
+  support/        # Reusable bounded session/application/backend/OAuth fixtures
   health_probes.rs # Configured proxy process probes and auth boundaries
   reload_runtime.rs # Watched-file CLI add/replace tests and watcher ownership
   coalesce_runtime.rs # Configured HTTP/MCP capacity, expiry and recovery
@@ -223,6 +225,14 @@ backends capture state and would create cycles). Last-owner drop cancels;
 ShutdownHandle joins resources explicitly. Keep HTTP1/HTTP2 cancellation, hostile
 EOF child PID/reap, repeated ownership, construction failure/cancellation and
 reload-initialize cancellation tests. Tests must clean up their own fixtures.
+
+Configured-application contracts use `tests/support` through `Proxy::from_config`
+or the actual executable. Assert initialize, empty-202 initialized notification,
+list and exact call output, plus zero backend calls after policy denial. Keep
+HTTP status and JSON-RPC error/result assertions together; non-401 alone proves
+nothing. Reuse strict local peers, call journals, bounded readiness and wire
+traces. Do not retry handshakes internally or hide startup failures. See the
+coverage map and feature-matrix commands in CONTRIBUTING.md.
 
 Every feature gets tests. No exceptions.
 

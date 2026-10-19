@@ -4,6 +4,9 @@
 //! exercise the full HTTP stack: they start a real TCP server on a random
 //! port and make HTTP requests with `reqwest`.
 
+#[path = "support/http.rs"]
+mod http;
+
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -478,31 +481,19 @@ async fn test_mcp_malformed_auth_header_rejected() {
     handle.abort();
 }
 
-/// Sanity check: with the correct bearer token, the MCP endpoint does NOT
-/// return 401 -- auth passes and the request reaches the handler. (The exact
-/// non-401 status depends on the MCP handler; we only assert auth let it
-/// through.)
+/// A valid credential must establish a usable session and return exact tool output.
 #[tokio::test]
 async fn test_mcp_correct_token_passes_auth() {
     let (addr, handle) = spawn_proxy_server_with_bearer(TEST_TOKEN).await;
-    let url = format!("http://{}/", addr);
-
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .bearer_auth(TEST_TOKEN)
-        .body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
-        .send()
-        .await
-        .expect("POST /");
-    assert_ne!(
-        resp.status(),
-        401,
-        "correct bearer token must pass auth (got {})",
-        resp.status()
-    );
-
+    let session = http::Session::start(&format!("http://{addr}"), TEST_TOKEN).await;
+    let listed = session.rpc("tools/list", serde_json::json!({})).await;
+    let tools = http::success(&listed)["tools"].as_array().unwrap();
+    assert!(tools.iter().any(|tool| tool["name"] == "math/add"));
+    let called = session
+        .call("math/add", serde_json::json!({"a":2,"b":3}))
+        .await;
+    assert_eq!(http::success(&called)["content"][0]["text"], "5");
+    session.terminate().await;
     handle.abort();
 }
 
