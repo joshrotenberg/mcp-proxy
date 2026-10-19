@@ -53,17 +53,10 @@
 //!
 //! # Authentication
 //!
-//! Admin endpoints are protected by a token-based auth scheme. The proxy
-//! resolves the admin token using a fallback chain:
-//!
-//! 1. `security.admin_token` -- explicit bearer token for admin access.
-//! 2. Proxy's bearer auth tokens -- reused when `auth.type = "bearer"`.
-//! 3. If neither is set, the admin API is open (suitable for local/dev use).
-//!
-//! When `auth.type` is `jwt` or `oauth` there is no static-token fallback
-//! (step 2 only applies to bearer auth), so `security.admin_token` is
-//! **required** -- config validation rejects its absence to avoid leaving the
-//! admin plane unauthenticated.
+//! All admin endpoints require the dedicated `security.admin_token`. Ordinary
+//! and scoped proxy credentials never grant management rights. Without a
+//! management credential all admin requests are denied, including local/dev
+//! deployments. JWT/OAuth configuration continues to require an admin token.
 //!
 //! The token supports `${ENV_VAR}` syntax for environment variable expansion.
 
@@ -810,37 +803,11 @@ pub fn admin_router(
     #[cfg(feature = "openapi")]
     let router = router.route("/openapi.json", get(handle_openapi));
 
-    // Admin API auth: admin_token takes priority, then fall back to proxy bearer tokens
-    let admin_tokens = resolve_admin_tokens(config);
-    if !admin_tokens.is_empty() {
-        tracing::info!(token_count = admin_tokens.len(), "Admin API auth enabled");
-        let validator = tower_mcp::auth::StaticBearerValidator::new(admin_tokens);
-        let layer = tower_mcp::auth::AuthLayer::new(validator);
-        router.layer(layer)
-    } else {
-        router
-    }
-}
-
-/// Resolve admin auth tokens: admin_token if set, otherwise proxy bearer tokens.
-fn resolve_admin_tokens(config: &crate::config::ProxyConfig) -> Vec<String> {
-    // Explicit admin token takes priority
-    if let Some(ref token) = config.security.admin_token {
-        return vec![token.clone()];
-    }
-
-    // Fall back to proxy bearer tokens
-    match &config.auth {
-        Some(crate::config::AuthConfig::Bearer {
-            tokens,
-            scoped_tokens,
-        }) => {
-            let mut all: Vec<String> = tokens.clone();
-            all.extend(scoped_tokens.iter().map(|st| st.token.clone()));
-            all
-        }
-        _ => vec![],
-    }
+    // An empty validator denies every request when management is disabled.
+    let tokens = crate::management::admin_token(config).map(str::to_owned);
+    router.layer(tower_mcp::auth::AuthLayer::new(
+        tower_mcp::auth::StaticBearerValidator::new(tokens),
+    ))
 }
 
 #[cfg(test)]
@@ -901,6 +868,8 @@ mod tests {
             [proxy]
             name = "test"
             [proxy.listen]
+            [security]
+            admin_token = "test-admin-token"
 
             [[backends]]
             name = "echo"
@@ -929,7 +898,13 @@ mod tests {
     async fn get_json(router: &Router, path: &str) -> serde_json::Value {
         let resp = router
             .clone()
-            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .header("authorization", "Bearer test-admin-token")
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -1055,6 +1030,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
+                    .header("authorization", "Bearer test-admin-token")
                     .method("POST")
                     .uri("/cache/clear")
                     .body(Body::empty())
@@ -1088,6 +1064,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
+                    .header("authorization", "Bearer test-admin-token")
                     .uri("/metrics")
                     .body(Body::empty())
                     .unwrap(),
@@ -1140,6 +1117,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
+                    .header("authorization", "Bearer test-admin-token")
                     .uri("/backends/nonexistent/health")
                     .body(Body::empty())
                     .unwrap(),
@@ -1290,6 +1268,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
+                    .header("authorization", "Bearer test-admin-token")
                     .method("DELETE")
                     .uri("/sessions/nonexistent-id")
                     .body(Body::empty())
@@ -1350,6 +1329,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
+                    .header("authorization", "Bearer test-admin-token")
                     .method("POST")
                     .uri("/")
                     .header("Content-Type", "application/json")
@@ -1399,6 +1379,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
+                    .header("authorization", "Bearer test-admin-token")
                     .method("DELETE")
                     .uri(format!("/sessions/{}", session_id))
                     .body(Body::empty())
@@ -1423,6 +1404,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
+                    .header("authorization", "Bearer test-admin-token")
                     .method("DELETE")
                     .uri(format!("/sessions/{}", session_id))
                     .body(Body::empty())

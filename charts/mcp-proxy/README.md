@@ -21,8 +21,9 @@ The `/livez` and `/readyz` endpoints return only `ok` and require no credentials
 Readiness means the proxy finished connecting backends and constructing its
 router; backend failures after startup do not trigger pod restarts or remove
 otherwise usable replicas. Use the authenticated `/admin/health` endpoint to
-monitor detailed backend health. Admin API authentication remains enforced when
-`security.admin_token` or proxy bearer tokens are configured.
+monitor detailed backend health. Management requires a dedicated
+`security.admin_token`; ordinary/scoped proxy tokens never grant admin access,
+and omitting the management credential disables all admin endpoints.
 
 The chart probes, Helm smoke test, and Docker healthcheck use process probes, so
 admin tokens need not be placed in probe headers.

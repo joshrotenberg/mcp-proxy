@@ -15,17 +15,18 @@ docker compose up --build
 
 The proxy is available at `http://localhost:8080/` (MCP HTTP transport).
 
-Admin endpoints:
+Management is disabled in this example. Configure a dedicated
+`security.admin_token` and pass its environment variable into the proxy container
+to enable authenticated HTTP/MCP administration.
+
+Process probes:
 
 ```bash
-# List backends
-curl http://localhost:8080/admin/backends
+# Liveness
+curl http://localhost:8080/livez
 
-# Health check
-curl http://localhost:8080/admin/health
-
-# Prometheus metrics
-curl http://localhost:8080/admin/metrics
+# Readiness
+curl http://localhost:8080/readyz
 ```
 
 ## Customizing

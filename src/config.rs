@@ -204,7 +204,7 @@
 //! ```toml
 //! [security]
 //! max_argument_size = 1048576    # 1MB limit on tool call arguments
-//! admin_token = "${ADMIN_TOKEN}" # Protect admin API (falls back to proxy auth)
+//! admin_token = "${ADMIN_TOKEN}" # Dedicated HTTP/MCP management credential
 //! ```
 //!
 //! # Cache Backend
@@ -660,7 +660,7 @@ pub struct HedgingConfig {
 pub enum AuthConfig {
     /// Static bearer token authentication.
     Bearer {
-        /// Accepted bearer tokens (all tools allowed).
+        /// Accepted ordinary bearer tokens (backend tools allowed; no management authority).
         #[serde(default)]
         tokens: Vec<String>,
         /// Tokens with per-token tool access control.
@@ -888,13 +888,10 @@ pub struct PerformanceConfig {
 pub struct SecurityConfig {
     /// Maximum size of tool call arguments in bytes (default: unlimited)
     pub max_argument_size: Option<usize>,
-    /// Bearer token for admin API access. If set, all admin endpoints require
-    /// `Authorization: Bearer <token>`. If not set, falls back to the proxy's
-    /// bearer auth tokens (bearer auth only). When `auth.type` is `jwt` or
-    /// `oauth` this token is **required** -- those auth types have no static
-    /// fallback for the admin plane, so config validation rejects a missing
-    /// `admin_token`. With no auth configured at all, the admin API is open
-    /// (suitable for local/dev use). Supports `${ENV_VAR}` syntax.
+    /// Dedicated credential for HTTP and MCP management. Never falls back to
+    /// ordinary or scoped bearer tokens; omission disables management access.
+    /// Must be a nonempty ASCII token without whitespace, distinct from data tokens.
+    /// Required for JWT/OAuth configuration. Supports `${ENV_VAR}` syntax.
     pub admin_token: Option<String>,
 }
 
@@ -1466,6 +1463,7 @@ impl ProxyConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        crate::management::validate(self)?;
         if self.backends.is_empty() {
             anyhow::bail!("at least one backend is required");
         }
@@ -1565,11 +1563,7 @@ impl ProxyConfig {
             anyhow::bail!("OAuth introspection requires both 'client_id' and 'client_secret'");
         }
 
-        // Admin API protection: JWT/OAuth auth has no static-token fallback for
-        // the admin plane (resolve_admin_tokens only derives tokens from bearer
-        // auth). Without an explicit admin_token the admin endpoints -- which can
-        // add backends, rewrite the running config, and terminate sessions --
-        // would be left unauthenticated. Require admin_token to be set in that case.
+        // Preserve the explicit management-credential requirement for JWT/OAuth.
         if matches!(
             &self.auth,
             Some(AuthConfig::Jwt { .. }) | Some(AuthConfig::OAuth { .. })
@@ -1577,8 +1571,7 @@ impl ProxyConfig {
         {
             anyhow::bail!(
                 "security.admin_token is required when auth.type is 'jwt' or 'oauth': \
-                 the admin API has no token fallback for these auth types and would be \
-                 left unauthenticated. Set security.admin_token (supports ${{ENV_VAR}})."
+                 set a dedicated management credential (supports ${{ENV_VAR}})."
             );
         }
 
@@ -3080,7 +3073,7 @@ mod tests {
     #[test]
     fn test_validate_jwt_requires_admin_token() {
         // JWT auth without security.admin_token must be rejected: the admin
-        // plane has no token fallback for JWT/OAuth and would be left open.
+        // credential requirement for JWT/OAuth remains explicit.
         let toml = r#"
         [proxy]
         name = "jwt-gw"

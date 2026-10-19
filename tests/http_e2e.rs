@@ -118,6 +118,8 @@ async fn spawn_proxy_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
         name = "test-proxy"
         version = "1.0.0"
         [proxy.listen]
+        [security]
+        admin_token = "http-test-admin"
 
         [[backends]]
         name = "math"
@@ -161,14 +163,11 @@ async fn spawn_proxy_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
 /// Build an McpProxy like [`spawn_proxy_server`], but with bearer auth enforced
 /// on the MCP endpoint and an admin token protecting `/admin/*`.
 ///
-/// The single `token` is used for *both* the MCP bearer auth and the admin
-/// token, mirroring how `apply_auth` (src/proxy.rs) wraps the MCP transport
-/// router with `AuthLayer::new(StaticBearerValidator::new(...))` and how
-/// `admin::admin_router` builds its own auth layer from
-/// `resolve_admin_tokens` (src/admin.rs). The two layers are independent: the
-/// MCP layer is applied before the `/admin` nest, so it does not cover admin
-/// routes, and the admin router carries its own layer derived from
-/// `security.admin_token`.
+/// The MCP credential is `token`; management uses a distinct `{token}-admin`
+/// credential. The two HTTP layers are independent: MCP auth is installed
+/// before nesting `/admin`, whose router requires `security.admin_token`.
+/// Configured application authorization and MCP management are tested in
+/// `management_authority.rs`.
 async fn spawn_proxy_server_with_bearer(token: &str) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let proxy = McpProxy::builder("test-proxy", "1.0.0")
         .separator("/")
@@ -227,7 +226,7 @@ async fn spawn_proxy_server_with_bearer(token: &str) -> (SocketAddr, tokio::task
         [proxy.listen]
 
         [security]
-        admin_token = "{token}"
+        admin_token = "{token}-admin"
 
         [[backends]]
         name = "math"
@@ -278,7 +277,12 @@ async fn test_admin_backends_endpoint() {
     let (addr, handle) = spawn_proxy_server().await;
     let url = format!("http://{}/admin/backends", addr);
 
-    let resp = reqwest::get(&url).await.expect("GET /admin/backends");
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth("http-test-admin")
+        .send()
+        .await
+        .expect("GET /admin/backends");
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
@@ -296,7 +300,12 @@ async fn test_admin_health_endpoint() {
     let (addr, handle) = spawn_proxy_server().await;
     let url = format!("http://{}/admin/health", addr);
 
-    let resp = reqwest::get(&url).await.expect("GET /admin/health");
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth("http-test-admin")
+        .send()
+        .await
+        .expect("GET /admin/health");
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
@@ -318,7 +327,12 @@ async fn test_admin_sessions_endpoint() {
     let (addr, handle) = spawn_proxy_server().await;
     let url = format!("http://{}/admin/sessions", addr);
 
-    let resp = reqwest::get(&url).await.expect("GET /admin/sessions");
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth("http-test-admin")
+        .send()
+        .await
+        .expect("GET /admin/sessions");
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
@@ -335,7 +349,12 @@ async fn test_admin_cache_stats_no_cache() {
     let (addr, handle) = spawn_proxy_server().await;
     let url = format!("http://{}/admin/cache/stats", addr);
 
-    let resp = reqwest::get(&url).await.expect("GET /admin/cache/stats");
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth("http-test-admin")
+        .send()
+        .await
+        .expect("GET /admin/cache/stats");
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
@@ -350,7 +369,12 @@ async fn test_admin_config_endpoint() {
     let (addr, handle) = spawn_proxy_server().await;
     let url = format!("http://{}/admin/config", addr);
 
-    let resp = reqwest::get(&url).await.expect("GET /admin/config");
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth("http-test-admin")
+        .send()
+        .await
+        .expect("GET /admin/config");
     assert_eq!(resp.status(), 200);
 
     let body = resp.text().await.unwrap();
@@ -501,7 +525,7 @@ async fn test_admin_correct_token_allowed() {
 
     let resp = reqwest::Client::new()
         .get(&url)
-        .bearer_auth(TEST_TOKEN)
+        .bearer_auth(format!("{TEST_TOKEN}-admin"))
         .send()
         .await
         .expect("GET /admin/backends");

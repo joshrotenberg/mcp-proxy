@@ -46,6 +46,7 @@ impl Proxy {
     /// the axum router. Call [`serve()`](Self::serve) to run standalone or
     /// [`into_router()`](Self::into_router) to embed in an existing app.
     pub async fn from_config(config: ProxyConfig) -> Result<Self> {
+        crate::management::validate(&config)?;
         let (mcp_proxy, cb_handles) = build_mcp_proxy(&config).await?;
         let proxy_for_admin = mcp_proxy.clone();
         // Only the discovery index build mutates this clone.
@@ -72,10 +73,14 @@ impl Proxy {
 
         let (router, session_handle) =
             tower_mcp::transport::http::HttpTransport::from_service(service)
+                .bridge_extension::<crate::management::Identity>()
+                .session_principal_resolver(crate::management::session_principal)
                 .into_router_with_handle();
 
         // Inbound authentication (axum-level middleware)
+        let transport = router.clone();
         let router = apply_auth(&config, router).await?;
+        let router = crate::management::authenticate(&config, transport, router);
 
         // Collect backend metadata for the health checker
         let backend_meta: std::collections::HashMap<String, BackendMeta> = config
@@ -112,7 +117,11 @@ impl Proxy {
                 cb_handles,
             ),
         );
-        tracing::info!("Admin API enabled at /admin/backends");
+        if crate::management::admin_token(&config).is_some() {
+            tracing::info!("HTTP/MCP management enabled with a dedicated credential");
+        } else {
+            tracing::info!("Management disabled: configure security.admin_token to enable it");
+        }
 
         // These process probes expose no backend/configuration information and
         // are added after authentication layers so orchestrators need no token.
@@ -177,7 +186,9 @@ impl Proxy {
 
     /// Get a reference to the underlying [`McpProxy`] for dynamic operations.
     ///
-    /// Use this to add backends dynamically via [`McpProxy::add_backend()`].
+    /// Use this trusted administration handle to add backends dynamically via
+    /// [`McpProxy::add_backend()`]. It bypasses the configured HTTP/MCP credential
+    /// boundary; expose [`Self::into_router`] to untrusted clients instead.
     pub fn mcp_proxy(&self) -> &McpProxy {
         &self.inner
     }
@@ -649,8 +660,13 @@ fn build_middleware_stack(
     BoxCloneService<RouterRequest, RouterResponse, Infallible>,
     Option<cache::CacheHandle>,
 )> {
+    let admin_service = crate::management::Guard::new(proxy.clone(), &config.proxy.separator, true);
     let mut service: BoxCloneService<RouterRequest, RouterResponse, Infallible> =
-        BoxCloneService::new(proxy);
+        BoxCloneService::new(crate::management::Guard::new(
+            proxy,
+            &config.proxy.separator,
+            false,
+        ));
     let mut cache_handle: Option<cache::CacheHandle> = None;
 
     // Argument injection (innermost -- merges default/per-tool args into CallTool requests)
@@ -992,6 +1008,14 @@ fn build_middleware_stack(
             ));
         }
     }
+
+    // Select authority before shared observability and the global rate limit,
+    // but outside every data-plane cache, transformation, and policy layer.
+    let data_service = crate::management::Guard::new(service, &config.proxy.separator, false);
+    service = BoxCloneService::new(crate::management::Dispatch::new(
+        data_service,
+        admin_service,
+    ));
 
     // Metrics
     #[cfg(feature = "metrics")]
@@ -1578,6 +1602,73 @@ mod middleware_stack_tests {
             4,
             "rejected call must not reach the backend"
         );
+    }
+    #[tokio::test]
+    async fn administrative_and_data_requests_share_the_global_rate_limit() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let hits = counter.clone();
+        let data = tower_mcp::McpRouter::new().tool(
+            tower_mcp::ToolBuilder::new("ping")
+                .handler(move |_: serde_json::Value| {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    async { Ok(CallToolResult::text("pong")) }
+                })
+                .build(),
+        );
+        let management = tower_mcp::McpRouter::new().tool(
+            tower_mcp::ToolBuilder::new("config")
+                .handler(|_: serde_json::Value| async {
+                    Ok(CallToolResult::text("private diagnostic"))
+                })
+                .build(),
+        );
+        let proxy = McpProxy::builder("rate-test", "1")
+            .separator("/")
+            .backend("api", tower_mcp::client::ChannelTransport::new(data))
+            .await
+            .backend(
+                "proxy",
+                tower_mcp::client::ChannelTransport::new(management),
+            )
+            .await
+            .build_strict()
+            .await
+            .unwrap();
+        let config = ProxyConfig::parse("[proxy]\nname='rate-test'\n[proxy.listen]\n[proxy.rate_limit]\nrequests=1\nperiod_seconds=60\n[[backends]]\nname='api'\ntransport='stdio'\ncommand='fixture'\n").unwrap();
+        let (service, _) = build_middleware_stack(&config, proxy).unwrap();
+        let mut extensions = Extensions::new();
+        extensions.insert(crate::management::Identity::Management);
+        let response = service
+            .clone()
+            .oneshot(RouterRequest {
+                id: RequestId::Number(1),
+                inner: McpRequest::CallTool(
+                    serde_json::from_value(
+                        serde_json::json!({"name":"proxy/config","arguments":{}}),
+                    )
+                    .unwrap(),
+                ),
+                extensions,
+            })
+            .await
+            .unwrap();
+        assert!(response.inner.is_ok());
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            service.oneshot(RouterRequest {
+                id: RequestId::Number(2),
+                inner: McpRequest::CallTool(
+                    serde_json::from_value(serde_json::json!({"name":"api/ping","arguments":{}}))
+                        .unwrap(),
+                ),
+                extensions: Extensions::new(),
+            }),
+        )
+        .await
+        .expect("rate limit rejection must be bounded")
+        .unwrap();
+        assert!(response.inner.is_err());
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
 }
 

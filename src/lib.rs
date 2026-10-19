@@ -183,6 +183,7 @@ pub mod filter;
 pub mod inject;
 #[cfg(feature = "oauth")]
 pub mod introspection;
+mod management;
 pub mod mcp_json;
 #[cfg(feature = "metrics")]
 pub mod metrics;

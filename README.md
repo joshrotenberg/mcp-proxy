@@ -297,6 +297,31 @@ Readiness indicates startup completed; detailed backend health remains at the
 protected `/admin/health` endpoint. For Kubernetes deployment and release version
 maintenance, see the [Helm chart guide](charts/mcp-proxy/README.md).
 
+Management requires a dedicated credential, distinct from ordinary and scoped
+bearer tokens:
+
+```toml
+[security]
+admin_token = "${ADMIN_TOKEN}"
+```
+
+Send `Authorization: Bearer <ADMIN_TOKEN>` to `/admin/*` or initialize a separate
+MCP session at `/` with that credential. Admin MCP sessions expose management
+tools, prompts, and resources; use ordinary credentials for backend operations
+and discovery helpers. Without `security.admin_token`, management is disabled,
+including in otherwise unauthenticated local deployments. Bearer-token fallback
+has been removed. JWT/OAuth configs continue to require an explicit admin token.
+
+Sessions are bound to their credential identity and management authority. Start
+a new session when switching static tokens or between management and ordinary
+credentials; a session ID alone cannot grant access, stream another caller's
+events, or terminate their session. OAuth sessions retain their issuer/subject
+identity across token refreshes. Management
+runs outside data-plane caching, coalescing, RBAC, and capability transforms.
+Both paths retain configured audit/access logs, metrics, and the shared global
+rate limit. Ordinary requests retain their backend policies, and cannot reach management indirectly
+through composites or `proxy/call_tool`.
+
 HTTP endpoints:
 
 - `GET /admin/backends` -- list backends with health status and proxy info

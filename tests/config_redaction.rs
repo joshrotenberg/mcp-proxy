@@ -227,7 +227,11 @@ async fn configured_mcp_sessions_never_expose_secrets_to_ordinary_or_scoped_call
     let addr = listener.local_addr().unwrap();
     let proxy_task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
-    for token in ["sentinel-inbound-token", "sentinel-scoped-token"] {
+    for token in [
+        "sentinel-inbound-token",
+        "sentinel-scoped-token",
+        "sentinel-admin-token",
+    ] {
         let client = McpClient::connect(
             HttpClientTransport::new(format!("http://{addr}/")).bearer_token(token),
         )
@@ -237,16 +241,21 @@ async fn configured_mcp_sessions_never_expose_secrets_to_ordinary_or_scoped_call
             .initialize("redaction-regression", "1")
             .await
             .unwrap();
-        let result = client
-            .call_tool("api/ping", serde_json::json!({}))
-            .await
-            .unwrap();
-        assert!(!result.is_error);
+        if token != "sentinel-admin-token" {
+            let result = client
+                .call_tool("api/ping", serde_json::json!({}))
+                .await
+                .unwrap();
+            assert!(!result.is_error);
+        }
         let result = client
             .call_tool("proxy/config", serde_json::json!({}))
             .await;
-        if token == "sentinel-scoped-token" {
-            assert!(result.is_err(), "scope must still deny the config tool");
+        if token != "sentinel-admin-token" {
+            assert!(
+                result.is_err(),
+                "ordinary callers must not access the config tool"
+            );
             let error = result.unwrap_err().to_string();
             for secret in SECRETS {
                 assert!(!error.contains(secret));
@@ -289,7 +298,12 @@ async fn configured_mcp_sessions_never_expose_secrets_to_ordinary_or_scoped_call
         }
         #[cfg(feature = "skills")]
         for name in ["proxy/check_config", "proxy/explain_config"] {
-            let prompt = client.get_prompt(name, None).await.unwrap();
+            let prompt = client.get_prompt(name, None).await;
+            if token != "sentinel-admin-token" {
+                assert!(prompt.is_err());
+                continue;
+            }
+            let prompt = prompt.unwrap();
             let text = serde_json::to_string(&prompt).unwrap();
             for (index, secret) in SECRETS.iter().enumerate() {
                 assert!(

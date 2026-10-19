@@ -1,8 +1,9 @@
 //! MCP admin tools for proxy introspection.
 //!
-//! Registers tools under the `proxy/` namespace that allow any MCP client
-//! to query proxy status. Uses `ChannelTransport` to add an in-process
-//! backend to the proxy.
+//! Registers management capabilities under the `proxy/` namespace using an
+//! in-process backend. [`crate::Proxy`] enforces the dedicated management
+//! credential for these tools and prompts; ordinary discovery helpers retain
+//! their data-plane authorization.
 
 use std::sync::Arc;
 
@@ -22,6 +23,7 @@ struct AdminToolState {
     session_handle: SessionHandle,
     config_snapshot: Arc<String>,
     proxy: McpProxy,
+    management_prefix: String,
 }
 
 #[derive(Serialize)]
@@ -52,6 +54,10 @@ struct SessionResult {
 
 /// Register admin tools as an in-process backend on the proxy.
 ///
+/// This low-level registration does not authenticate callers. Use
+/// [`crate::Proxy::from_config`] for the configured HTTP/MCP authority boundary;
+/// callers exposing a raw [`McpProxy`] must install their own authorization.
+///
 /// Tools are added under the `proxy/` namespace:
 /// - `proxy/list_backends` -- list backends with health status
 /// - `proxy/health_check` -- cached health check results
@@ -75,6 +81,7 @@ pub async fn register_admin_tools(
         session_handle,
         config_snapshot: Arc::new(config_toml),
         proxy: proxy.clone(),
+        management_prefix: format!("proxy{}", config.proxy.separator),
     };
 
     // Build agentskills.io prompts
@@ -235,6 +242,12 @@ fn build_admin_router(
                     use tower_mcp::protocol::{CallToolParams, McpRequest, McpResponse, RequestId};
                     use tower_mcp::router::{Extensions, RouterRequest};
 
+                    if input.name.starts_with(&s.management_prefix) {
+                        return Err(tower_mcp::Error::invalid_params(
+                            "proxy/call_tool requires an ordinary backend target",
+                        ));
+                    }
+
                     let req = RouterRequest {
                         id: RequestId::Number(0),
                         inner: McpRequest::CallTool(CallToolParams {
@@ -382,6 +395,7 @@ mod tests {
             session_handle: make_session_handle(),
             config_snapshot: Arc::new("# empty config".to_string()),
             proxy: proxy.clone(),
+            management_prefix: "proxy/".into(),
         };
 
         let router = build_admin_router(state, None, false, vec![]);
@@ -412,6 +426,7 @@ mod tests {
             session_handle: make_session_handle(),
             config_snapshot: Arc::new(String::new()),
             proxy: proxy.clone(),
+            management_prefix: "proxy/".into(),
         };
 
         let router = build_admin_router(state, None, true, vec![]);
@@ -439,6 +454,7 @@ mod tests {
             session_handle: make_session_handle(),
             config_snapshot: Arc::new(String::new()),
             proxy: proxy.clone(),
+            management_prefix: "proxy/".into(),
         };
 
         let extra_tool = ToolBuilder::new("search_tools")
@@ -474,6 +490,7 @@ mod tests {
             session_handle: make_session_handle(),
             config_snapshot: Arc::new(config_text.clone()),
             proxy: proxy.clone(),
+            management_prefix: "proxy/".into(),
         };
 
         let router = build_admin_router(state, None, false, vec![]);
