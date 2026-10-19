@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
         [auth]
         type = "oauth"
         issuer = "https://accounts.google.com"
-        audience = "mcp-proxy"
+        audience = "https://mcp.example.com/mcp"
         # token_validation = "jwt"        # default: validate JWTs via JWKS
         # token_validation = "introspection"  # validate opaque tokens
         # token_validation = "both"       # try JWT first, fall back to introspection

@@ -20,7 +20,7 @@ port = 8080
 [auth]
 type = "jwt"
 issuer = "https://auth.internal.corp.com"
-audience = "mcp-compliance"
+audience = "https://compliance.example.com/mcp"
 jwks_uri = "https://auth.internal.corp.com/.well-known/jwks.json"
 
 [[auth.roles]]

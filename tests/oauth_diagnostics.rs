@@ -71,8 +71,11 @@ async fn oauth_startup_discovery_and_introspection_diagnostics_are_private() {
     // metadata, and status errors without relying on external networks.
     let mode = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let state = mode.clone();
+    let discovered_issuer = Arc::new(Mutex::new(String::new()));
+    let issuer_for_handler = discovered_issuer.clone();
     let router = axum::Router::new().fallback(move |uri: axum::http::Uri| {
         let state = state.clone();
+        let issuer = issuer_for_handler.lock().unwrap().clone();
         async move {
             use axum::response::IntoResponse;
             let mode = state.load(std::sync::atomic::Ordering::SeqCst);
@@ -83,7 +86,7 @@ async fn oauth_startup_discovery_and_introspection_diagnostics_are_private() {
                 return "sentinel-oauth-body".into_response();
             }
             axum::Json(serde_json::json!({
-                "issuer": "https://sentinel-issuer.example",
+                "issuer": issuer,
                 "jwks_uri": "https://example.test/sentinel-oauth-path",
                 "introspection_endpoint": "https://example.test/?key=sentinel-oauth-query"
             }))
@@ -98,8 +101,8 @@ async fn oauth_startup_discovery_and_introspection_diagnostics_are_private() {
     );
     // Discovery appends a well-known path, so keep its issuer free of query
     // parameters; introspection below exercises query-bearing endpoints.
-    let issuer =
-        format!("http://sentinel-oauth-user:sentinel-oauth-password@{addr}/sentinel-oauth-path");
+    let issuer = format!("http://{addr}/sentinel-oauth-path");
+    *discovered_issuer.lock().unwrap() = issuer.clone();
     for value in 0..4 {
         mode.store(value, std::sync::atomic::Ordering::SeqCst);
         let result = discover_auth_server(&issuer).await;
@@ -149,7 +152,7 @@ async fn oauth_startup_discovery_and_introspection_diagnostics_are_private() {
             [auth]
             type = "{auth_type}"
             issuer = "{issuer}"
-            audience = "sentinel-audience"
+            audience = "https://sentinel-audience.example/mcp"
             jwks_uri = "{endpoint}"
             token_validation = "{strategy}"
             client_id = "sentinel-client-id"
@@ -166,8 +169,7 @@ async fn oauth_startup_discovery_and_introspection_diagnostics_are_private() {
     let captured = String::from_utf8_lossy(&captured);
     assert!(captured.contains("Enabling JWT auth"));
     assert!(captured.contains("Enabling OAuth 2.1 auth"));
-    assert!(captured.contains("Discovered auth server metadata (RFC 8414)"));
-    assert!(captured.contains("Discovered auth server metadata (OIDC)"));
+    assert!(captured.contains("Discovered auth server metadata"));
     assert_private(&captured);
     task.abort();
     backend_task.abort();

@@ -36,7 +36,7 @@
 //! [auth]
 //! type = "oauth"
 //! issuer = "https://auth.example.com"
-//! audience = "mcp-proxy"
+//! audience = "https://mcp.example.com/mcp"
 //! client_id = "mcp-proxy-client"
 //! client_secret = "${OAUTH_CLIENT_SECRET}"
 //! token_validation = "both"
@@ -54,12 +54,17 @@
 //!
 //! [`discover_auth_server`] performs metadata discovery in two steps:
 //!
-//! 1. Fetch `{issuer}/.well-known/oauth-authorization-server` (RFC 8414).
+//! 1. Insert `/.well-known/oauth-authorization-server` before the issuer path
+//!    (RFC 8414).
 //! 2. If that fails, fall back to `{issuer}/.well-known/openid-configuration`
 //!    (OpenID Connect Discovery).
 //!
 //! The returned [`AuthServerMetadata`] provides the JWKS URI and introspection
-//! endpoint used to construct validators at proxy startup.
+//! endpoint used to construct validators at proxy startup. Discovery runs only
+//! for strategy-required endpoints that were not explicitly configured. A
+//! discovered issuer must exactly match the configured identifier. Each HTTP
+//! operation has a five-second deadline, redirects are refused, and discovery/
+//! introspection response bodies are limited to 64 KiB.
 
 use std::sync::Arc;
 
@@ -103,50 +108,88 @@ pub struct AuthServerMetadata {
 
 /// Discover authorization server metadata from an issuer URL.
 ///
-/// Fetches `{issuer}/.well-known/oauth-authorization-server` per RFC 8414.
-/// Falls back to `{issuer}/.well-known/openid-configuration` for OIDC providers.
+/// Uses the path-aware RFC 8414 well-known URL, then falls back to the issuer's
+/// `/.well-known/openid-configuration` URL. Returned issuer identity must match
+/// exactly; an issuer mismatch never triggers fallback. Each request, including
+/// its body, has a five-second deadline and a 64 KiB body limit.
 pub async fn discover_auth_server(issuer: &str) -> anyhow::Result<AuthServerMetadata> {
-    let client = reqwest::Client::new();
-    let issuer = issuer.trim_end_matches('/');
-
-    // Try RFC 8414 first
-    let rfc8414_url = format!("{issuer}/.well-known/oauth-authorization-server");
-    if let Ok(resp) = client.get(&rfc8414_url).send().await
-        && resp.status().is_success()
-        && let Ok(metadata) = resp.json::<AuthServerMetadata>().await
-    {
+    let parsed = crate::config::validate_oauth_identity(issuer, "auth.issuer")?;
+    let client = auth_http_client();
+    let mut rfc8414 = parsed.clone();
+    rfc8414.set_path(&format!(
+        "/.well-known/oauth-authorization-server{}",
+        parsed.path().trim_end_matches('/')
+    ));
+    let oidc = format!(
+        "{}/.well-known/openid-configuration",
+        issuer.trim_end_matches('/')
+    );
+    let mut last_error = None;
+    for endpoint in [rfc8414.as_str(), &oidc] {
+        let response = match client.get(endpoint).send().await {
+            Ok(response) => response,
+            Err(_) => {
+                last_error = Some(anyhow::anyhow!("auth server discovery request failed"));
+                continue;
+            }
+        };
+        if !response.status().is_success() {
+            last_error = Some(anyhow::anyhow!(
+                "auth server discovery failed: HTTP {}",
+                response.status()
+            ));
+            continue;
+        }
+        let metadata: AuthServerMetadata = match bounded_json(response).await {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                last_error = Some(anyhow::anyhow!("failed to parse auth server metadata"));
+                continue;
+            }
+        };
+        // A different issuer is a trust failure, not a reason to try another URL.
+        if metadata.issuer != issuer {
+            anyhow::bail!("discovered authorization server issuer does not match auth.issuer");
+        }
         tracing::info!(
             has_jwks = metadata.jwks_uri.is_some(),
             has_introspection = metadata.introspection_endpoint.is_some(),
-            "Discovered auth server metadata (RFC 8414)"
+            "Discovered auth server metadata"
         );
         return Ok(metadata);
     }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("auth server discovery failed")))
+}
 
-    // Fall back to OpenID Connect discovery
-    let oidc_url = format!("{issuer}/.well-known/openid-configuration");
-    let resp = client
-        .get(&oidc_url)
-        .send()
-        .await
-        .map_err(|_| anyhow::anyhow!("auth server discovery request failed"))?;
+// Each discovery/introspection operation has a deadline, including body reads.
+// Redirects are refused so credentials cannot be forwarded to a redirect target.
+pub(crate) fn auth_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("static OAuth HTTP client configuration")
+}
 
-    if !resp.status().is_success() {
-        anyhow::bail!("auth server discovery failed: HTTP {}", resp.status());
+async fn bounded_json<T: serde::de::DeserializeOwned>(
+    mut response: reqwest::Response,
+) -> Result<T, ()> {
+    const MAX_BYTES: usize = 64 * 1024;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_BYTES as u64)
+    {
+        return Err(());
     }
-
-    let metadata = resp
-        .json::<AuthServerMetadata>()
-        .await
-        .map_err(|_| anyhow::anyhow!("failed to parse auth server metadata"))?;
-
-    tracing::info!(
-        has_jwks = metadata.jwks_uri.is_some(),
-        has_introspection = metadata.introspection_endpoint.is_some(),
-        "Discovered auth server metadata (OIDC)"
-    );
-
-    Ok(metadata)
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
+        if chunk.len() > MAX_BYTES.saturating_sub(bytes.len()) {
+            return Err(());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +210,7 @@ struct IntrospectionState {
     client_id: String,
     client_secret: String,
     expected_audience: Option<String>,
+    expected_issuer: Option<String>,
     http_client: reqwest::Client,
 }
 
@@ -204,9 +248,22 @@ impl IntrospectionValidator {
                 client_id: client_id.to_string(),
                 client_secret: client_secret.to_string(),
                 expected_audience: None,
-                http_client: reqwest::Client::new(),
+                expected_issuer: None,
+                http_client: auth_http_client(),
             }),
         }
+    }
+
+    /// Bind introspection claims to this configured issuer.
+    ///
+    /// A returned `iss` must match exactly. When RFC 7662 omits this optional
+    /// claim, the configured trusted introspection authority supplies it for
+    /// stable session ownership.
+    pub fn expected_issuer(mut self, issuer: &str) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("no other references")
+            .expected_issuer = Some(issuer.to_string());
+        self
     }
 
     /// Set the expected audience for validation.
@@ -260,9 +317,11 @@ impl TokenValidator for IntrospectionValidator {
         }
 
         let introspection: IntrospectionResponse =
-            resp.json().await.map_err(|_| OAuthError::InvalidToken {
-                description: "invalid introspection response".to_string(),
-            })?;
+            bounded_json(resp)
+                .await
+                .map_err(|_| OAuthError::InvalidToken {
+                    description: "invalid introspection response".to_string(),
+                })?;
 
         if !introspection.active {
             return Err(OAuthError::InvalidToken {
@@ -278,10 +337,35 @@ impl TokenValidator for IntrospectionValidator {
             return Err(OAuthError::InvalidAudience);
         }
 
+        let aud = introspection
+            .aud
+            .map(serde_json::from_value::<tower_mcp::oauth::token::TokenAudience>)
+            .transpose()
+            .map_err(|_| OAuthError::InvalidAudience)?;
+        if let Some(expected) = &self.inner.expected_issuer
+            && introspection
+                .iss
+                .as_ref()
+                .is_some_and(|issuer| issuer != expected)
+        {
+            return Err(OAuthError::InvalidToken {
+                description: "introspection issuer does not match".into(),
+            });
+        }
+        if introspection.exp.is_some_and(|exp| {
+            exp <= std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        }) {
+            return Err(OAuthError::ExpiredToken);
+        }
         Ok(TokenClaims {
             sub: introspection.sub,
-            iss: introspection.iss,
-            aud: None,
+            iss: introspection
+                .iss
+                .or_else(|| self.inner.expected_issuer.clone()),
+            aud,
             exp: introspection.exp,
             scope: introspection.scope,
             client_id: introspection.client_id,

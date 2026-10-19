@@ -651,7 +651,7 @@ admin_token = "manager"
 [auth]
 type = "oauth"
 issuer = "{issuer}"
-audience = "gateway"
+audience = "https://mcp.example.com/mcp"
 token_validation = "introspection"
 client_id = "fixture-client"
 client_secret = "fixture-secret"

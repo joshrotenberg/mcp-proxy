@@ -24,7 +24,7 @@ port = 8080
 [auth]
 type = "jwt"
 issuer = "https://idp.corp.example"
-audience = "mcp-proxy"
+audience = "https://mcp.example.com/mcp"
 jwks_uri = "https://idp.corp.example/.well-known/jwks.json"
 
 # Role-based tool visibility. A role lists the tools it may see and call;

@@ -45,7 +45,7 @@
 //! [auth]
 //! type = "jwt"
 //! issuer = "https://auth.example.com"
-//! audience = "mcp-proxy"
+//! audience = "https://mcp.example.com/mcp"
 //! jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 //!
 //! [[auth.roles]]

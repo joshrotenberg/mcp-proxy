@@ -20,7 +20,7 @@ port = 8080
 [auth]
 type = "jwt"
 issuer = "https://corp.okta.com"
-audience = "mcp-proxy"
+audience = "https://mcp.example.com/mcp"
 jwks_uri = "https://corp.okta.com/oauth2/default/v1/keys"
 
 # Role definitions

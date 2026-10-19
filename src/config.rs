@@ -186,14 +186,14 @@
 //! [auth]
 //! type = "jwt"
 //! issuer = "https://auth.example.com"
-//! audience = "mcp-proxy"
+//! audience = "https://mcp.example.com/mcp"
 //! jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 //!
 //! # OAuth 2.1 (auto-discovery)
 //! [auth]
 //! type = "oauth"
 //! issuer = "https://accounts.google.com"
-//! audience = "mcp-proxy"
+//! audience = "https://mcp.example.com/mcp"
 //! token_validation = "both"      # jwt + introspection fallback
 //! client_id = "my-client"
 //! client_secret = "${OAUTH_SECRET}"
@@ -675,7 +675,8 @@ pub enum AuthConfig {
     Jwt {
         /// Expected token issuer (`iss` claim).
         issuer: String,
-        /// Expected token audience (`aud` claim).
+        /// Public MCP resource URL and expected token audience (`aud` claim).
+        /// Use HTTPS, or HTTP loopback for local development; independent of listen address.
         audience: String,
         /// URL to fetch the JSON Web Key Set for token verification.
         jwks_uri: String,
@@ -694,7 +695,8 @@ pub enum AuthConfig {
         /// Authorization server issuer URL (e.g. `https://accounts.google.com`).
         /// Used for RFC 8414 metadata discovery.
         issuer: String,
-        /// Expected token audience (`aud` claim).
+        /// Public MCP resource URL and expected token audience (`aud` claim).
+        /// Use HTTPS, or HTTP loopback for local development; independent of listen address.
         audience: String,
         /// OAuth client ID (required for token introspection).
         #[serde(default)]
@@ -1265,6 +1267,35 @@ impl BackendConfig {
     }
 }
 
+/// OAuth identities are public URLs, never bind addresses or credential-bearing URLs.
+pub(crate) fn validate_oauth_identity(value: &str, field: &str) -> Result<url::Url> {
+    let invalid = || {
+        anyhow::anyhow!(
+            "{field} must be an absolute HTTPS URL (HTTP loopback is allowed), without user information, query, fragment, or whitespace"
+        )
+    };
+    let parsed = url::Url::parse(value).map_err(|_| invalid())?;
+    let loopback = parsed.host_str().is_some_and(|host| {
+        host == "localhost"
+            || host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    });
+    if !value.is_ascii()
+        || value.bytes().any(|b| b.is_ascii_whitespace())
+        || !(parsed.scheme() == "https" || (parsed.scheme() == "http" && loopback))
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(invalid());
+    }
+    Ok(parsed)
+}
+
 impl ProxyConfig {
     // Parser errors can include entire source lines or rejected string values.
     // Keep positions, but never retain the original error in the anyhow chain.
@@ -1467,6 +1498,19 @@ impl ProxyConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        if let Some(
+            AuthConfig::Jwt {
+                issuer, audience, ..
+            }
+            | AuthConfig::OAuth {
+                issuer, audience, ..
+            },
+        ) = &self.auth
+        {
+            validate_oauth_identity(issuer, "auth.issuer")?;
+            validate_oauth_identity(audience, "auth.audience")?;
+        }
+
         crate::management::validate(self)?;
         if self.backends.is_empty() {
             anyhow::bail!("at least one backend is required");
@@ -2009,6 +2053,31 @@ impl ProxyConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn oauth_identities_are_public_urls_with_loopback_development_support() {
+        for value in [
+            "https://gateway.example.com/mcp",
+            "http://127.0.0.1:8080/mcp",
+            "http://localhost:8080",
+            "http://[::1]:8080/mcp",
+        ] {
+            assert!(super::validate_oauth_identity(value, "auth.audience").is_ok());
+        }
+        for value in [
+            "gateway",
+            "",
+            "http://remote.example.com/mcp",
+            "https://sentinel:secret@example.com/mcp",
+            "https://example.com/?sentinel=secret",
+            "https://example.com/#sentinel",
+            " https://example.com/mcp",
+        ] {
+            let error = super::validate_oauth_identity(value, "auth.audience").unwrap_err();
+            assert!(error.to_string().contains("auth.audience"));
+            assert!(!format!("{error:?} {error}").contains("sentinel"));
+        }
+    }
+
     use super::*;
 
     fn minimal_config() -> &'static str {
@@ -2215,7 +2284,7 @@ mod tests {
         [auth]
         type = "jwt"
         issuer = "https://auth.example.com"
-        audience = "mcp-proxy"
+        audience = "https://mcp.example.com/mcp"
         jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 
         [[auth.roles]]
@@ -2243,7 +2312,7 @@ mod tests {
                 role_mapping,
             }) => {
                 assert_eq!(issuer, "https://auth.example.com");
-                assert_eq!(audience, "mcp-proxy");
+                assert_eq!(audience, "https://mcp.example.com/mcp");
                 assert_eq!(jwks_uri, "https://auth.example.com/.well-known/jwks.json");
                 assert_eq!(roles.len(), 2);
                 assert_eq!(roles[0].name, "reader");
@@ -3053,7 +3122,7 @@ mod tests {
         [auth]
         type = "jwt"
         issuer = "https://auth.example.com"
-        audience = "mcp-proxy"
+        audience = "https://mcp.example.com/mcp"
         jwks_uri = "https://auth.example.com/.well-known/jwks.json"
         "#;
         let err = ProxyConfig::parse(toml).unwrap_err();
@@ -3079,7 +3148,7 @@ mod tests {
         [auth]
         type = "jwt"
         issuer = "https://auth.example.com"
-        audience = "mcp-proxy"
+        audience = "https://mcp.example.com/mcp"
         jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 
         [security]
@@ -3105,7 +3174,7 @@ mod tests {
         [auth]
         type = "oauth"
         issuer = "https://auth.example.com"
-        audience = "mcp-proxy"
+        audience = "https://mcp.example.com/mcp"
         "#;
         let err = ProxyConfig::parse(toml).unwrap_err();
         assert!(
@@ -3774,7 +3843,7 @@ mod tests {
         [auth]
         type = "oauth"
         issuer = "https://accounts.google.com"
-        audience = "mcp-proxy"
+        audience = "https://mcp.example.com/mcp"
 
         [security]
         admin_token = "admin-secret"
@@ -3789,7 +3858,7 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(issuer, "https://accounts.google.com");
-                assert_eq!(audience, "mcp-proxy");
+                assert_eq!(audience, "https://mcp.example.com/mcp");
                 assert_eq!(token_validation, &TokenValidationStrategy::Jwt);
             }
             other => panic!("expected OAuth auth, got: {other:?}"),
@@ -3811,7 +3880,7 @@ mod tests {
         [auth]
         type = "oauth"
         issuer = "https://auth.example.com"
-        audience = "mcp-proxy"
+        audience = "https://mcp.example.com/mcp"
         client_id = "my-client"
         client_secret = "my-secret"
         token_validation = "introspection"
@@ -3851,7 +3920,7 @@ mod tests {
         [auth]
         type = "oauth"
         issuer = "https://auth.example.com"
-        audience = "mcp-proxy"
+        audience = "https://mcp.example.com/mcp"
         token_validation = "introspection"
         "#;
 
@@ -3877,7 +3946,7 @@ mod tests {
         [auth]
         type = "oauth"
         issuer = "https://auth.example.com"
-        audience = "mcp-proxy"
+        audience = "https://mcp.example.com/mcp"
         jwks_uri = "https://auth.example.com/custom/jwks"
         introspection_endpoint = "https://auth.example.com/custom/introspect"
         client_id = "my-client"
@@ -4012,7 +4081,7 @@ mod tests {
         [auth]
         type = "oauth"
         issuer = "https://auth.example.com"
-        audience = "mcp-proxy"
+        audience = "https://mcp.example.com/mcp"
         client_id = "my-client"
         client_secret = "${TOTALLY_UNSET_OAUTH_SECRET}"
         token_validation = "introspection"

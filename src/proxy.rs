@@ -1084,6 +1084,24 @@ fn build_middleware_stack(
     Ok((service, cache_handle))
 }
 
+#[cfg(feature = "oauth")]
+fn with_oauth_metadata(
+    router: Router,
+    metadata: tower_mcp::oauth::ProtectedResourceMetadata,
+) -> Result<Router> {
+    let path = tower_mcp::oauth::ProtectedResourceMetadata::well_known_path_for_resource(
+        &metadata.resource,
+    )
+    .map_err(|_| anyhow::anyhow!("invalid OAuth resource metadata URL"))?;
+    Ok(router.route(
+        &path,
+        axum::routing::get(move || {
+            let metadata = metadata.clone();
+            async move { axum::Json(metadata) }
+        }),
+    ))
+}
+
 /// Apply inbound authentication middleware to the router.
 async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
     let router = if let Some(auth) = &config.auth {
@@ -1132,19 +1150,16 @@ async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
                 let validator = tower_mcp::oauth::JwksValidator::builder(jwks_uri)
                     .expected_audience(audience)
                     .expected_issuer(issuer)
+                    .http_client(crate::introspection::auth_http_client())
                     .build()
                     .await
                     .map_err(|_| anyhow::anyhow!("building JWKS validator failed"))?;
 
-                let addr = format!(
-                    "http://{}:{}",
-                    config.proxy.listen.host, config.proxy.listen.port
-                );
-                let metadata = tower_mcp::oauth::ProtectedResourceMetadata::new(&addr)
+                let metadata = tower_mcp::oauth::ProtectedResourceMetadata::new(audience)
                     .authorization_server(issuer);
 
-                let layer = tower_mcp::oauth::OAuthLayer::new(validator, metadata);
-                router.layer(layer)
+                let layer = tower_mcp::oauth::OAuthLayer::new(validator, metadata.clone());
+                with_oauth_metadata(router.layer(layer), metadata)?
             }
             #[cfg(not(feature = "oauth"))]
             AuthConfig::Jwt { .. } => {
@@ -1170,42 +1185,48 @@ async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
                     "Enabling OAuth 2.1 auth"
                 );
 
-                // Auto-discover endpoints from issuer if not overridden
-                let discovered = crate::introspection::discover_auth_server(issuer)
-                    .await
-                    .context("discovering OAuth authorization server")?;
-
+                let needs_jwks = *token_validation != TokenValidationStrategy::Introspection;
+                let needs_introspection = *token_validation != TokenValidationStrategy::Jwt;
+                let discovered = if (needs_jwks && jwks_uri.is_none())
+                    || (needs_introspection && introspection_endpoint.is_none())
+                {
+                    Some(
+                        crate::introspection::discover_auth_server(issuer)
+                            .await
+                            .context("discovering OAuth authorization server")?,
+                    )
+                } else {
+                    None
+                };
                 let effective_jwks_uri = jwks_uri
                     .as_deref()
-                    .or(discovered.jwks_uri.as_deref())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "JWKS URI not found via discovery and not configured manually"
-                        )
-                    })?;
+                    .or_else(|| discovered.as_ref().and_then(|d| d.jwks_uri.as_deref()));
+                let effective_introspection = introspection_endpoint.as_deref().or_else(|| {
+                    discovered
+                        .as_ref()
+                        .and_then(|d| d.introspection_endpoint.as_deref())
+                });
 
-                let effective_introspection = introspection_endpoint
-                    .as_deref()
-                    .or(discovered.introspection_endpoint.as_deref());
-
-                let addr = format!(
-                    "http://{}:{}",
-                    config.proxy.listen.host, config.proxy.listen.port
-                );
-                let metadata = tower_mcp::oauth::ProtectedResourceMetadata::new(&addr)
+                let metadata = tower_mcp::oauth::ProtectedResourceMetadata::new(audience)
                     .authorization_server(issuer);
 
                 match token_validation {
                     TokenValidationStrategy::Jwt => {
-                        let validator =
-                            tower_mcp::oauth::JwksValidator::builder(effective_jwks_uri)
-                                .expected_audience(audience)
-                                .expected_issuer(issuer)
-                                .build()
-                                .await
-                                .map_err(|_| anyhow::anyhow!("building JWKS validator failed"))?;
-                        let layer = tower_mcp::oauth::OAuthLayer::new(validator, metadata);
-                        router.layer(layer)
+                        let validator = tower_mcp::oauth::JwksValidator::builder(
+                            effective_jwks_uri.ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "JWKS URI not found via discovery and not configured"
+                                )
+                            })?,
+                        )
+                        .expected_audience(audience)
+                        .expected_issuer(issuer)
+                        .http_client(crate::introspection::auth_http_client())
+                        .build()
+                        .await
+                        .map_err(|_| anyhow::anyhow!("building JWKS validator failed"))?;
+                        let layer = tower_mcp::oauth::OAuthLayer::new(validator, metadata.clone());
+                        with_oauth_metadata(router.layer(layer), metadata)?
                     }
                     TokenValidationStrategy::Introspection => {
                         let endpoint = effective_introspection.ok_or_else(|| {
@@ -1218,9 +1239,10 @@ async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
                             client_id.as_deref().unwrap(),
                             client_secret.as_deref().unwrap(),
                         )
-                        .expected_audience(audience);
-                        let layer = tower_mcp::oauth::OAuthLayer::new(validator, metadata);
-                        router.layer(layer)
+                        .expected_audience(audience)
+                        .expected_issuer(issuer);
+                        let layer = tower_mcp::oauth::OAuthLayer::new(validator, metadata.clone());
+                        with_oauth_metadata(router.layer(layer), metadata)?
                     }
                     TokenValidationStrategy::Both => {
                         let endpoint = effective_introspection.ok_or_else(|| {
@@ -1228,26 +1250,33 @@ async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
                                 "introspection endpoint not found via discovery and not configured"
                             )
                         })?;
-                        let jwt_validator =
-                            tower_mcp::oauth::JwksValidator::builder(effective_jwks_uri)
-                                .expected_audience(audience)
-                                .expected_issuer(issuer)
-                                .build()
-                                .await
-                                .map_err(|_| anyhow::anyhow!("building JWKS validator failed"))?;
+                        let jwt_validator = tower_mcp::oauth::JwksValidator::builder(
+                            effective_jwks_uri.ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "JWKS URI not found via discovery and not configured"
+                                )
+                            })?,
+                        )
+                        .expected_audience(audience)
+                        .expected_issuer(issuer)
+                        .http_client(crate::introspection::auth_http_client())
+                        .build()
+                        .await
+                        .map_err(|_| anyhow::anyhow!("building JWKS validator failed"))?;
                         let introspection_validator =
                             crate::introspection::IntrospectionValidator::new(
                                 endpoint,
                                 client_id.as_deref().unwrap(),
                                 client_secret.as_deref().unwrap(),
                             )
-                            .expected_audience(audience);
+                            .expected_audience(audience)
+                            .expected_issuer(issuer);
                         let fallback = crate::introspection::FallbackValidator::new(
                             jwt_validator,
                             introspection_validator,
                         );
-                        let layer = tower_mcp::oauth::OAuthLayer::new(fallback, metadata);
-                        router.layer(layer)
+                        let layer = tower_mcp::oauth::OAuthLayer::new(fallback, metadata.clone());
+                        with_oauth_metadata(router.layer(layer), metadata)?
                     }
                 }
             }

@@ -238,6 +238,31 @@ target**, for both direct and wrapped calls. Each target uses its public name
 Denied targets receive no backend call; other permitted targets may run, and any
 target failure marks the aggregate as an error. Nested composites are not expanded.
 
+### OAuth resource identity and endpoint setup
+
+For JWT and OAuth authentication, `auth.audience` is the public MCP resource URL,
+for example `https://gateway.example.com/mcp`. It is used verbatim for both token
+validation and protected-resource metadata; the local listen address is not an
+OAuth identity. Tokens must contain that exact value in their `aud` string or
+string array. Logical labels such as `mcp-proxy` must be migrated to a public URL.
+Resource and issuer identities require HTTPS, except HTTP on loopback for local
+development, and cannot contain user information, queries, fragments, or
+whitespace.
+
+The path-aware RFC 9728 metadata endpoint is public. The example resource above
+advertises `https://gateway.example.com/.well-known/oauth-protected-resource/mcp`;
+route that path through your ingress as well as the MCP path.
+
+OAuth setup discovers only endpoints missing for the chosen strategy: `jwt`
+needs JWKS, `introspection` needs only introspection, and `both` needs both.
+Providing those endpoints skips discovery entirely. Discovery verifies the exact
+issuer and supports RFC 8414 issuer paths plus OIDC fallback. JWT, discovery, and
+introspection requests have five-second deadlines and refuse redirects;
+discovery/introspection bodies are limited to 64 KiB. Introspection preserves
+string/array audiences, rejects expired active responses and mismatched issuers,
+and binds an omitted optional `iss` to the configured trusted introspection
+issuer. Required scopes and credential-bound session ownership remain enforced.
+
 ### Upgrading to 0.6
 
 Version 0.6 uses tower-mcp 0.23. Library applications that exchange
@@ -271,7 +296,7 @@ tokens = ["my-secret-token"]
 [auth]
 type = "jwt"
 issuer = "https://auth.example.com"
-audience = "mcp-proxy"
+audience = "https://mcp.example.com/mcp"
 jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 
 [[auth.roles]]

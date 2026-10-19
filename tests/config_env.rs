@@ -54,7 +54,7 @@ fn reference_config(field: &str, reference: &str) -> ProxyConfig {
                 .insert("X-API-Key".into(), reference.into());
         }
         "oauth" => {
-            config = ProxyConfig::parse(&format!("{BASE}\n[auth]\ntype='oauth'\nissuer='https://issuer.test'\naudience='gateway'\ntoken_validation='introspection'\nclient_id='fixture'\nclient_secret='{reference}'")).unwrap();
+            config = ProxyConfig::parse(&format!("{BASE}\n[auth]\ntype='oauth'\nissuer='https://issuer.test'\naudience='https://mcp.example.com/mcp'\ntoken_validation='introspection'\nclient_id='fixture'\nclient_secret='{reference}'")).unwrap();
         }
         _ => unreachable!(),
     }
