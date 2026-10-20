@@ -326,6 +326,10 @@ Every feature gets tests. No exceptions.
 ### Documentation
 
 Rust docs are the single source of truth for both CLI users and library users.
+Admin route/method registration and OpenAPI path lists share `admin_routes!`;
+annotate every handler and retain inventory/reference and configured HTTP contract
+tests in admin_openapi.rs. Cover text extractor errors separately from JSON
+handler errors, and test openapi-only builds as well as disabled-feature behavior.
 The library enables `missing_docs`; CI treats its warnings as errors.
 
 - All public APIs must have doc comments

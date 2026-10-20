@@ -103,6 +103,15 @@ for claims about configuration wiring, authorization, transport, and lifecycle.
 they test composition, not whether the configured application installs that stack.
 A passing initialize request alone does not prove a usable MCP session.
 
+Admin routes belong in the `admin_routes!` registry in `src/admin.rs`, with
+feature-gated `utoipa::path` contracts on handlers. The registry feeds runtime
+routes and generated OpenAPI paths. Keep the inventory/reference unit test and
+`admin_openapi.rs` configured HTTP auth/media/status/response-shape checks passing;
+exercise both `--all-features` and `--no-default-features --features openapi`.
+The document version follows the package version; handler JSON errors and Axum
+extractor text errors must both be described. Shape checks are not a general
+JSON Schema validator.
+
 `replica_sessions.rs` verifies exact list/call output and backend journals across
 fresh TCP connections through real NGINX, wrong-replica HTTP 200/RPC -32005
 rejections, owner SIGTERM/SIGKILL with no transparent call replay, controlled

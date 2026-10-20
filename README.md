@@ -579,6 +579,10 @@ proxy.serve().await?;
 
 ## Admin API
 
+With the default `openapi` feature, `/admin/openapi.json` describes every admin
+operation and requires the dedicated admin token. Its API version follows the
+package version; see the [OpenAPI contract guide](https://docs.rs/mcp-proxy/latest/mcp_proxy/admin/#openapi-contracts-and-versioning).
+
 Process probes at `GET /livez` and `GET /readyz` return `ok` without credentials.
 Readiness indicates startup completed; detailed backend health remains at the
 protected `/admin/health` endpoint. For Kubernetes deployment and release version

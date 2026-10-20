@@ -20,14 +20,45 @@
 //! | `GET` | `/admin/sessions/detail` | List active MCP sessions (full detail) |
 //! | `DELETE` | `/admin/sessions/{id}` | Terminate a session by ID |
 //! | `GET` | `/admin/stats` | Aggregated proxy statistics |
+//! | `GET` | `/admin/circuit-breakers` | Local circuit-breaker state |
 //! | `GET` | `/admin/cache/stats` | Cache hit/miss statistics |
 //! | `POST` | `/admin/cache/clear` | Flush the response cache |
 //! | `GET` | `/admin/config` | Current proxy configuration (sanitized) |
-//! | `PUT` | `/admin/config` | Hot-reload proxy configuration |
+//! | `PUT` | `/admin/config` | Save admitted config; asynchronous reload or restart required |
 //! | `POST` | `/admin/config/validate` | Validate config and live admission without applying it |
 //! | `GET` | `/admin/config/status` | Last reload attempt and watcher state |
 //! | `GET` | `/admin/metrics` | Prometheus metrics scrape endpoint (feature `metrics`) |
 //! | `GET` | `/admin/openapi.json` | OpenAPI spec (feature `openapi`) |
+//!
+//! # OpenAPI contracts and versioning
+//!
+//! With `openapi` enabled (default), `GET /admin/openapi.json` returns an OpenAPI
+//! 3.1 document describing every explicit admin operation, parameters, request
+//! bodies, response schemas/media types, and dedicated bearer authentication.
+//! Fetch it with `Authorization: Bearer <security.admin_token>`; ordinary proxy
+//! tokens cannot read it. Without the feature the endpoint is absent, and without
+//! a management token every admin request is denied. The document contains static
+//! contracts, never configured credentials or live backend/session data.
+//!
+//! `info.version` intentionally follows the mcp-proxy package version, independently
+//! of the configurable `proxy.version` identity. Pin the document/package version
+//! for generated clients and review changes when upgrading. JSON Schema nullable
+//! types follow OpenAPI 3.1. Axum also supplies HEAD for GET routes; those implicit
+//! empty-body operations are not separately listed. The route registry feeds
+//! runtime registration and generated paths; tests check inventory, local schema
+//! references and actual configured HTTP response shapes. Lower-level embedding
+//! callers remain responsible for mounting this router at `/admin`.
+//!
+//! Metrics is always registered and returns text (empty without a recorder or the
+//! `metrics` feature). Config endpoints consume/return text: validation parses TOML;
+//! saving follows the config file extension, with YAML requiring its feature.
+//! GET config is the redacted startup snapshot. PUT success means saved, not
+//! applied; inspect `/admin/config/status` for pending/restart-required state.
+//! JSON extractor errors use text responses (400/413/415/422), unlike structured
+//! handler errors. Missing cached health returns an empty 404. Authentication
+//! failures use a JSON-RPC-shaped HTTP 401 with null ID; a stopped configured
+//! proxy returns an empty HTTP 503 before auth. Backend replacement still uses
+//! remove-then-add and can leave a backend absent on reconnect failure.
 //!
 //! # Health checking
 //!
@@ -69,7 +100,8 @@ use axum::Router;
 use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
-use axum::routing::{delete, get, post};
+#[cfg(feature = "openapi")]
+use axum::routing::get;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -307,6 +339,13 @@ pub fn spawn_health_checker(
     )
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/backends",
+    description = "List backend metadata and startup proxy identity.",
+    operation_id = "backends",
+    responses((status = 200, description = "Backend metadata", body = AdminBackendsResponse, content_type = "application/json"))
+))]
 async fn handle_backends(
     Extension(state): Extension<AdminState>,
     Extension(session_handle): Extension<SessionHandle>,
@@ -325,6 +364,13 @@ async fn handle_backends(
     })
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/health",
+    description = "Read cached aggregate health; degraded health still returns HTTP 200.",
+    operation_id = "health",
+    responses((status = 200, description = "Cached aggregate health", body = HealthResponse, content_type = "application/json"))
+))]
 async fn handle_health(Extension(state): Extension<AdminState>) -> Json<HealthResponse> {
     let backends = state.health.read().await;
     let all_healthy = backends.iter().all(|b| b.healthy);
@@ -347,6 +393,13 @@ struct HealthResponse {
 }
 
 #[cfg(feature = "metrics")]
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/metrics",
+    description = "Scrape Prometheus text; an absent recorder or disabled metrics feature returns an empty string.",
+    operation_id = "metrics",
+    responses((status = 200, description = "Prometheus text (possibly empty)", body = String, content_type = "text/plain"))
+))]
 async fn handle_metrics(
     Extension(handle): Extension<Option<metrics_exporter_prometheus::PrometheusHandle>>,
 ) -> impl IntoResponse {
@@ -360,10 +413,24 @@ async fn handle_metrics(
 }
 
 #[cfg(not(feature = "metrics"))]
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/metrics",
+    description = "Scrape Prometheus text; an absent recorder or disabled metrics feature returns an empty string.",
+    operation_id = "metrics",
+    responses((status = 200, description = "Prometheus text (possibly empty)", body = String, content_type = "text/plain"))
+))]
 async fn handle_metrics() -> impl IntoResponse {
     String::new()
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/cache/stats",
+    description = "Read cache statistics; no cache returns an empty array.",
+    operation_id = "cache_stats",
+    responses((status = 200, description = "Cache statistics", body = [crate::cache::CacheStatsSnapshot], content_type = "application/json"))
+))]
 async fn handle_cache_stats(
     Extension(cache_handle): Extension<Option<crate::cache::CacheHandle>>,
 ) -> Json<Vec<crate::cache::CacheStatsSnapshot>> {
@@ -373,6 +440,13 @@ async fn handle_cache_stats(
     }
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    post,
+    path = "/admin/cache/clear",
+    description = "Clear configured caches; this does not terminate MCP sessions.",
+    operation_id = "cache_clear",
+    responses((status = 200, description = "caches cleared or no caches configured", body = String, content_type = "text/plain"))
+))]
 async fn handle_cache_clear(
     Extension(cache_handle): Extension<Option<crate::cache::CacheHandle>>,
 ) -> &'static str {
@@ -433,6 +507,19 @@ struct BackendOpResponse {
     message: String,
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    post,
+    path = "/admin/backends/add",
+    description = "Connect and initialize a new plain HTTP backend; admission failures retain existing backends.",
+    operation_id = "add_backend",
+    request_body(content = AddBackendRequest, content_type = "application/json"),
+    responses((status = 201, description = "Backend initialized", body = BackendOpResponse, content_type = "application/json"),
+        (status = 400, description = "Invalid backend configuration or malformed JSON", content((BackendOpResponse = "application/json"), (String = "text/plain"))),
+        (status = 409, description = "Duplicate name, restart-required policy or connection/initialization failure", body = BackendOpResponse, content_type = "application/json"),
+        (status = 413, description = "Body exceeds the configured HTTP body limit", body = String, content_type = "text/plain"),
+        (status = 415, description = "Content-Type must be application/json", body = String, content_type = "text/plain"),
+        (status = 422, description = "JSON does not match the request schema", body = String, content_type = "text/plain"))
+))]
 async fn handle_add_backend(
     Extension(proxy): Extension<McpProxy>,
     Extension(policy): Extension<crate::reload_policy::ReloadPolicy>,
@@ -488,6 +575,17 @@ async fn handle_add_backend(
     }
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    delete,
+    path = "/admin/backends/{name}",
+    description = "Remove an unreferenced plain backend; policy-bearing backends require restart.",
+    operation_id = "remove_backend",
+    params(("name" = String, Path, description = "Backend name")),
+    responses((status = 200, description = "Backend removed", body = BackendOpResponse, content_type = "application/json"),
+        (status = 404, description = "Backend not found", body = BackendOpResponse, content_type = "application/json"),
+        (status = 409, description = "Restart required; active backend retained", body = BackendOpResponse, content_type = "application/json"),
+        (status = 400, description = "Invalid path encoding", body = String, content_type = "text/plain"))
+))]
 async fn handle_remove_backend(
     Extension(proxy): Extension<McpProxy>,
     Path(name): Path<String>,
@@ -522,6 +620,13 @@ async fn handle_remove_backend(
     }
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/config",
+    description = "Read the redacted startup TOML snapshot, not a live or round-trippable desired configuration.",
+    operation_id = "get_config",
+    responses((status = 200, description = "Redacted startup TOML", body = String, content_type = "text/plain"))
+))]
 async fn handle_get_config(
     Extension(config_toml): Extension<std::sync::Arc<String>>,
 ) -> impl IntoResponse {
@@ -559,11 +664,29 @@ fn config_response(
         }),
     )
 }
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/config/status",
+    description = "Read last reload-attempt and watcher status without exposing configuration.",
+    operation_id = "config_status",
+    responses((status = 200, description = "Last attempt (not proof that every backend is healthy)", body = crate::reload_policy::ReloadStatus, content_type = "application/json"))
+))]
 async fn handle_config_status(
     Extension(policy): Extension<crate::reload_policy::ReloadPolicy>,
 ) -> Json<crate::reload_policy::ReloadStatus> {
     Json(policy.status())
 }
+#[cfg_attr(feature = "openapi", utoipa::path(
+    post,
+    path = "/admin/config/validate",
+    description = "Validate TOML, required environment references and live admission without applying changes.",
+    operation_id = "validate_config",
+    request_body(content = String, content_type = "text/plain", description = "Raw configuration text; content type does not select the parser"),
+    responses((status = 200, description = "Valid and admitted; applied is false", body = ConfigChangeResponse, content_type = "application/json"),
+        (status = 400, description = "Invalid configuration or invalid UTF-8", content((ConfigChangeResponse = "application/json"), (String = "text/plain"))),
+        (status = 409, description = "Restart required", body = ConfigChangeResponse, content_type = "application/json"),
+        (status = 413, description = "Body exceeds the configured HTTP body limit", body = String, content_type = "text/plain"))
+))]
 async fn handle_validate_config(
     Extension(policy): Extension<crate::reload_policy::ReloadPolicy>,
     body: String,
@@ -589,6 +712,13 @@ async fn handle_validate_config(
     }
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/sessions",
+    description = "Count sessions owned by this process.",
+    operation_id = "list_sessions",
+    responses((status = 200, description = "Session count", body = SessionsResponse, content_type = "application/json"))
+))]
 async fn handle_list_sessions(
     Extension(session_handle): Extension<SessionHandle>,
 ) -> Json<SessionsResponse> {
@@ -603,6 +733,15 @@ struct SessionsResponse {
     active_sessions: usize,
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/backends/{name}/health/history",
+    description = "Read cached transition history; an unknown backend has an empty history.",
+    operation_id = "backend_health_history",
+    params(("name" = String, Path, description = "Backend name")),
+    responses((status = 200, description = "Health transitions", body = [HealthEvent], content_type = "application/json"),
+        (status = 400, description = "Invalid path encoding", body = String, content_type = "text/plain"))
+))]
 async fn handle_backend_health_history(
     Extension(state): Extension<AdminState>,
     Path(name): Path<String>,
@@ -620,6 +759,22 @@ async fn handle_backend_health_history(
     Json(filtered)
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    put,
+    path = "/admin/backends/{name}",
+    description = "Replace a plain HTTP backend using the existing remove-then-add operation. A reconnect failure can leave it absent; transactional replacement remains separate work.",
+    operation_id = "update_backend",
+    params(("name" = String, Path, description = "Backend name")),
+    request_body(content = UpdateBackendRequest, content_type = "application/json"),
+    responses((status = 200, description = "Backend replaced", body = BackendOpResponse, content_type = "application/json"),
+        (status = 400, description = "Invalid backend configuration or malformed JSON", content((BackendOpResponse = "application/json"), (String = "text/plain"))),
+        (status = 404, description = "Backend not found", body = BackendOpResponse, content_type = "application/json"),
+        (status = 409, description = "Restart required; active backend retained", body = BackendOpResponse, content_type = "application/json"),
+        (status = 500, description = "Reconnect failed after removal", body = BackendOpResponse, content_type = "application/json"),
+        (status = 413, description = "Body exceeds the configured HTTP body limit", body = String, content_type = "text/plain"),
+        (status = 415, description = "Content-Type must be application/json", body = String, content_type = "text/plain"),
+        (status = 422, description = "JSON does not match the request schema", body = String, content_type = "text/plain"))
+))]
 async fn handle_update_backend(
     Extension(proxy): Extension<McpProxy>,
     Path(name): Path<String>,
@@ -693,6 +848,16 @@ struct UpdateBackendRequest {
     bearer_token: Option<String>,
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/backends/{name}/health",
+    description = "Read cached backend health; an unknown or not-yet-cached backend returns an empty 404.",
+    operation_id = "single_backend_health",
+    params(("name" = String, Path, description = "Backend name")),
+    responses((status = 200, description = "Cached backend health", body = BackendStatus, content_type = "application/json"),
+        (status = 404, description = "No cached backend health"),
+        (status = 400, description = "Invalid path encoding", body = String, content_type = "text/plain"))
+))]
 async fn handle_single_backend_health(
     Extension(state): Extension<AdminState>,
     Path(name): Path<String>,
@@ -711,6 +876,13 @@ async fn handle_single_backend_health(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/stats",
+    description = "Read local aggregate health and session counts.",
+    operation_id = "aggregate_stats",
+    responses((status = 200, description = "Aggregate counts", body = AggregateStats, content_type = "application/json"))
+))]
 async fn handle_aggregate_stats(
     Extension(state): Extension<AdminState>,
     Extension(session_handle): Extension<SessionHandle>,
@@ -736,6 +908,13 @@ struct AggregateStats {
     active_sessions: usize,
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/sessions/detail",
+    description = "List local session IDs and elapsed uptime/idle seconds.",
+    operation_id = "list_sessions_detail",
+    responses((status = 200, description = "Local sessions", body = [SessionInfoResponse], content_type = "application/json"))
+))]
 async fn handle_list_sessions_detail(
     Extension(session_handle): Extension<SessionHandle>,
 ) -> Json<Vec<SessionInfoResponse>> {
@@ -760,6 +939,16 @@ struct SessionInfoResponse {
     idle_seconds: u64,
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    delete,
+    path = "/admin/sessions/{id}",
+    description = "Terminate a session owned by this process.",
+    operation_id = "terminate_session",
+    params(("id" = String, Path, description = "Local session ID")),
+    responses((status = 200, description = "Session terminated", body = BackendOpResponse, content_type = "application/json"),
+        (status = 404, description = "Session not found", body = BackendOpResponse, content_type = "application/json"),
+        (status = 400, description = "Invalid path encoding", body = String, content_type = "text/plain"))
+))]
 async fn handle_terminate_session(
     Extension(session_handle): Extension<SessionHandle>,
     Path(id): Path<String>,
@@ -783,6 +972,18 @@ async fn handle_terminate_session(
     }
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    put,
+    path = "/admin/config",
+    description = "Validate and save desired config. HTTP 200 means saved, not applied. Parsing follows the configured file extension (TOML, or YAML with the yaml feature); consult config/status for asynchronous reload or restart requirements.",
+    operation_id = "update_config",
+    request_body(content = String, content_type = "text/plain", description = "Raw configuration text; content type does not select the parser"),
+    responses((status = 200, description = "Saved; applied is false and restart_required may be true", body = ConfigChangeResponse, content_type = "application/json"),
+        (status = 400, description = "Invalid config, invalid UTF-8 or missing config path", content((ConfigChangeResponse = "application/json"), (String = "text/plain"))),
+        (status = 409, description = "Restart required; file and active configuration retained", body = ConfigChangeResponse, content_type = "application/json"),
+        (status = 500, description = "Config file write failed", body = ConfigChangeResponse, content_type = "application/json"),
+        (status = 413, description = "Body exceeds the configured HTTP body limit", body = String, content_type = "text/plain"))
+))]
 async fn handle_update_config(
     Extension(config_path): Extension<Option<std::path::PathBuf>>,
     Extension(policy): Extension<crate::reload_policy::ReloadPolicy>,
@@ -860,6 +1061,13 @@ async fn handle_update_config(
     )
 }
 
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/circuit-breakers",
+    description = "List configured response-aware circuit-breaker states.",
+    operation_id = "circuit_breakers",
+    responses((status = 200, description = "Circuit-breaker states", body = [CircuitBreakerStatus], content_type = "application/json"))
+))]
 async fn handle_circuit_breakers(
     Extension(handles): Extension<Arc<std::collections::HashMap<String, crate::proxy::CbHandle>>>,
 ) -> Json<Vec<CircuitBreakerStatus>> {
@@ -883,35 +1091,117 @@ struct CircuitBreakerStatus {
     health: String,
 }
 
-/// OpenAPI spec for the admin API.
-///
-/// Available at `GET /admin/openapi.json` when the `openapi` feature is enabled.
-#[cfg(feature = "openapi")]
-#[derive(utoipa::OpenApi)]
-#[openapi(
-    info(
-        title = "mcp-proxy Admin API",
-        description = "REST API for managing and monitoring the MCP proxy.",
-        version = "0.1.0",
-    ),
-    components(schemas(
-        AdminBackendsResponse,
-        ProxyInfo,
-        BackendStatus,
-        HealthResponse,
-        crate::cache::CacheStatsSnapshot,
-        SessionsResponse,
-        AddBackendRequest,
-        BackendOpResponse,
-        ConfigChangeResponse,
-        crate::reload_policy::ReloadStatus,
-    ))
-)]
-struct ApiDoc;
+// This registry drives both Axum registration and the generated path list.
+// Handler path annotations are checked against this inventory in tests.
+macro_rules! admin_routes {
+    ($($path:literal => { $first:ident: $handler:ident $(, $method:ident: $other:ident)* }),+ $(,)?) => {
+        fn register_admin_routes() -> Router {
+            let router = Router::new();
+            $(let router = router.route($path, axum::routing::$first($handler)$(.$method($other))*);)+
+            router
+        }
+        #[cfg(all(test, feature = "openapi"))]
+        fn admin_operations() -> Vec<(String, &'static str)> {
+            vec![$((format!("/admin{}", $path), stringify!($first)),
+                   $((format!("/admin{}", $path), stringify!($method)),)*)+
+                 ("/admin/openapi.json".into(), "get")]
+        }
+        #[cfg(feature = "openapi")]
+        #[derive(utoipa::OpenApi)]
+        #[openapi(
+            info(title = "mcp-proxy Admin API", description = "Dedicated-token management API. Version follows the mcp-proxy package; not proxy.version. Axum supplies HEAD for GET routes. Metrics is always registered (empty when disabled). No management token means all admin access is denied."),
+            paths($($handler, $($other,)*)+ handle_openapi),
+            components(schemas(AdminAuthFailure, AdminAuthError))
+        )]
+        struct ApiDoc;
+    };
+}
+admin_routes! {
+    "/backends" => { get: handle_backends },
+    "/health" => { get: handle_health },
+    "/cache/stats" => { get: handle_cache_stats },
+    "/cache/clear" => { post: handle_cache_clear },
+    "/metrics" => { get: handle_metrics },
+    "/sessions" => { get: handle_list_sessions },
+    "/sessions/detail" => { get: handle_list_sessions_detail },
+    "/sessions/{id}" => { delete: handle_terminate_session },
+    "/stats" => { get: handle_aggregate_stats },
+    "/circuit-breakers" => { get: handle_circuit_breakers },
+    "/config" => { get: handle_get_config, put: handle_update_config },
+    "/config/validate" => { post: handle_validate_config },
+    "/config/status" => { get: handle_config_status },
+    "/backends/{name}/health" => { get: handle_single_backend_health },
+    "/backends/{name}/health/history" => { get: handle_backend_health_history },
+    "/backends/add" => { post: handle_add_backend },
+    "/backends/{name}" => { delete: handle_remove_backend, put: handle_update_backend },
+}
 
 #[cfg(feature = "openapi")]
+#[derive(Serialize, utoipa::ToSchema)]
+struct AdminAuthFailure {
+    jsonrpc: String,
+    error: AdminAuthError,
+    id: (),
+}
+#[cfg(feature = "openapi")]
+#[derive(Serialize, utoipa::ToSchema)]
+struct AdminAuthError {
+    code: i32,
+    message: String,
+}
+
+#[cfg(feature = "openapi")]
+fn openapi_document() -> serde_json::Value {
+    let mut doc = serde_json::to_value(<ApiDoc as utoipa::OpenApi>::openapi())
+        .expect("generated OpenAPI is serializable");
+    doc["info"]["version"] = serde_json::json!(env!("CARGO_PKG_VERSION"));
+    // The auth layer rejects before decoding a request and always emits id:null.
+    // Deriving a unit field yields only default:null, so state its type explicitly.
+    doc["components"]["schemas"]["AdminAuthFailure"]["properties"]["id"] =
+        serde_json::json!({"type":"null"});
+    doc["components"]["securitySchemes"] = serde_json::json!({
+        "adminBearer": {"type":"http", "scheme":"bearer",
+            "description":"The dedicated security.admin_token, never an ordinary/scoped proxy credential. No configured token means management is disabled."}
+    });
+    doc["security"] = serde_json::json!([{"adminBearer":[]}]);
+    // Common middleware responses apply to every explicit operation, including
+    // this document itself. A stopped configured Proxy rejects requests before auth.
+    for item in doc["paths"]
+        .as_object_mut()
+        .expect("generated paths")
+        .values_mut()
+    {
+        for (method, operation) in item
+            .as_object_mut()
+            .expect("generated path item")
+            .iter_mut()
+        {
+            if !matches!(
+                method.as_str(),
+                "get" | "post" | "put" | "delete" | "patch" | "head" | "options" | "trace"
+            ) {
+                continue;
+            }
+            operation["responses"]["401"] = serde_json::json!({
+                "description":"Missing or invalid dedicated management credential; also returned when management is disabled.",
+                "content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminAuthFailure"}}}
+            });
+            operation["responses"]["503"] = serde_json::json!({"description":"Configured proxy is shutting down; empty response body."});
+        }
+    }
+    doc
+}
+
+#[cfg(feature = "openapi")]
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/admin/openapi.json",
+    description = "Read the OpenAPI document for this build; requires the openapi feature and dedicated management credential.",
+    operation_id = "openapi",
+    responses((status = 200, description = "OpenAPI document", body = Object, content_type = "application/json"))
+))]
 async fn handle_openapi() -> impl IntoResponse {
-    axum::Json(<ApiDoc as utoipa::OpenApi>::openapi())
+    axum::Json(openapi_document())
 }
 
 /// Build the admin API router.
@@ -958,33 +1248,7 @@ pub(crate) fn admin_router_with_policy(
 ) -> Router {
     let config_toml = std::sync::Arc::new(crate::config_view::redacted_config_toml(config));
 
-    let router = Router::new()
-        // Read-only endpoints
-        .route("/backends", get(handle_backends))
-        .route("/health", get(handle_health))
-        .route("/cache/stats", get(handle_cache_stats))
-        .route("/cache/clear", axum::routing::post(handle_cache_clear))
-        .route("/metrics", get(handle_metrics))
-        .route("/sessions", get(handle_list_sessions))
-        .route("/sessions/detail", get(handle_list_sessions_detail))
-        .route("/sessions/{id}", delete(handle_terminate_session))
-        .route("/stats", get(handle_aggregate_stats))
-        .route("/circuit-breakers", get(handle_circuit_breakers))
-        .route("/config", get(handle_get_config).put(handle_update_config))
-        .route("/config/validate", post(handle_validate_config))
-        .route("/config/status", get(handle_config_status))
-        // Per-backend endpoints
-        .route("/backends/{name}/health", get(handle_single_backend_health))
-        .route(
-            "/backends/{name}/health/history",
-            get(handle_backend_health_history),
-        )
-        // Management endpoints
-        .route("/backends/add", post(handle_add_backend))
-        .route(
-            "/backends/{name}",
-            delete(handle_remove_backend).put(handle_update_backend),
-        )
+    let router = register_admin_routes()
         .layer(Extension(state))
         .layer(Extension(session_handle))
         .layer(Extension(cache_handle))
@@ -1015,6 +1279,60 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
+
+    #[cfg(feature = "openapi")]
+    #[test]
+    fn openapi_matches_registered_operations_and_resolves_every_schema_reference() {
+        use std::collections::BTreeSet;
+        let doc = openapi_document();
+        let _: utoipa::openapi::OpenApi = serde_json::from_value(doc.clone()).unwrap();
+        assert_eq!(doc["info"]["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(doc["security"], serde_json::json!([{"adminBearer":[]}]));
+        assert_eq!(
+            doc["components"]["securitySchemes"]["adminBearer"]["scheme"],
+            "bearer"
+        );
+        let mut actual = BTreeSet::new();
+        let mut ids = BTreeSet::new();
+        for (path, item) in doc["paths"].as_object().unwrap() {
+            for (method, operation) in item.as_object().unwrap() {
+                actual.insert((path.clone(), method.as_str()));
+                assert!(ids.insert(operation["operationId"].as_str().unwrap()));
+                assert!(operation["responses"].get("401").is_some());
+                assert!(operation["responses"].get("503").is_some());
+                assert!(
+                    operation.get("security").is_none(),
+                    "must inherit dedicated bearer security"
+                );
+            }
+        }
+        assert_eq!(actual, admin_operations().into_iter().collect());
+        assert_eq!(actual.len(), 20);
+        fn references(value: &serde_json::Value, root: &serde_json::Value) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, value) in map {
+                        if key == "$ref" {
+                            let pointer = value.as_str().unwrap().strip_prefix('#').unwrap();
+                            assert!(
+                                root.pointer(pointer).is_some(),
+                                "unresolved reference {pointer}"
+                            );
+                        } else {
+                            references(value, root);
+                        }
+                    }
+                }
+                serde_json::Value::Array(array) => {
+                    for value in array {
+                        references(value, root);
+                    }
+                }
+                _ => {}
+            }
+        }
+        references(&doc, &doc);
+    }
 
     fn make_state(statuses: Vec<BackendStatus>) -> AdminState {
         test_admin_state("test-gw", "1.0.0", statuses.len(), statuses)
