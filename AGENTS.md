@@ -208,6 +208,14 @@ well as arguments/response bodies; failures may echo private values. Keep these
 invariants covered through actual initialized CLI MCP sessions, including policy
 denials, disabled flags and builds without default features.
 
+Hyper must remain >=1.12: older HTTP/1 dispatch can advertise stale readiness,
+pool a busy SSE connection and strand startup notifications/discovery behind it
+(hyperium/hyper#4207). Keep the deterministic cooperative-budget driver regression
+in http_dispatch.rs, full CLI sessions and redacted/drained early-exit diagnostics.
+WireTrace records header arrival separately from body/handler completion, plus
+TCP peer identity when available. Do not work around this by disabling SSE or
+adding handshake retries/longer readiness timeouts.
+
 Coalescing uses atomic registration and generation-aware synchronous cleanup;
 the sole result sender belongs to the leader. Cancellation must wake followers
 without replaying tool calls. Preserve positive entry/waiter bounds, the group

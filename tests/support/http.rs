@@ -191,6 +191,7 @@ impl WireTrace {
             let trace = trace.clone();
             async move {
                 let (parts, body) = request.into_parts();
+                trace.events.lock().unwrap().push(json!({"phase":"headers","http_method":parts.method.as_str(),"rpc_method":parts.headers.get("mcp-method").and_then(|value|value.to_str().ok()),"peer":parts.extensions.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|peer|peer.0.to_string()),"elapsed_ms":trace.started.elapsed().as_millis()}));
                 let bytes = axum::body::to_bytes(body, 65536).await.unwrap();
                 let rpc = serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null);
                 let method = rpc["method"].as_str().unwrap_or("GET/DELETE").to_string();
