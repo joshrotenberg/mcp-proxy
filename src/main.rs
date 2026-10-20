@@ -71,24 +71,28 @@ async fn main() -> Result<()> {
         return print_config_summary(&config);
     }
 
-    init_logging(&config)?;
+    let logging = init_logging(&config)?;
+    let result = async {
+        tracing::info!(
+            name = %config.proxy.name,
+            version = %config.proxy.version,
+            backends = config.backends.len(),
+            "Starting MCP proxy"
+        );
 
-    tracing::info!(
-        name = %config.proxy.name,
-        version = %config.proxy.version,
-        backends = config.backends.len(),
-        "Starting MCP proxy"
-    );
+        let hot_reload = config.proxy.hot_reload;
 
-    let hot_reload = config.proxy.hot_reload;
+        let proxy = Proxy::from_config(config).await?;
 
-    let proxy = Proxy::from_config(config).await?;
+        if hot_reload {
+            proxy.enable_hot_reload(cli.config.clone());
+        }
 
-    if hot_reload {
-        proxy.enable_hot_reload(cli.config.clone());
+        proxy.serve().await
     }
-
-    proxy.serve().await
+    .await;
+    let flush = logging.shutdown().await;
+    result.and(flush)
 }
 
 fn print_config_summary(config: &ProxyConfig) -> Result<()> {
@@ -218,7 +222,12 @@ fn logging_filter(config: &ProxyConfig) -> String {
     // Request records are explicitly enabled at INFO, independently of general
     // application verbosity. Keep disabled request targets off in every format.
     format!(
-        "tower_mcp={level},mcp_proxy={level},mcp::audit={audit},mcp::access={access}",
+        "tower_mcp={level},mcp_proxy={level},mcp::audit={audit},mcp::access={access},mcp::trace={trace}",
+        trace = if config.observability.tracing.enabled {
+            "info"
+        } else {
+            "off"
+        },
         level = config.observability.log_level,
         audit = if config.observability.audit {
             "info"
@@ -233,34 +242,44 @@ fn logging_filter(config: &ProxyConfig) -> String {
     )
 }
 
-fn init_logging(config: &ProxyConfig) -> Result<()> {
+#[derive(Default)]
+struct Logging {
+    #[cfg(feature = "otel")]
+    provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
+}
+impl Logging {
+    async fn shutdown(self) -> Result<()> {
+        #[cfg(feature = "otel")]
+        if let Some(provider) = self.provider {
+            tokio::task::spawn_blocking(move || {
+                provider.shutdown_with_timeout(std::time::Duration::from_secs(3))
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("OTLP provider shutdown task failed"))?
+            .map_err(|_| anyhow::anyhow!("OTLP provider shutdown failed"))?;
+        }
+        Ok(())
+    }
+}
+
+fn init_logging(config: &ProxyConfig) -> Result<Logging> {
     let env_filter = logging_filter(config);
 
     #[cfg(feature = "otel")]
     if config.observability.tracing.enabled {
         use opentelemetry::trace::TracerProvider;
-        use opentelemetry_otlp::WithExportConfig;
         use tracing_subscriber::Layer as _;
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
-        let exporter = opentelemetry_otlp::SpanExporter::builder()
-            .with_http()
-            .with_endpoint(&config.observability.tracing.endpoint)
-            .build()
-            .map_err(|_| anyhow::anyhow!("building OTLP span exporter failed"))?;
-
-        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-            .with_batch_exporter(exporter)
-            .with_resource(
-                opentelemetry_sdk::Resource::builder()
-                    .with_service_name(config.observability.tracing.service_name.clone())
-                    .build(),
-            )
-            .build();
+        let provider = mcp_proxy::telemetry::tracer_provider(&config.observability.tracing)?;
 
         let tracer = provider.tracer("mcp-proxy");
-        let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+        let otel_layer = tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
+                metadata.target() == "mcp::trace"
+            }));
 
         let fmt_layer = if config.observability.json_logs {
             tracing_subscriber::fmt::layer()
@@ -280,11 +299,12 @@ fn init_logging(config: &ProxyConfig) -> Result<()> {
             .init();
 
         tracing::info!(
-            endpoint = %config.observability.tracing.endpoint,
             service_name = %config.observability.tracing.service_name,
             "OpenTelemetry tracing enabled"
         );
-        return Ok(());
+        return Ok(Logging {
+            provider: Some(provider),
+        });
     }
 
     let subscriber = tracing_subscriber::fmt()
@@ -296,5 +316,5 @@ fn init_logging(config: &ProxyConfig) -> Result<()> {
     } else {
         subscriber.init();
     }
-    Ok(())
+    Ok(Logging::default())
 }

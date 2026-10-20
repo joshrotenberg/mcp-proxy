@@ -351,7 +351,10 @@ async fn handle_metrics(
     Extension(handle): Extension<Option<metrics_exporter_prometheus::PrometheusHandle>>,
 ) -> impl IntoResponse {
     match handle {
-        Some(h) => h.render(),
+        Some(h) => {
+            h.run_upkeep();
+            h.render()
+        }
         None => String::new(),
     }
 }

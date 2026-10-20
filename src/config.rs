@@ -1119,18 +1119,28 @@ pub struct MetricsConfig {
 }
 
 /// OpenTelemetry distributed tracing configuration.
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TracingConfig {
     /// Enable OTLP trace export (default: false).
     #[serde(default)]
     pub enabled: bool,
-    /// OTLP endpoint (default: http://localhost:4317)
+    /// OTLP HTTP/protobuf trace URL (default: http://localhost:4318/v1/traces)
     #[serde(default = "default_otlp_endpoint")]
     pub endpoint: String,
     /// Service name for traces (default: "mcp-proxy")
     #[serde(default = "default_service_name")]
     pub service_name: String,
+}
+
+impl Default for TracingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: default_otlp_endpoint(),
+            service_name: default_service_name(),
+        }
+    }
 }
 
 // Defaults
@@ -1232,7 +1242,7 @@ fn default_shutdown_timeout() -> u64 {
 }
 
 fn default_otlp_endpoint() -> String {
-    "http://localhost:4317".to_string()
+    "http://localhost:4318/v1/traces".to_string()
 }
 
 fn default_service_name() -> String {
@@ -2440,7 +2450,7 @@ jwks_uri = "https://issuer.example.test/keys"
 
         [observability.tracing]
         enabled = true
-        endpoint = "http://jaeger:4317"
+        endpoint = "http://jaeger:4318/v1/traces"
         service_name = "test-gw"
 
         [performance]
@@ -2491,7 +2501,10 @@ jwks_uri = "https://issuer.example.test/keys"
         assert!(config.observability.json_logs);
         assert!(config.observability.metrics.enabled);
         assert!(config.observability.tracing.enabled);
-        assert_eq!(config.observability.tracing.endpoint, "http://jaeger:4317");
+        assert_eq!(
+            config.observability.tracing.endpoint,
+            "http://jaeger:4318/v1/traces"
+        );
 
         assert!(config.performance.coalesce_requests);
         assert_eq!(config.security.max_argument_size, Some(1048576));

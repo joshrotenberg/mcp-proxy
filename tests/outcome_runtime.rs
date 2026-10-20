@@ -249,16 +249,25 @@ max_hedges=1
             .text()
             .await
             .unwrap();
-        let line = text
+        let total: u64 = text
             .lines()
-            .find(|line| {
+            .filter(|line| {
                 line.starts_with("mcp_proxy_requests_total{")
                     && line.contains("method=\"tools/call\"")
                     && line.contains("outcome=\"tool_error\"")
                     && line.contains("status=\"error\"")
             })
-            .expect("missing tool-error counter");
-        assert_eq!(line.split_whitespace().last(), Some("5"));
+            .map(|line| {
+                line.split_whitespace()
+                    .last()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap()
+            })
+            .sum();
+        // Namespace attribution splits the previous aggregate series. Preserve
+        // the exact number of tool failures across every configured namespace.
+        assert_eq!(total, 5);
     }
     ordinary.shutdown().await.unwrap();
     manager.shutdown().await.unwrap();
