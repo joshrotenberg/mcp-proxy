@@ -11,12 +11,16 @@ fi
 # run offline, and reject a lock change instead of silently resolving updates.
 cargo +"$toolchain" fetch --manifest-path fuzz/Cargo.toml --locked
 lock_before=$(sha256sum fuzz/Cargo.lock)
+# Prebuilt cargo-fuzz may itself target musl. Its compiled-in default must not
+# select static libc for ASan; use the installed Rust compiler's actual host.
+fuzz_host=$(rustc +"$toolchain" -vV | sed -n 's/^host: //p')
+test -n "$fuzz_host"
 corpus=$(mktemp -d)
 trap 'rm -rf "$corpus"' EXIT
 for target in config_parse request_transform; do
     mkdir "$corpus/$target"
     cp "fuzz/seeds/$target/"* "$corpus/$target/"
-    CARGO_NET_OFFLINE=true cargo +"$toolchain" fuzz run "$target" "$corpus/$target" --dev -- \
+    CARGO_NET_OFFLINE=true cargo +"$toolchain" fuzz run "$target" "$corpus/$target" --dev --target "$fuzz_host" -- \
         -runs=256 -max_len=4096 -max_total_time=30 -timeout=5 \
         -rss_limit_mb=1024 -seed=1
     test "$lock_before" = "$(sha256sum fuzz/Cargo.lock)"

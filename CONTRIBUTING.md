@@ -135,8 +135,10 @@ The isolated `fuzz/Cargo.toml` workspace has its own committed lockfile and uses
 the same approved upstream Git revision as the main package. CI audits both
 lockfiles for known security advisories. The runner fetches
 that lock with `--locked`, runs cargo-fuzz offline, and checks that the lock did
-not change (cargo-fuzz 0.13.2 has no `--locked` flag). Each target has a 4 KiB
-input limit, 256 runs, a 30-second total execution limit, a 5-second per-input
+not change (cargo-fuzz 0.13.2 has no `--locked` flag). It explicitly selects the
+installed Rust compiler's host target: prebuilt cargo-fuzz binaries may otherwise
+select static musl, which is incompatible with AddressSanitizer. Each target has
+a 4 KiB input limit, 256 runs, a 30-second total execution limit, a 5-second per-input
 timeout and a 1 GiB RSS limit. The CI job has a separate 10-minute build/run
 budget. Property cases and generated structures are also bounded; concurrency
 properties do not depend on sleeps, handshake retries or timing luck.
@@ -144,11 +146,18 @@ properties do not depend on sleeps, handshake retries or timing luck.
 Checked-in `fuzz/seeds/` inputs are also exercised by ordinary tests. The smoke
 runner copies them into a temporary corpus, so mutations do not dirty the
 checkout. Failures leave reproducers in `fuzz/artifacts/` (uploaded by CI).
-Reproduce one with `cargo +nightly-2026-10-19 fuzz run TARGET PATH_TO_ARTIFACT
---dev`; minimize it with cargo-fuzz's `tmin`, then promote the smallest useful
-input into `fuzz/seeds/TARGET/` and add a focused regression for its expected
-behavior. Fuzz inputs only reach pure parsing/transformation code; they cannot
-spawn backends, resolve secrets or contact stores/identity providers. A bounded
+To reproduce one using the same host selection:
+
+```sh
+fuzz_host=$(rustc +nightly-2026-10-19 -vV | sed -n 's/^host: //p')
+cargo +nightly-2026-10-19 fuzz run TARGET PATH_TO_ARTIFACT --dev --target "$fuzz_host"
+```
+
+Minimize it with cargo-fuzz's `tmin` (also pass `--target "$fuzz_host"`), then
+promote the smallest useful input into `fuzz/seeds/TARGET/` and add a focused
+regression for its expected behavior. Fuzz inputs only reach pure parsing and
+transformation code; they cannot spawn backends, resolve secrets or contact
+stores/identity providers. A bounded
 smoke run is an ongoing regression check, not evidence that all inputs or
 concurrent schedules have been explored.
 
