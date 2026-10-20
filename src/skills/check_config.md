@@ -40,12 +40,15 @@ Report those checks as requiring local verification against the original file.
 5. **Performance**
    - Caching is enabled for read-heavy backends
    - Request coalescing is enabled for concurrent duplicate requests
-   - External cache backend (Redis) for multi-instance deployments
+   - Explicit cache generation only for intentional response sharing/reuse;
+     Redis does not share MCP sessions. Verify session affinity and owner-loss
+     recovery separately; do not replay ambiguous writes.
 
 6. **Observability**
    - Metrics are enabled for production
    - JSON logging for log aggregation
-   - Audit logging for compliance needs
+   - Audit completion metadata; external caller correlation and immutable
+     storage are required for a compliance ledger
 
 Report issues as: CRITICAL (will fail), WARNING (may cause problems), or INFO (suggestion).
 

@@ -2,7 +2,7 @@
 #
 # Ten internal MCP services behind one authenticated endpoint, with
 # per-backend resilience, a canary receiving mirrored traffic, selective
-# caching, request coalescing, and Prometheus metrics.
+# caching and Prometheus metrics; coalescing stays off for mixed writes.
 #
 # Walkthrough: docs/production-gateway.md
 # Validate:    mcp-proxy --config examples/production-gateway.toml --check
@@ -53,6 +53,7 @@ name = "admin"
 
 [auth.role_mapping]
 claim = "scope"
+default_deny = true
 mapping = { "mcp:dev" = "developer", "mcp:analyst" = "analyst", "mcp:ops" = "operator", "mcp:admin" = "admin" }
 
 # =============================================================================
@@ -101,8 +102,8 @@ seconds = 30
 [backends.concurrency]
 max_concurrent = 20
 
-# Documentation search. Read-only by construction (expose_tools), which makes
-# caching and hedging safe.
+# Documentation search. Verify these exposed tools are read-only before enabling
+# caching/hedging; an allowlist restricts names, not actual tool side effects.
 [[backends]]
 name = "docs"
 transport = "http"
@@ -135,14 +136,18 @@ seconds = 10
 delay_ms = 150
 max_hedges = 1
 
-# Read replica of the analytics database. Connection count capped, queries
-# cached for a minute.
+# Read replica of the analytics database. Logical request concurrency capped;
+# query results cached for a minute after verifying read-only semantics.
 [[backends]]
 name = "db-analytics"
 transport = "stdio"
 command = "/usr/local/bin/db-mcp-server"
-args = ["--read-only", "--connection-string", "${ANALYTICS_DB_URL}"]
+args = ["--read-only"]
+# Deployment-supplied db-mcp-server must read this environment variable.
+# Arguments are literal; ${...} substitution is supported in env, not args.
 expose_tools = ["query"]
+[backends.env]
+DB_CONNECTION_STRING = "${ANALYTICS_DB_URL}"
 
 [backends.timeout]
 seconds = 10
@@ -256,9 +261,10 @@ max_ejection_percent = 100
 # Global middleware
 # =============================================================================
 
-# Collapse identical concurrent tool calls into one backend execution.
+# Global coalescing also suppresses independent identical writes; leave it off.
 [performance]
-coalesce_requests = true
+# Mixed read/write tools: independent writes must not share one result.
+coalesce_requests = false
 
 [security]
 max_argument_size = 1048576

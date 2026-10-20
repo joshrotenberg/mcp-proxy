@@ -51,6 +51,7 @@ name = "admin"
 
 [auth.role_mapping]
 claim = "scope"
+default_deny = true
 mapping = { "mcp:dev" = "developer", "mcp:senior" = "senior-dev", "mcp:admin" = "admin" }
 
 # --- Backends ---
@@ -112,8 +113,12 @@ max_entries = 1000
 name = "db"
 transport = "stdio"
 command = "/usr/local/bin/db-mcp-server"
-args = ["--read-only", "--connection-string", "${DB_CONNECTION_STRING}"]
-expose_tools = ["query"]  # only expose read-only query tool
+args = ["--read-only"]
+# Deployment-supplied db-mcp-server must read this environment variable.
+# Arguments are literal; ${...} substitution is supported in env, not args.
+expose_tools = ["query"]
+[backends.env]
+DB_CONNECTION_STRING = "${DB_CONNECTION_STRING}"
 
 [backends.timeout]
 seconds = 10
@@ -128,7 +133,8 @@ period_seconds = 1
 # --- Observability ---
 
 [performance]
-coalesce_requests = true
+# Mixed read/write tools: independent writes must not share one result.
+coalesce_requests = false
 
 [security]
 max_argument_size = 1048576  # 1MB

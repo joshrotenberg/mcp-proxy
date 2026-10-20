@@ -33,17 +33,11 @@
 //!
 //! # Middleware stack position
 //!
-//! Validation runs early in the middleware stack -- after request coalescing
-//! but before capability filtering. This means oversized requests are
-//! rejected before any filtering or routing logic runs. The ordering in
-//! `proxy.rs`:
-//!
-//! 1. Request coalescing
-//! 2. **Request validation** (this module)
-//! 3. Capability filtering ([`crate::filter`])
-//! 4. Search-mode filtering ([`crate::filter`])
-//! 5. Tool aliasing ([`crate::alias`])
-//! 6. Composite tools ([`crate::composite`])
+//! Validation follows capability filtering and precedes coalescing/caching.
+//! It bounds transformed public-call arguments before backend injection, not
+//! the HTTP body size and not arbitrary content safety.
+//! See the [authoritative middleware order](crate#middleware-order) for the
+//! complete configured request path and management branch.
 
 use std::convert::Infallible;
 use std::future::Future;

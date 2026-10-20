@@ -76,15 +76,11 @@
 //!
 //! ## Middleware stack position
 //!
-//! Capability filtering runs after request validation and before search-mode
-//! filtering in the middleware stack. The ordering in `proxy.rs`:
-//!
-//! 1. Request coalescing
-//! 2. Request validation ([`crate::validation`])
-//! 3. **Capability filtering** (this module)
-//! 4. Search-mode filtering (this module)
-//! 5. Tool aliasing ([`crate::alias`])
-//! 6. Composite tools ([`crate::composite`])
+//! Requests reach capability filtering after alias translation and search-mode
+//! filtering, then pass to validation. Responses unwind in reverse, so hidden
+//! original backend names are removed before public alias names are returned.
+//! See the [authoritative middleware order](crate#middleware-order) for the
+//! complete configured request path and management branch.
 //!
 //! # Search-mode filtering ([`SearchModeFilterService`])
 //!

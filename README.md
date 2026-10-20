@@ -34,7 +34,11 @@ For how mcp-proxy relates to other MCP gateways (Docker MCP Gateway, IBM Context
 
 **Reports what is happening.** Prometheus metrics, OpenTelemetry trace export, structured audit logging, an admin HTTP API for health, backend status, and cache stats, and admin MCP tools under the `proxy/` namespace.
 
-Every option is documented in [`config.example.toml`](config.example.toml), deployment shapes in [`docs/architectures.md`](docs/architectures.md), and runnable configurations in [`examples/`](examples/).
+**Development versus published versions:** this branch contains unreleased fixes.
+Installed artifacts and docs.rs/latest may differ; see the version guidance in
+the documentation map and build rustdoc locally for this checkout.
+
+Start with the [documentation map](docs/README.md). Configuration recipes are in [`config.example.toml`](config.example.toml), deployment shapes in [`docs/architectures.md`](docs/architectures.md), and runnable configurations in [`examples/`](examples/).
 
 ## Installation
 
@@ -81,9 +85,14 @@ command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 ```
 
-Run:
+This local example requires Node.js/npm (`npx`), package registry access and a
+filesystem directory the child can access. Backend packages are installed by
+`npx`, not by mcp-proxy. Keep the loopback binding for this unauthenticated example.
+
+Check the configuration, then run:
 
 ```bash
+mcp-proxy --config proxy.toml --check
 mcp-proxy --config proxy.toml
 ```
 
@@ -93,12 +102,18 @@ endpoint at a different path, such as `/mcp`, which belongs in that backend's `u
 
 ## Configuration
 
-See [`config.example.toml`](config.example.toml) for the full configuration reference with all options documented.
+See [`config.example.toml`](config.example.toml) for an annotated configuration example; the [configuration rustdoc](https://docs.rs/mcp-proxy/latest/mcp_proxy/config/) owns the typed reference and limits.
 
 For a complete production example (ten backends behind one endpoint, with JWT/RBAC, per-backend resilience, a mirrored canary, selective caching, and metrics), see [docs/production-gateway.md](docs/production-gateway.md) and [`examples/production-gateway.toml`](examples/production-gateway.toml).
 
+Feature snippets below marked as fragments extend a config with the `[proxy]`
+and `[proxy.listen]` tables from Quick Start. Backend examples replace/add their
+`[[backends]]` block; do not concatenate duplicate backend names or tables.
+Authentication examples are complete configs with a placeholder HTTP backend.
+
 ### Per-backend middleware
 
+<!-- config-fragment -->
 ```toml
 [[backends]]
 name = "github"
@@ -143,6 +158,7 @@ resource_ttl_seconds = 300
 
 ### Argument injection
 
+<!-- config-fragment -->
 ```toml
 [[backends]]
 name = "db"
@@ -167,6 +183,7 @@ overwrite = true
 
 ### Traffic mirroring
 
+<!-- config-fragment -->
 ```toml
 [[backends]]
 name = "api"
@@ -186,6 +203,7 @@ mirror_percent = 10
 HTTP backends (including SSE responses) and WebSocket handshakes can use custom
 outbound headers. Values support the same environment substitution as bearer tokens:
 
+<!-- config-fragment -->
 ```toml
 [[backends]]
 name = "api"
@@ -245,6 +263,7 @@ Enable coalescing only when sharing identical concurrent tool calls and resource
 reads is appropriate for the deployment. It shares an in-flight result, not a
 cached result; later requests execute again. Each caller retains its request ID.
 
+<!-- config-fragment -->
 ```toml
 [performance]
 coalesce_requests = true
@@ -271,6 +290,7 @@ explicitly for legitimately long operations. Changes to these limits require res
 
 ### MCP request logging
 
+<!-- config-fragment -->
 ```toml
 [observability]
 log_level = "warn" # General application/dependency verbosity
@@ -516,13 +536,42 @@ requests as the same subject.
 see the [backend authentication guide](https://docs.rs/mcp-proxy/latest/mcp_proxy/config/index.html#backend-authentication-and-migration)
 for migration, shared-cache identity and redirect boundaries.
 
+Bearer authentication (a complete configuration with a placeholder HTTP backend):
+
 ```toml
-# Bearer token
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "files"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [auth]
 type = "bearer"
-tokens = ["my-secret-token"]
+tokens = ["${API_TOKEN}"]
+```
 
-# Or JWT with RBAC
+Alternatively, JWT with RBAC (`oauth` feature). Set `ADMIN_TOKEN` before checking
+or starting; the ordinary role called `admin` below grants backend tool access,
+while only the dedicated credential grants management authority. Replace the placeholder backend and
+configure the real issuer/JWKS endpoints before deployment.
+
+```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "files"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [auth]
 type = "jwt"
 issuer = "https://auth.example.com"
@@ -539,10 +588,15 @@ name = "admin"
 [auth.role_mapping]
 claim = "scope"
 mapping = { "mcp:read" = "reader", "mcp:admin" = "admin" }
+default_deny = true
+
+[security]
+admin_token = "${ADMIN_TOKEN}"
 ```
 
 ### Capability filtering
 
+<!-- config-fragment -->
 ```toml
 [[backends]]
 name = "files"
@@ -564,18 +618,21 @@ Add to your `Cargo.toml`:
 mcp-proxy = "0.6"
 ```
 
+Inside an async function returning `anyhow::Result<()>`:
+
 ```rust
 use mcp_proxy::{Proxy, ProxyConfig};
 
 let config = ProxyConfig::load("proxy.toml".as_ref())?;
 let proxy = Proxy::from_config(config).await?;
 
-// Embed in an existing axum app
-let (router, session_handle) = proxy.into_router();
-
-// Or serve standalone
+// Serve standalone:
 proxy.serve().await?;
 ```
+
+For embedding, use `proxy.into_router()` instead of consuming the same proxy
+with `serve()`. Retain a shutdown handle and drain the host server; see the
+[compiled embedding example](https://docs.rs/mcp-proxy/latest/mcp_proxy/#shutdown-and-embedding).
 
 ## Admin API
 
@@ -595,6 +652,7 @@ and the tested [NGINX configuration](examples/nginx-session-affinity.conf).
 Management requires a dedicated credential, distinct from ordinary and scoped
 bearer tokens:
 
+<!-- config-fragment -->
 ```toml
 [security]
 admin_token = "${ADMIN_TOKEN}"
@@ -653,22 +711,9 @@ JWKS startup diagnostics also omit endpoint values and untrusted response data.
 
 ## Architecture
 
-```
-Client
-  |
-  v
-[Auth] -> [Audit] -> [Metrics] -> [RBAC]
-  -> [Alias] -> [Filter] -> [Validation] -> [Coalesce] -> [Cache]
-  -> [Mirror] -> [Inject Args]
-  -> McpProxy
-       |
-       v  (per-backend)
-     [Retry] -> [Hedge] -> [Concurrency] -> [Rate Limit]
-       -> [Timeout] -> [Circuit Breaker] -> [Outlier Detection]
-       -> Backend
-```
-
-Global middleware wraps the entire proxy. Per-backend middleware is applied individually to each backend connection. All middleware is built with tower `Service` layers.
+The [crate-level middleware order](https://docs.rs/mcp-proxy/latest/mcp_proxy/#middleware-order)
+is authoritative for request flow, response unwinding and the management branch.
+Global layers wrap the proxy; each backend owns its resilience chain.
 
 For an application-owned decision service, see [external tool gates](docs/external-tool-gates.md) for interception points, policy ordering, and a bounded non-production pilot.
 
@@ -678,7 +723,7 @@ Pre-built binaries and `cargo install` include the default features. If you're b
 
 | Feature | Default | What it includes |
 |---------|---------|-----------------|
-| `otel` | yes | OpenTelemetry distributed tracing (OTLP export) |
+| `otel` | yes | OpenTelemetry request spans (OTLP HTTP/protobuf export) |
 | `metrics` | yes | Prometheus metrics and `/admin/metrics` endpoint |
 | `oauth` | yes | JWT/JWKS auth, OAuth, bearer scoping, and RBAC |
 | `openapi` | yes | OpenAPI schema and endpoint support |
@@ -686,7 +731,7 @@ Pre-built binaries and `cargo install` include the default features. If you're b
 | `discovery` | yes | BM25 tool discovery and search exposure mode |
 | `yaml` | yes | YAML configuration files using the maintained `yaml_serde` parser |
 | `skills` | yes | agentskills.io prompts for proxy administration |
-| `redis-cache` | no | Redis response cache; explicit generations enable sharing |
+| `redis-cache` | no | Redis response cache; explicit generations enable response sharing |
 | `sqlite-cache` | no | SQLite response cache; explicit generations enable restart reuse |
 | `protocol-2026-07-28` | no | Released MCP 2026-07-28 protocol support through tower-mcp |
 

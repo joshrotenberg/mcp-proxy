@@ -1,8 +1,8 @@
 # Testing Sandbox Proxy
 #
-# Isolated environment for testing MCP integrations. Uses in-process
-# channel backends and stdio mocks. Safe to run in CI with no external
-# dependencies.
+# Deployment sketch for an isolated testing environment. Requires Node/npm,
+# fixture files, separately supplied stdio executables and an HTTP peer.
+# --check validates configuration only; it does not install or run these peers.
 #
 # See: docs/architectures.md #9
 

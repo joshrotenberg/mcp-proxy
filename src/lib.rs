@@ -30,7 +30,7 @@
 //!     .http_backend("api", "http://api:8080")
 //!     .timeout(30)
 //!     .rate_limit(100, 1)
-//!     .stdio_backend("files", "npx", &["-y", "@mcp/server-files"])
+//!     .stdio_backend("files", "npx", &["-y", "@modelcontextprotocol/server-filesystem"])
 //!     .build()
 //!     .await?;
 //!
@@ -86,6 +86,39 @@
 //! Configured hedges seek successful alternatives to tool/server failures;
 //! metrics and request logs distinguish bounded outcome classes.
 //!
+//! # Middleware order
+//!
+//! This is the authoritative configured **request** order (outermost first).
+//! Optional layers run only when enabled. Responses unwind in reverse order.
+//!
+//! ```text
+//! HTTP spans -> Auth (axum) -> MCP spans -> Metrics -> Global Rate Limit
+//!   -> Audit -> Access Log -> Management Dispatch -> Ordinary Guard
+//!   -> Search Invocation -> Token Validation -> RBAC -> Bearer Scoping
+//!   -> Composite -> Alias -> Search Mode Filter -> Capability Filter
+//!   -> Validation -> Coalesce -> Cache -> Mirror -> Failover -> Canary
+//!   -> Parameter Overrides -> Inject Args -> Backend Management Guard -> McpProxy
+//!
+//! Per backend:
+//! Outlier Detection -> CatchError -> Circuit Breaker -> Timeout -> Rate Limit
+//!   -> Concurrency Limit -> Hedge -> Retry -> Backend
+//! ```
+//!
+//! Management branches at Management Dispatch to an admin-only guard around the
+//! raw proxy, sharing the incoming rate limit, audit/access records and metrics,
+//! while bypassing data-plane policy/transforms/caches. Ordinary requests cannot
+//! use that branch. Search Invocation resolves the public target before caller
+//! authorization. Composite targets independently re-enter caller policy and
+//! the ordinary stack below composite expansion; nested expansion is unsupported.
+//!
+//! Aliases map public request names to backend names before capability filtering;
+//! filtering uses original backend names. On responses, filtering removes hidden
+//! capabilities before aliases rename the surviving entries for callers. Caller
+//! policy uses public names. Validation checks arguments after caller policy and
+//! name translation, before coalescing/caching and backend argument injection.
+//! Raw [`Proxy::mcp_proxy`] access bypasses this configured stack and HTTP auth;
+//! embedders serving it must supply their own complete policy boundary.
+//!
 //! # Traffic Routing
 //!
 //! - **Failover** -- N-way priority chains with automatic fallback
@@ -117,7 +150,7 @@
 //! - Cache stats and clearing
 //! - Config viewing, validation, and updates
 //! - Prometheus metrics and OpenAPI spec
-//! - Optional bearer token auth (`security.admin_token`)
+//! - Dedicated management credential (`security.admin_token`); absent means disabled
 //!
 //! # Tool Discovery
 //!
@@ -313,8 +346,9 @@
 //! interrupted tool calls are not replayed automatically. The default group
 //! deadline is 300 seconds, including backend readiness.
 //!
-//! Middleware stack overhead is sub-microsecond (~115ns per request). Cache hits
-//! are 33x faster than backend round-trips. See `benches/proxy_overhead.rs`.
+//! See the [benchmark methodology and historical results](https://github.com/joshrotenberg/mcp-proxy/blob/main/docs/benchmarks.md).
+//! These are workload/version-specific measurements, not current production
+//! latency guarantees; representative benchmark composition is tracked in #296.
 
 #![warn(missing_docs)]
 

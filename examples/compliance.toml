@@ -47,6 +47,7 @@ name = "compliance-officer"
 # Empty = all tools allowed
 
 [auth.role_mapping]
+default_deny = true
 claim = "roles"
 mapping = { "mcp:analyst" = "analyst", "mcp:trader" = "trader", "mcp:compliance" = "compliance-officer" }
 
@@ -127,7 +128,8 @@ max_argument_size = 65536  # 64KB -- strict limit
 admin_token = "${ADMIN_TOKEN}"
 
 [performance]
-coalesce_requests = true
+# Mixed read/write tools: independent writes must not share one result.
+coalesce_requests = false
 
 [observability]
 audit = true

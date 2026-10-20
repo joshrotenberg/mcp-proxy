@@ -89,38 +89,16 @@ examples/
 
 The middleware stack is built in `proxy.rs::build_middleware_stack()`. Order matters -- outermost runs first.
 
-**Global middleware** (wraps the entire proxy service):
-```
-Request flow (outer to inner):
-HTTP spans -> Auth (axum layer) -> MCP spans -> Metrics -> Global Rate Limit -> Audit -> Access Log
-  -> Management Dispatch -> Ordinary Guard -> Search Invocation -> Token Validation -> RBAC -> Bearer Scoping -> Composite -> Alias
-  -> Search Mode Filter -> Capability Filter -> Validation -> Coalesce -> Cache
-  -> Mirror -> Failover -> Canary -> Parameter Overrides -> Inject Args
-  -> Backend Management Guard -> McpProxy
-```
-
-The ordinary path is shown above. Verified management requests branch at
-Management Dispatch to an admin-only guard around the raw McpProxy. Both paths
-share global rate limiting, audit/access logging, and metrics. Management avoids
-data-plane caches/coalescing and capability transforms; ordinary calls are guarded
-before shared caches and again at backend dispatch to prevent indirect access.
-Search Invocation resolves `proxy/call_tool` before caller policies so they
-inspect the public target, preserving the original request context and protocol
-fields. Composite targets independently re-enter the same caller policies and
-ordinary middleware below composite expansion; nested expansion is unsupported.
-The caller must be allowed both the composite and each target. Shared global
-rate limiting and telemetry apply once to the incoming request.
-
-Only the dedicated `security.admin_token` grants management authority. The HTTP
-transport bridges a private verified identity and binds sessions to it, including
-in builds without OAuth.
-
-**Per-backend middleware** (applied to each backend individually):
-```
-Request flow (outer to inner):
-Outlier Detection -> CatchError -> Circuit Breaker -> Timeout -> Rate Limit
-  -> Concurrency Limit -> Hedge -> Retry -> Backend
-```
+The authoritative request-order diagram and management branch are in the
+[crate-level rustdoc](src/lib.rs) under **Middleware order**. Update that section
+with stack changes; README and module guides link to it rather than duplicating
+order diagrams. `build_middleware_stack` wraps services from inner to outer;
+responses unwind in reverse. Caller policies inspect public names, capability
+filters inspect original backend names, and validation precedes coalescing/cache.
+Only `security.admin_token` grants management; sessions bind verified identity
+and authority. Ordinary/composite/search calls cannot reach management indirectly.
+Composite targets require both composite and target permission and independently
+re-enter caller policy; global rate limiting and telemetry apply once per input.
 
 ### Key design pattern: Error = Infallible
 
@@ -335,7 +313,10 @@ The library enables `missing_docs`; CI treats its warnings as errors.
 - All public APIs must have doc comments
 - Module-level docs explain purpose and usage patterns
 - Doc examples should be runnable (`cargo test --doc`)
-- Keep examples up to date -- stale doc examples break `cargo test --doc`
+- Keep examples up to date -- stale Rust doc examples break `cargo test --doc`
+- Keep `tests/documentation.rs` CLI preparation/workflow/link checks passing;
+  explicitly mark README fragments and preserve required configuration context.
+  Module TOML reference fragments are not validated by Rust doctests.
 
 **Pre-push checks** (MUST pass before every push):
 ```bash

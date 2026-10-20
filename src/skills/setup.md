@@ -28,7 +28,7 @@ You are helping the user set up an mcp-proxy configuration. Guide them through c
 [proxy]
 name = "my-proxy"
 [proxy.listen]
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 8080
 
 [[backends]]
@@ -36,10 +36,17 @@ name = "backend-name"
 transport = "stdio"  # or "http" or "websocket"
 command = "command"   # for stdio
 args = ["arg1"]       # for stdio
-url = "http://..."    # for http/websocket
+# For an HTTP backend, replace command/args and transport with:
+# transport = "http"
+# url = "http://127.0.0.1:9000/mcp"
 ```
 
 ## Available Tools
+
+Management is disabled unless a dedicated `security.admin_token` is configured.
+Initialize a separate MCP session with that token to use these tools; ordinary
+backend credentials do not grant management. Use your original file for edits:
+`proxy/config` is a redacted startup snapshot, not a live editable export.
 
 Use these proxy admin tools to verify the setup:
 - `proxy/list_backends` -- verify backends are connected

@@ -5,9 +5,21 @@ architecture patterns for an MCP proxy, informed by emerging industry practice,
 traditional API gateway patterns (Kong, Envoy, Traefik), and the specific
 capabilities of `mcp-proxy`.
 
+**Status vocabulary:** **Supported** means current configured behavior;
+**External** needs the deployment/application/IdP; **Future** is not implemented.
+The lists below describe design ingredients, not complete deployable recipes.
+Current limits are authoritative in the [production guide](production-gateway.md),
+[configuration reference](https://docs.rs/mcp-proxy/latest/mcp_proxy/config/),
+[middleware order](https://docs.rs/mcp-proxy/latest/mcp_proxy/#middleware-order)
+and [session routing guide](https://docs.rs/mcp-proxy/latest/mcp_proxy/#multiple-replicas-and-sessions).
+Industry sources and statistics are historical research, not verified current
+product comparisons, benchmarks, security certification or a feature commitment.
+
 ---
 
 ## 1. Enterprise Tool Consolidation Hub
+
+**Current status:** Supported: namespace routing, backend limits and JWT/RBAC. External: corporate IdP and SIEM. Audit events omit caller identity and argument/result bodies.
 
 **Scenario:** A large engineering organization has dozens of internal MCP servers
 (GitHub, Jira, Confluence, internal APIs, databases) used by hundreds of
@@ -46,6 +58,8 @@ use case.
 
 ## 2. Compliance-First Financial Services Gateway
 
+**Current status:** Supported: role policies, size limits and read-backend caches. External: identity-correlated immutable audit, PII/DLP controls and compliance assessment. Size limits do not prevent data exfiltration.
+
 **Scenario:** A bank's AI development team needs MCP tool access but must satisfy
 SOX, SOC 2, and internal audit requirements. Every tool invocation must be
 logged with caller identity, arguments, and results. Certain tools (anything
@@ -66,7 +80,7 @@ AI Assistants (restricted network)
 - JWT auth with fine-grained RBAC: `analyst` role gets read-only tools,
   `trader` role gets trade execution, `compliance` gets audit tools
 - All write tools require `trader` or `compliance` role
-- Max argument size limits to prevent data exfiltration
+- Max argument byte limits (External: separate DLP/exfiltration controls)
 - Rate limiting on trade execution (prevent runaway AI agent trades)
 - Structured JSON audit logs shipped to immutable storage
 - No caching on trade-execution (must always hit live system)
@@ -83,6 +97,8 @@ MCP servers running without security review -- this pattern addresses that gap.
 ---
 
 ## 3. Micro-MCP: Single-Responsibility Backend Composition
+
+**Current status:** Supported: per-backend middleware and plain, unreferenced additions. External: process/container isolation. Policy-bearing backends require restart; connections are not independently bounded at startup (#283).
 
 **Scenario:** A platform team wants each MCP capability to be an independently
 deployable, single-purpose microservice. A file server, a search server, a
@@ -104,7 +120,7 @@ Agent
 - Per-backend concurrency limits (prevent one backend from starving others)
 - Circuit breakers on each backend (independent failure domains)
 - Capability filtering: `fs` backend only exposes read operations
-- Hot reload: new microservices added without proxy restart
+- Hot reload: only plain, unreferenced microservices can be added live
 
 **Proxy features leveraged:** Namespace routing, concurrency limits,
 circuit breaker, capability filtering, hot reload.
@@ -116,6 +132,8 @@ this pattern. Envoy AI Gateway auto-prefixes tool names with backend names
 ---
 
 ## 4. Developer Productivity Multiplier (Local Dev)
+
+**Current status:** Supported: local aggregation. External: Node/npm, server packages and credentials. Timeouts are opt-in, not a default 30 seconds; caching avoids calls, not child spawns. Audit uses INFO independently of debug verbosity.
 
 **Scenario:** An individual developer wants a single MCP endpoint that aggregates
 their personal toolchain: filesystem, GitHub, a local database, a note-taking
@@ -135,11 +153,11 @@ Cursor       --/      --> filesystem backend (stdio)
 
 **Middleware config:**
 - No auth (local only, bound to 127.0.0.1)
-- Timeouts on all backends (30s default)
+- Explicitly configure timeouts on all backends (for example 30s; not enabled by default)
 - Tool aliasing: rename verbose tool names to short forms
   (`read_file` -> `read`, `list_directory` -> `ls`)
-- Response caching on filesystem reads (reduce subprocess spawns)
-- Debug-level audit logging for troubleshooting
+- Response caching on read-only filesystem tools (reduces calls, not subprocess spawns)
+- INFO audit/access records; debug application logging for troubleshooting
 
 **Proxy features leveraged:** Namespace routing, tool aliasing, response
 caching, timeout, observability (debug logging).
@@ -151,6 +169,8 @@ proxy server similarly aggregates multiple backends for local development.
 ---
 
 ## 5. Multi-Model AI Orchestration Layer
+
+**Current status:** Supported: per-agent roles and backend/global limits. External: orchestration and identity-based quotas. Future: per-role/caller metric attribution; current metrics have bounded requested-namespace labels.
 
 **Scenario:** An AI orchestration platform runs multiple specialized agents
 (a coding agent, a research agent, a data analysis agent) that each need
@@ -176,11 +196,10 @@ Data Agent (role: analyst)           --/      --> web-search backend
   - `researcher`: web-search, filesystem (read-only)
   - `analyst`: database, filesystem (read-only)
   - `orchestrator`: all tools
-- Rate limiting per agent identity (prevent token-heavy agents from
-  monopolizing backends)
+- External identity-keyed quotas; built-in limits are per backend/global
 - Request coalescing (if multiple agents request the same resource
   simultaneously, deduplicate)
-- Prometheus metrics per role for cost attribution
+- External role/cost attribution; built-in metrics are not labeled per role
 
 **Proxy features leveraged:** JWT/RBAC, capability filtering per role,
 rate limiting, request coalescing, Prometheus metrics, namespace routing.
@@ -193,6 +212,8 @@ implements multi-agent coordination through shared MCP context.
 
 ## 6. SaaS Platform MCP-as-a-Service
 
+**Current status:** Supported: explicit separate backend names and static role grants. External: tenant provisioning/isolation and subscription accounting. Future: native per-tenant quotas, billing labels and dynamic credential delegation. Backend names cannot contain the separator: use customer-a-crm, not customer-a/crm. Onboarding policy requires restart.
+
 **Scenario:** A SaaS company wants to offer MCP access to its platform as a
 product feature. Each customer tenant gets their own tool surface, credentials,
 and rate limits. The proxy is the product boundary.
@@ -200,24 +221,24 @@ and rate limits. The proxy is the product boundary.
 **Architecture:**
 ```
 Customer A Agent --> mcp-proxy (multi-tenant)
-Customer B Agent -->      --> customer-a/crm backend
-Customer C Agent -->      --> customer-a/analytics backend
-                          --> customer-b/crm backend
-                          --> customer-b/billing backend
-                          --> shared/docs backend
+Customer B Agent -->      --> customer-a-crm backend
+Customer C Agent -->      --> customer-a-analytics backend
+                          --> customer-b-crm backend
+                          --> customer-b-billing backend
+                          --> shared-docs backend
 ```
 
 **Middleware config:**
 - JWT auth with tenant ID in claims
-- Per-tenant namespace isolation (customer A cannot see customer B's tools)
-- Per-tenant rate limits (based on subscription tier)
-- Per-tenant circuit breakers (one tenant's failures don't cascade)
+- Explicit static RBAC grants over separate backend names; namespace alone is not tenant isolation
+- External per-tenant rate limits (not a built-in policy key)
+- Separate per-backend circuit breakers (not tenant-keyed breakers)
 - Capability filtering driven by subscription tier:
   - Free: read-only tools, 100 req/min
   - Pro: read/write tools, 1000 req/min
   - Enterprise: all tools, custom limits
-- Prometheus metrics with tenant labels for billing
-- Hot reload for onboarding new tenants without downtime
+- External tenant-labeled billing metrics (not emitted by this proxy)
+- Restart/reconstruction to change tenant role policy; no downtime guarantee
 
 **Proxy features leveraged:** JWT/RBAC, namespace routing, rate limiting,
 circuit breaker, capability filtering, hot reload, Prometheus metrics.
@@ -230,6 +251,8 @@ workspaces with isolated tool catalogs.
 ---
 
 ## 7. Edge/IoT Device Fleet Gateway
+
+**Current status:** Supported: backend timeout/breaker/filter/cache controls. External: device safety, network isolation and control-command idempotency. MCP tool hints are not a security proof.
 
 **Scenario:** A manufacturing company deploys MCP servers on edge compute nodes
 connected to PLCs, sensors, and cameras. A central AI system queries device
@@ -269,6 +292,8 @@ through standard tool interfaces.
 
 ## 8. CI/CD Pipeline Integration Gateway
 
+**Current status:** Supported: JWT/RBAC and backend filtering. External: deployment approval and caller-attributed audit. Aliases change a local tool name within its existing backend namespace; they cannot rename circleci to ci.
+
 **Scenario:** A CI/CD system uses AI agents to analyze build failures, suggest
 fixes, and run automated remediation. The agents need access to build logs,
 source code, issue trackers, and deployment tools -- but with strict guardrails
@@ -292,8 +317,8 @@ CI Agent (role: ci-bot)
 - Capability filtering: deploy backend only exposes `deploy/status`,
   hides `deploy/trigger` from ci-bot role
 - Rate limiting on GitHub API calls (avoid hitting rate limits)
-- Tool aliasing: `circleci/get_build_logs` -> `ci/logs`
-- Audit logging for compliance (who deployed what, when)
+- Tool aliasing: `circleci/get_build_logs` -> `circleci/logs`
+- Completion audit metadata; External caller attribution/compliance ledger
 
 **Proxy features leveraged:** JWT/RBAC, capability filtering, rate limiting,
 tool aliasing, audit logging, namespace routing.
@@ -305,6 +330,8 @@ with MCP and agentic AI.
 ---
 
 ## 9. Testing and Development Sandbox
+
+**Current status:** Supported: local application testing, cache and resilience. External: all sketch peers/fixture data. Hot reload cannot swap policy-bearing backends; use reconstruction/restart for policy tests.
 
 **Scenario:** A team developing MCP servers needs a staging environment where
 they can test new backends alongside stable ones, with the ability to A/B test
@@ -329,7 +356,7 @@ Test harness / MCP Inspector
   circuit breaker behavior)
 - Response caching validation (verify TTLs work correctly)
 - Debug-level logging and tracing for test diagnostics
-- Hot reload: swap backend configs during test runs
+- Reconstruct/restart for policy-bearing backend swaps during test runs
 
 **Proxy features leveraged:** Namespace routing, tool aliasing, circuit
 breaker, response caching, hot reload, observability (debug + tracing).
@@ -342,6 +369,8 @@ spec-driven development workflows for AI-assisted development.
 
 ## 10. Zero-Trust Security Perimeter
 
+**Current status:** Supported: authentication, tool policy and argument byte limits. External: injection/DLP scanning, human approval, DDoS edge protection and immutable caller-attributed audit. No built-in content scanner or compliance guarantee; HTTP auth rejections are outside MCP audit/metrics.
+
 **Scenario:** A security-conscious organization wants every MCP tool invocation
 to go through a central enforcement point that validates identity, checks
 authorization, scans arguments for injection attacks, and produces an immutable
@@ -352,22 +381,22 @@ audit trail. No direct MCP server access is permitted.
 Any AI client (must present JWT)
   --> mcp-proxy (zero-trust perimeter)
         [Auth layer: verify JWT, extract claims]
-        [Validation layer: check argument sizes, scan for injection]
+        [Argument byte limits; External: content/injection scanning]
         [Filter layer: RBAC-based tool visibility]
-        [Audit layer: log everything]
+        [Audit: completion metadata only; External: compliance ledger]
           --> internal backends (all on private network)
 ```
 
 **Middleware config:**
 - JWT auth with JWKS rotation, short-lived tokens
 - RBAC with deny-by-default posture
-- Max argument size enforcement (prevent data exfiltration)
-- Input validation / sanitization layer
-- Structured JSON audit logs to immutable storage (WORM)
-- Rate limiting (DDoS protection)
+- Max argument byte enforcement (not DLP)
+- External content validation / sanitization layer (not built in)
+- External caller correlation and immutable storage (WORM) for completion logs
+- Backend/global rate limits; External edge DDoS protection
 - No caching (security-sensitive, always verify fresh)
-- Prometheus metrics with security-relevant counters
-  (auth failures, blocked requests, circuit breaker trips)
+- Backend/MCP telemetry; External HTTP auth/security monitoring
+  (MCP request counters do not include pre-MCP authentication rejections)
 
 **Proxy features leveraged:** JWT/RBAC, capability filtering, max argument
 size, audit logging (JSON), rate limiting, Prometheus metrics.
@@ -381,6 +410,8 @@ TBAC (task-based access control). The Strata MCP Gateway and Sentinel Gateway
 ---
 
 ## 11. Cost Optimization and Token Reduction Proxy
+
+**Current status:** Supported: cache/coalescing on suitable read-only workloads. External: cost accounting. Aliases rename tools; they do not simplify results, compress output or guarantee token savings. Cache and coalescing must not suppress independent writes.
 
 **Scenario:** An organization is spending heavily on AI API costs because agents
 make redundant tool calls and fetch the same resources repeatedly. The gateway
@@ -423,6 +454,8 @@ agents can generate 1000+ API calls per minute.
 
 ## 12. API-to-MCP Bridge (Legacy System Modernization)
 
+**Current status:** Supported: routing to MCP-speaking adapters. External: REST/gRPC/ODBC/SMTP adapters, credentials and process management. mcp-proxy does not translate arbitrary APIs into MCP.
+
 **Scenario:** An organization has dozens of existing REST/gRPC APIs that they
 want to expose as MCP tools without rewriting them. The gateway fronts
 lightweight MCP server adapters that wrap each legacy API.
@@ -458,6 +491,8 @@ guidance on when and how to wrap APIs in MCP.
 
 ## 13. Federated Multi-Gateway Mesh
 
+**Current status:** Supported: explicitly configured HTTP peers, including another proxy. External: hierarchy configuration and separate fixed credentials. Future: automatic federation/registry sync and end-user delegation; forward_auth=true is rejected. Namespace composition is not a distributed control plane.
+
 **Scenario:** A large organization has regional or departmental MCP gateways
 that need to be discoverable and composable. A top-level gateway federates
 the departmental gateways, providing a single entry point while preserving
@@ -476,7 +511,8 @@ Organization-wide AI agents
 ```
 
 **Middleware config (org-gateway):**
-- JWT auth at the top level, token forwarding to child gateways
+- JWT auth at the top level; fixed, separately configured child credentials
+  (no inbound-token forwarding)
 - Double namespace: `engineering/github/create_issue`
 - Per-gateway circuit breakers (entire department failover)
 - Rate limiting at org level (global quotas) and child level (team quotas)
@@ -494,6 +530,8 @@ and Envoy's service mesh federation.
 
 ## 14. AI Agent Guardrails and Kill Switch
 
+**Current status:** Supported: startup filters, RBAC and per-backend limits/breakers. Future: live per-tool enable/disable, per-tool rate limits (#298) and live filter edits. No instantaneous tool kill switch; policy edits require restart. Backend removal is limited by restart admission and is not a substitute.
+
 **Scenario:** An organization running autonomous AI agents needs the ability
 to instantly disable specific tools or entire backends if an agent exhibits
 unexpected behavior. The proxy serves as the control point for
@@ -503,19 +541,19 @@ human-in-the-loop oversight.
 ```
 Autonomous AI Agents
   --> mcp-proxy (guardrail layer)
-        [Admin API: enable/disable tools in real-time]
+        [Future: live per-tool kill switch; currently restart policy]
         [Rate limiting: detect and throttle runaway agents]
         [Circuit breaker: automatic protection]
-        [Audit: full trace of agent actions]
+        [Audit: completion metadata; External caller attribution]
           --> tool backends
 ```
 
 **Middleware config:**
-- Admin API for live tool enable/disable (kill switch)
-- Per-tool rate limits (detect agents calling the same tool in a loop)
+- Future: admin API for live tool enable/disable (not available)
+- Future: per-tool rate limits; current limits apply per backend/global
 - Circuit breaker with aggressive thresholds
 - RBAC: agents have minimal permissions, human operators have admin
-- Hot reload: update capability filters without restart
+- Policy filter edits require restart; hot reload rejects these edits
 - Prometheus alerts on anomalous tool call patterns
 - Audit logging for post-incident review
 
@@ -530,6 +568,8 @@ agentic AI" is an emerging pattern with dedicated research.
 ---
 
 ## 15. Embedded Proxy (Library Mode)
+
+**Current status:** Supported: configured library/router and builder. External: host lifecycle, custom Tower policy and optional shared metrics ownership. Raw upstream access bypasses configured policy and managed transport ownership; use the configured router unless deliberately supplying those contracts.
 
 **Scenario:** A Rust application (CLI tool, web service, or desktop app) wants
 to embed MCP proxy functionality directly, exposing aggregated tools through
@@ -556,7 +596,7 @@ Custom Rust Application
 
 **Industry precedent:** This follows the pattern of embedding Envoy as a
 library (via envoy-mobile) or embedding Kong's core as a library. The
-mcp-proxy already supports this via `mcp-proxy = "0.1"` as a crate
+mcp-proxy already supports this via `mcp-proxy = "0.6"` (published release; development type pins differ) as a crate
 dependency with `into_router()` for axum integration.
 
 ---
@@ -570,13 +610,13 @@ dependency with `into_router()` for axum integration.
 | Virtual host routing | Namespace-based routing |
 | Backend-per-route middleware | Per-backend middleware stack |
 | API key / OAuth auth | Bearer token / JWT auth |
-| Rate limiting per consumer | Rate limiting per role/tenant |
+| Rate limiting per consumer | External role/tenant quotas; built-in backend/global limits |
 | Circuit breaker | Circuit breaker per backend |
 | Response caching | Tool/resource response caching |
 | Request transformation | Tool aliasing |
 | API versioning | Namespace versioning (v1/math, v2/math) |
-| Canary/blue-green deploy | Hot reload with parallel backends |
-| Service mesh federation | Federated multi-gateway mesh |
+| Canary/blue-green deploy | Startup canary policy; policy changes require restart |
+| Service mesh federation | Explicit HTTP peers; automatic federation is future work |
 | Plugin system | Tower middleware layers |
 | Health checks | Admin API backend health |
 

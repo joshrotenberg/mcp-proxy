@@ -1,5 +1,9 @@
 # Benchmarks
 
+**Historical measurements:** the baseline below is from 0.4.1, not the current
+development tree. Harness composition and representative workloads are being
+reviewed in #296; do not present these numbers as current production guarantees.
+
 Two harnesses answer two different questions. Neither runs in CI; both are
 reproducible locally.
 

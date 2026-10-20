@@ -1,7 +1,11 @@
 //! Proxy configuration types and parsing.
 //!
 //! All proxy behavior is driven by [`ProxyConfig`], typically loaded from a TOML
-//! file via [`ProxyConfig::load()`]. YAML is also supported when the `yaml` feature
+//! file via [`ProxyConfig::load()`]. TOML fences below are reference fragments
+//! unless explicitly shown as complete examples; merge one alternative into a
+//! configuration with required proxy/listen/backend fields. For complete checked
+//! recipes, see [the documentation map](https://github.com/joshrotenberg/mcp-proxy/blob/main/docs/README.md).
+//! YAML is also supported when the `yaml` feature
 //! is enabled. The config can also be built programmatically via [`crate::ProxyBuilder`].
 //!
 //! # Config Structure
@@ -209,14 +213,22 @@
 //! token = "${READONLY_TOKEN}"
 //! allow_tools = ["api/read_*"]
 //!
-//! # JWT/JWKS
+//! ```
+//!
+//! Alternatively, JWT/JWKS (requires `[security].admin_token` below):
+//!
+//! ```toml
 //! [auth]
 //! type = "jwt"
 //! issuer = "https://auth.example.com"
 //! audience = "https://mcp.example.com/mcp"
 //! jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 //!
-//! # OAuth 2.1 (auto-discovery)
+//! ```
+//!
+//! Alternatively, OAuth auto-discovery (also requires the dedicated admin token):
+//!
+//! ```toml
 //! [auth]
 //! type = "oauth"
 //! issuer = "https://accounts.google.com"
@@ -283,7 +295,7 @@
 //! These bounds prevent overflow/unbounded constructor allocations and apply to
 //! parsed and programmatic configs alike. Reduce values outside these limits.
 //! All enabled optional features must be present in the binary, including
-//! token forwarding/scoped bearer/JWT/OAuth, discovery, tracing, metrics and cache/transport types;
+//! scoped bearer/JWT/OAuth, discovery, tracing, metrics and cache/transport types;
 //! `--check` predicts unsupported-feature startup errors.
 //!
 //! [`crate::cache::CacheLayer::try_new`] and

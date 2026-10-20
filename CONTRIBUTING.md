@@ -19,7 +19,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --lib --all-features
 cargo test --test '*' --all-features
-cargo doc --no-deps --all-features
+RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps --all-features
 cargo test --doc --all-features
 ```
 
@@ -191,3 +191,36 @@ and Tokio I/O; it fails with 1.11 and passes with 1.12, without timing races.
 Retain the Hyper minimum and this regression when updating dependencies. CLI
 startup diagnostics drain stderr, redact fixture secrets and report safe backend
 method/status/header/TCP-peer traces. A passing repetition alone is not a fix.
+
+## Documentation ownership and verification
+
+Rustdoc remains authoritative for behavior and public APIs. The
+[documentation map](docs/README.md) links task guides and examples to those
+contracts. The [documentation review](docs/documentation-review-2026-10-20.md)
+is a proposal for structure/hosting; it does not select or publish a new site.
+Keep the request-order diagram in crate rustdoc rather than duplicating it.
+
+`cargo test --test documentation --all-features` extracts TOML fences from the
+README, repository guides and bundled management skills, validates the Cargo
+manifest snippet separately, and checks complete configuration blocks/declared README fragments plus all example
+TOML with the real CLI and disposable child-process environment values. This
+covers defaults as well as strict fields and required-secret preparation; feature
+absence must return the explicit feature requirement. Annotated reference blocks
+in module rustdoc can be partial schemas, not standalone configs: label them as
+fragments, keep API examples compiled, and add configured tests for runnable claims.
+
+The same suite executes README quickstart/JWT configuration through actual local
+CLI MCP sessions, substituting local stdio peers and a test IdP for third-party
+packages/services. It checks initialization, discovery, exact tool output and
+management boundaries. This does not test npm package installation, an actual
+corporate IdP, remote documentation links or Kubernetes. Local Markdown link
+paths are checked; external links and fragments still need review.
+
+A behavior/config PR must update its owning rustdoc, affected recipes/help/skills
+and configured regression together. Label snippets as complete configs,
+alternatives, fragments or historical/design material. Never present `--check`
+as a network or tool-semantics test. Preserve existing files/anchors when moving
+content, with a maintained stub/link or a deliberate redirect plan. At release
+readiness, verify published docs match the package and link development-only
+contracts to the checked-out revision; do not assume docs.rs/latest already
+contains unreleased fixes. Release publication remains a separate approval.
