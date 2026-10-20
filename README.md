@@ -332,6 +332,15 @@ and unknown errors are terminal hedge results. Retries and hedges can execute
 a tool more than once; enable them only where duplicate execution is acceptable.
 Failed management backend additions also return `isError=true`.
 
+Retry backoff now honors `max_backoff_ms` from the first delay. The optional
+percentage budget counts original backend invocations in ten-second fixed
+windows; the default low-traffic floor allows 100 reservations per window.
+Set `min_retries_per_sec = 0` for volume-only credit. This replaces the former
+fixed token bucket. Parsed configs reject over 1000 retries or five minutes of
+planned retry sleep; use the backend timeout to bound dispatched execution too.
+See [retry rustdoc](https://docs.rs/mcp-proxy/latest/mcp_proxy/retry/) for exact
+window, cancellation and migration semantics.
+
 Caches reject failed results both on writes and when reading entries created by
 older versions. Intermediate task/continuation responses are never cached.
 

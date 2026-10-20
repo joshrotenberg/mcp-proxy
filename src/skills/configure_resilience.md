@@ -38,8 +38,19 @@ Automatically retries failed requests. Good for transient errors.
 max_retries = 3
 initial_backoff_ms = 100
 max_backoff_ms = 5000
-budget_percent = 20.0    # Max 20% of requests can be retries
+budget_percent = 20.0    # Retry reservations up to 20% of original calls per window
+min_retries_per_sec = 0  # No low-traffic allowance independent of request volume
 ```
+
+The budget is shared across layer clones in non-overlapping ten-second windows.
+It allows the larger of the volume allowance and `min_retries_per_sec * 10`
+(default floor: 100 reservations per window). Credits reset rather than refill
+continuously; boundary bursts are possible. Reservations are charged before
+backoff, including if cancelled. This replaces the former fixed token bucket.
+The first and every later delay obey `max_backoff_ms`. Configuration rejects
+more than 1000 retries or over five minutes of planned backoff; configure the
+backend timeout to bound execution and sleep together. Retrying tool calls can
+duplicate remote side effects.
 
 ### Hedging
 Sends parallel requests to reduce tail latency. For latency-sensitive backends.

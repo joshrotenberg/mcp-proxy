@@ -64,6 +64,7 @@ tests/
   reload_runtime.rs # Watched-file CLI add/replace tests and watcher ownership
   coalesce_runtime.rs # Configured HTTP/MCP capacity, expiry and recovery
   outcome_runtime.rs # Configured cache recovery, breaker state, hedge winners and metrics
+  retry_runtime.rs # Configured authenticated sessions and exact volume-budget attempt counts
   shutdown_runtime.rs # SIGTERM/SSE, short drain, construction/drop and stdio reap regressions
   cli_logging.rs   # Real CLI JSON/text/OTel request records and privacy regressions
   outbound_headers.rs # Actual HTTP requests and WebSocket handshake headers
@@ -148,6 +149,17 @@ primary response when every attempt fails. Cache admits only completed successfu
 tool/resource responses and rejects legacy cached failures on reads. Telemetry
 uses bounded outcome labels and treats tool failures as errors. Preserve these
 contracts with the table-driven outcome tests and configured HTTP regression.
+
+Retry delays include the configured cap from the first retry and use saturating
+integer arithmetic. A shared ten-second fixed-window budget counts originals
+once at invocation, never retries/success deposits; its allowance is the larger
+of the configured volume percentage and ten times the per-second floor.
+Reservations precede backoff, are not refunded on cancellation, and do not carry
+between windows. Keep paused-clock cap/volume/floor/reset/concurrency/deadline
+regressions and exact configured attempt-count tests. Parsed configs reject
+over 1000 retries or 300000 ms planned sleep; outer backend timeout bounds total
+execution, retry readiness and sleeps after dispatch (not initial admission).
+See retry module rustdoc for migration.
 
 ### Adding a new middleware layer
 

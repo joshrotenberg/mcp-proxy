@@ -121,6 +121,7 @@ Reusable fixtures live under `tests/support/` (included by integration binaries)
 | Controlled pending work, deadlines, recovery without replay | `coalesce_runtime.rs` |
 | Cancellation during initialization, SIGTERM with pending work/SSE, short drain, child reap and embedded owner cleanup | `shutdown_runtime.rs` |
 | CLI log flags/privacy and configured resilience/cache/metric outcomes | `cli_logging.rs`, `outcome_runtime.rs` |
+| Configured request-volume retry budget, exact backend attempts and preserved RPC errors | `retry_runtime.rs`; paused-clock timing/volume/cancellation cases in `retry.rs` |
 
 Run `cargo test --test configured_sessions --all-features` for the new contract
 matrix, and repeat with `--no-default-features` to exercise bearer sessions
