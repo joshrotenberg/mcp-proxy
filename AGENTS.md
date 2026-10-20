@@ -40,7 +40,7 @@ src/
   validation.rs    # Argument size limits (ValidationService)
   metrics.rs       # Prometheus counters and histograms (MetricsService)
   rbac.rs          # Role-based access control (RbacService)
-  token.rs         # Auth token passthrough to backends (TokenPassthroughService)
+  token.rs         # Legacy identity-only helper; no credential forwarding
   management.rs    # Explicit HTTP/MCP management authority and credential-bound sessions
   invocation.rs    # Search wrapper resolution preserving caller/request context
   bearer_scope.rs  # Per-token tool scoping and claims
@@ -91,7 +91,7 @@ The middleware stack is built in `proxy.rs::build_middleware_stack()`. Order mat
 ```
 Request flow (outer to inner):
 Auth (axum layer) -> Global Rate Limit -> Audit -> Access Log -> Metrics
-  -> Management Dispatch -> Ordinary Guard -> Search Invocation -> Token Passthrough -> Token Validation -> RBAC -> Bearer Scoping -> Composite -> Alias
+  -> Management Dispatch -> Ordinary Guard -> Search Invocation -> Token Validation -> RBAC -> Bearer Scoping -> Composite -> Alias
   -> Search Mode Filter -> Capability Filter -> Validation -> Coalesce -> Cache
   -> Mirror -> Failover -> Canary -> Parameter Overrides -> Inject Args
   -> Backend Management Guard -> McpProxy
@@ -218,6 +218,10 @@ before any backend/runtime effects. CLI, builder/library, reload and REST/MCP
 management use the same contract, including direct backend additions/replacements.
 `config_validation.rs` owns offline transport/name/filter/reference/numeric and
 feature checks; keep runtime construction free of config-controlled unwraps.
+`forward_auth = true` is rejected in every build/auth/transport before effects;
+only separately configured backend credentials reach HTTP/WebSocket peers. Keep
+actual outbound capture, identity/session/cache and redirect tests in
+`forward_auth.rs`; the legacy token helper is not in the configured stack.
 All configuration objects deny unknown fields; argument/header/env maps remain
 open. Preserve `config_preparation.rs` entry-point, marker/TCP-sentinel, numeric
 boundary and feature tests, plus watched-file rejection in `config_env.rs`.

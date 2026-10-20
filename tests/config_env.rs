@@ -380,6 +380,10 @@ async fn management_preserves_references_and_invalid_reload_keeps_active_backend
     let marker = temp.path().join("invalid-reload-started");
     for (expected, patch) in [
         (
+            "backend.forward_auth = true is unsupported",
+            serde_json::json!({"name":"replacement", "forward_auth":true}),
+        ),
+        (
             "invalid capability filter pattern",
             serde_json::json!({"name":"replacement", "expose_tools":["re:["]}),
         ),

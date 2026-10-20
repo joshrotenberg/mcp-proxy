@@ -1,33 +1,19 @@
-//! Token passthrough middleware for forwarding client credentials to backends.
+//! Legacy identity-metadata helper; this module does not forward credentials.
 //!
-//! When a backend has `forward_auth = true`, the client's inbound bearer token
-//! is extracted from `RouterRequest.extensions` and stored as a [`ClientToken`]
-//! for downstream middleware and backend services to consume.
+//! [`TokenPassthroughService`] copies subject/scope from existing OAuth
+//! [`TokenClaims`](tower_mcp::oauth::token::TokenClaims) into [`ClientToken`] for
+//! selected namespaces. It never obtains a raw bearer token; `raw_token` is
+//! always None for metadata it creates. Neither HTTP nor WebSocket transports
+//! consume this custom extension. Static bearer authentication does not create
+//! these OAuth claims.
 //!
-//! # Configuration
-//!
-//! ```toml
-//! [[backends]]
-//! name = "github"
-//! transport = "http"
-//! url = "http://github-mcp.internal:8080"
-//! forward_auth = true  # forward client's token to this backend
-//!
-//! [[backends]]
-//! name = "db"
-//! transport = "http"
-//! url = "http://db-mcp.internal:8080"
-//! bearer_token = "${DB_API_KEY}"  # static token for this backend
-//! ```
-//!
-//! # How it works
-//!
-//! 1. The proxy's auth layer (JWT/bearer) validates the inbound token and
-//!    stores [`TokenClaims`](tower_mcp::oauth::token::TokenClaims) in request extensions.
-//! 2. This middleware reads the `TokenClaims` and stores the subject (`sub` claim)
-//!    and any available identity info as a [`ClientToken`] in extensions.
-//! 3. Backend-specific middleware or future transport enhancements can read
-//!    `ClientToken` to forward credentials.
+//! This low-level API remains for source compatibility with custom service
+//! stacks. It is not installed by the configured proxy. The configuration field
+//! `forward_auth = true` is rejected in every build; see [backend authentication
+//! and migration](crate::config#backend-authentication-and-migration). It does not
+//! define a trust/audience policy or delegated identity isolation for routing,
+//! backend sessions, caches or coalescing. Custom callers must not treat its
+//! metadata as credential delegation or as independent proof of authentication.
 
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -41,22 +27,23 @@ use tower::Service;
 use tower_mcp::router::{RouterRequest, RouterResponse};
 use tower_mcp_types::protocol::McpRequest;
 
-/// A client's identity token extracted from inbound authentication.
+/// Legacy subject/scope metadata copied from existing OAuth claims.
 ///
 /// Stored in `RouterRequest.extensions` by the [`TokenPassthroughService`]
-/// for downstream consumption.
+/// for custom services; configured transports do not consume it.
 #[derive(Debug, Clone)]
 pub struct ClientToken {
     /// The subject (user/client identifier) from the token.
     pub subject: Option<String>,
     /// Space-delimited scopes from the token.
     pub scope: Option<String>,
-    /// The raw bearer token string, if available.
+    /// Reserved for source compatibility; this helper always sets it to None.
     pub raw_token: Option<String>,
 }
 
-/// Middleware that extracts client identity from auth claims and makes it
-/// available to backends configured with `forward_auth = true`.
+/// Legacy middleware that copies identity metadata for selected namespaces.
+///
+/// Does not forward tokens and is not installed by the configured proxy.
 #[derive(Clone)]
 pub struct TokenPassthroughService<S> {
     inner: S,
@@ -64,10 +51,10 @@ pub struct TokenPassthroughService<S> {
 }
 
 impl<S> TokenPassthroughService<S> {
-    /// Create a new token passthrough service.
+    /// Create an identity-metadata helper for a custom service stack.
     ///
     /// `forward_namespaces` is the set of backend namespace prefixes (e.g. `"github/"`)
-    /// that should receive forwarded tokens.
+    /// for which subject/scope metadata should be copied.
     pub fn new(inner: S, forward_namespaces: HashSet<String>) -> Self {
         Self {
             inner,
@@ -76,7 +63,7 @@ impl<S> TokenPassthroughService<S> {
     }
 }
 
-/// Check if a request targets a namespace that wants token forwarding.
+/// Check if a request targets a namespace selected for identity metadata.
 fn request_targets_namespace(req: &McpRequest, namespaces: &HashSet<String>) -> bool {
     let name = match req {
         McpRequest::CallTool(params) => Some(params.name.as_str()),
@@ -108,7 +95,7 @@ where
     }
 
     fn call(&mut self, mut req: RouterRequest) -> Self::Future {
-        // Only inject ClientToken for requests targeting forward_auth backends
+        // Copy metadata only for explicitly selected namespaces.
         if !self.forward_namespaces.is_empty()
             && request_targets_namespace(&req.inner, &self.forward_namespaces)
         {
@@ -123,7 +110,7 @@ where
             if let Some(token) = client_token {
                 tracing::debug!(
                     subject = ?token.subject,
-                    "Injected ClientToken for forward_auth backend"
+                    "Copied legacy client identity metadata"
                 );
                 req.extensions.insert(token);
             }
@@ -138,11 +125,13 @@ where
 mod tests {
     use std::collections::HashSet;
 
-    use tower::Service;
+    use std::sync::{Arc, Mutex};
+
+    use tower::{Service, ServiceExt};
     use tower_mcp::protocol::{CallToolParams, McpRequest, RequestId};
     use tower_mcp::router::{Extensions, RouterRequest};
 
-    use super::{TokenPassthroughService, request_targets_namespace};
+    use super::{ClientToken, TokenPassthroughService, request_targets_namespace};
     use crate::test_util::{MockService, call_service};
 
     #[test]
@@ -181,8 +170,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_passthrough_injects_client_token() {
-        let mock = MockService::with_tools(&["github/search"]);
+    async fn legacy_helper_copies_only_subject_scope_and_never_a_raw_token() {
+        let captured = Arc::new(Mutex::new(None));
+        let received = captured.clone();
+        let mock = tower::service_fn(move |request: RouterRequest| {
+            *received.lock().unwrap() = request.extensions.get::<ClientToken>().cloned();
+            MockService::with_tools(&["github/search"]).oneshot(request)
+        });
         let namespaces: HashSet<String> = ["github/".to_string()].into();
         let mut svc = TokenPassthroughService::new(mock, namespaces);
 
@@ -213,6 +207,10 @@ mod tests {
 
         let resp = svc.call(req).await.unwrap();
         assert!(resp.inner.is_ok());
+        let metadata = captured.lock().unwrap().take().expect("identity metadata");
+        assert_eq!(metadata.subject.as_deref(), Some("user-123"));
+        assert_eq!(metadata.scope.as_deref(), Some("mcp:read"));
+        assert!(metadata.raw_token.is_none());
     }
 
     #[tokio::test]

@@ -70,8 +70,8 @@ url = "http://mcp-server:8080"
 # Header values support ${ENV_VAR}; explicit Authorization overrides bearer_token.
 # headers = { "X-API-Key" = "${BACKEND_API_KEY}", "X-Tenant" = "acme" }
 # Unknown backend fields and headers on stdio backends are rejected.
-# Forward the client's inbound auth token to this backend
-# forward_auth = true
+# Caller-token forwarding is unsupported; credentials above are fixed per backend.
+# forward_auth = false  # true is unsupported and rejected; use backend credentials above
 
 # --- WebSocket backend ---
 

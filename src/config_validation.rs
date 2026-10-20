@@ -159,6 +159,10 @@ pub(crate) fn validate(config: &ProxyConfig) -> Result<()> {
     )?;
 
     for backend in &config.backends {
+        ensure!(
+            !backend.forward_auth,
+            "backend.forward_auth = true is unsupported; configure a backend-specific bearer_token or headers instead"
+        );
         local(&backend.name, &config.proxy.separator, "backend.name")?;
         ensure!(
             backend.name != "proxy",
@@ -462,13 +466,6 @@ pub(crate) fn validate(config: &ProxyConfig) -> Result<()> {
 
 pub(crate) fn validate_features(config: &ProxyConfig) -> Result<()> {
     let _ = config;
-    // The forwarding middleware is compiled with OAuth, even for plain bearer
-    // auth. Its complete transport/security contract is tracked in #288.
-    #[cfg(not(feature = "oauth"))]
-    ensure!(
-        !config.backends.iter().any(|backend| backend.forward_auth),
-        "backend.forward_auth requires the 'oauth' feature"
-    );
     #[cfg(not(feature = "oauth"))]
     match &config.auth {
         Some(AuthConfig::Jwt { .. } | AuthConfig::OAuth { .. }) => {
