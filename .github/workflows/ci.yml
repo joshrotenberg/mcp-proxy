@@ -112,7 +112,14 @@ jobs:
       - uses: azure/setup-helm@v5.0.1
         with:
           version: v3.19.0
-      - run: ./scripts/check-chart.sh
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install PyYAML==6.0.3
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+      - run: ./scripts/check-chart.sh --binary target/debug/mcp-proxy
 
   coverage:
     name: Coverage

@@ -37,6 +37,14 @@ normal suite and takes approximately 1.2 seconds. Watched-file CLI regressions
 also require Python 3 for their minimal stdio MCP fixture; no Python packages or
 external MCP servers are needed.
 
+Helm changes also require `./scripts/check-chart.sh` with Helm 3, Python 3.11+
+and PyYAML 6.0.3. After `cargo build --locked`, run
+`./scripts/check-chart.sh --binary target/debug/mcp-proxy` to exercise the actual
+CLI from rendered nondefault-port configuration through probes and a complete
+MCP session. CI runs both render/rollout/schema checks and this application
+smoke test. See the [chart guide](charts/mcp-proxy/README.md) for port and
+credential-rotation contracts and the limits of these cluster-free checks.
+
 ## Temporary upstream fix and release prerequisite
 
 The current development tree pins `tower-mcp` and `tower-mcp-types` to an exact

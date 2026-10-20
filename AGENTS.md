@@ -362,7 +362,13 @@ All Rust examples are checked, and the outlier recovery regression runs in the
 normal suite.
 
 CI publishes a `coverage-report` artifact and validates the Helm chart with
-`./scripts/check-chart.sh`. Release preparation must synchronize
+`./scripts/check-chart.sh`. Use Helm 3, Python 3.11+ and PyYAML; add
+`--binary target/debug/mcp-proxy` after
+`cargo build --locked` for the real rendered-config nondefault-port MCP smoke test
+(also run by CI). Service and container/listener ports are separate; keep custom
+TOML listeners consistent with containerPort. Config and chart-owned Secret
+checksums drive rollouts; external Secret env changes require a separate restart.
+Release preparation must synchronize
 `charts/mcp-proxy/Chart.yaml` appVersion with Cargo.toml and bump the chart
 version. `/livez` and `/readyz` are credential-free process probes; detailed
 backend health is served by the authenticated `/admin/health` endpoint.
