@@ -29,9 +29,13 @@ doc examples must continue to pass `cargo test --doc --all-features`.
 Please keep pull requests focused on one concern and explain the user-visible
 reason for the change.
 
-The all-feature integration suite requires a working Docker daemon and the
-`redis:7-alpine` image. Run `docker info` and `docker pull redis:7-alpine` before
-testing. Redis startup failures fail the suite rather than counting as passing
+Every integration feature mode requires a working Docker daemon and
+`nginx:1.28-alpine` for two actual CLI replicas through the tested NGINX affinity
+example. Run `docker info` and `docker pull nginx:1.28-alpine` first. The local
+daemon needs host-gateway access to local CLI listeners (Linux CI supports this);
+the fixture uses coreutils `timeout` to bound Docker commands and cleanup.
+The all-feature suite additionally needs `docker pull redis:7-alpine`.
+Balancer/Redis startup failures fail the suite rather than counting as passing
 tests. SQLite uses temporary files. The outlier recovery regression runs in the
 normal suite and takes approximately 1.2 seconds. Watched-file CLI regressions
 also require Python 3 for their minimal stdio MCP fixture; no Python packages or
@@ -98,6 +102,12 @@ for claims about configuration wiring, authorization, transport, and lifecycle.
 `tests/e2e.rs` and most of `tests/http_e2e.rs` assemble upstream services manually;
 they test composition, not whether the configured application installs that stack.
 A passing initialize request alone does not prove a usable MCP session.
+
+`replica_sessions.rs` verifies exact list/call output and backend journals across
+fresh TCP connections through real NGINX, wrong-replica HTTP 200/RPC -32005
+rejections, owner SIGTERM/SIGKILL with no transparent call replay, controlled
+membership removal, and fresh initialization on the survivor. It uses the
+checked-in NGINX example; it does not test a Kubernetes/ingress controller.
 
 Reusable fixtures live under `tests/support/` (included by integration binaries):
 

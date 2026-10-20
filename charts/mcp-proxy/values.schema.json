@@ -6,9 +6,11 @@
     "containerPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
     "service": {
       "type": "object",
-      "required": ["port"],
+      "required": ["port", "sessionAffinity", "sessionAffinityTimeoutSeconds"],
       "properties": {
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "sessionAffinity": { "type": "string", "enum": ["None", "ClientIP"] },
+        "sessionAffinityTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 }
       }
     },
     "config": { "type": "string" },

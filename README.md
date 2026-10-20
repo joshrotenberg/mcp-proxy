@@ -583,6 +583,10 @@ Process probes at `GET /livez` and `GET /readyz` return `ok` without credentials
 Readiness indicates startup completed; detailed backend health remains at the
 protected `/admin/health` endpoint. For Kubernetes deployment and release version
 maintenance, see the [Helm chart guide](charts/mcp-proxy/README.md).
+Multiple replicas need session affinity and client recovery after owner loss;
+Redis shares responses, not sessions. See the
+[session routing guide](https://docs.rs/mcp-proxy/latest/mcp_proxy/#multiple-replicas-and-sessions)
+and the tested [NGINX configuration](examples/nginx-session-affinity.conf).
 
 Management requires a dedicated credential, distinct from ordinary and scoped
 bearer tokens:

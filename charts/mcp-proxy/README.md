@@ -87,3 +87,34 @@ and omitting the management credential disables all admin endpoints.
 
 The chart probes, Helm smoke test, and Docker healthcheck use process probes, so
 admin tokens need not be placed in probe headers.
+
+## Multiple replicas
+
+MCP sessions live in one process. The chart keeps `replicaCount: 1` by default;
+its Service now defaults to `sessionAffinity: ClientIP` and
+`sessionAffinityTimeoutSeconds: 10800` (integer range 1–86400). For direct
+Service traffic with a stable visible source IP:
+
+```yaml
+replicaCount: 2
+service:
+  sessionAffinity: ClientIP
+  sessionAffinityTimeoutSeconds: 10800
+```
+
+POST, GET/SSE and DELETE must reach the session owner even across new TCP
+connections. `autoscaling.enabled` can change the replica count but does not
+share sessions. A response cache in Redis does not share sessions either.
+An ingress controller may bypass this Service and balance directly over pods;
+configure and test affinity there. Many clients behind NAT can land on one pod,
+and changing source IPs/affinity expiry can break sessions. If a verified external
+router handles affinity, `service.sessionAffinity: None` disables the Service
+setting; it also omits `sessionAffinityConfig`. Chart 0.2.3 adds this default,
+while keeping one replica and the same listener/Service ports.
+
+Read the [session routing and recovery guide](https://docs.rs/mcp-proxy/latest/mcp_proxy/#multiple-replicas-and-sessions)
+and the tested [NGINX example](../../examples/nginx-session-affinity.conf) before
+using replicas/HPA. In particular, pod loss/scale-in/rollouts require a new MCP
+session; transport failure or JSON-RPC `-32005` is not permission to replay a
+possibly executed tool call. Set termination grace above the configured drain
+timeout plus cleanup, and test recovery through your actual ingress/client.

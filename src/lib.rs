@@ -201,6 +201,77 @@
 //! method for joined cleanup. Health-check and initialization timeouts are
 //! independent of shutdown cancellation.
 //!
+//! # Multiple replicas and sessions
+//!
+//! The default Streamable HTTP protocol (2025-11-25) stores each initialized
+//! session in **one proxy process**. All its POST, GET/SSE and DELETE requests
+//! must reach that process, including requests on new TCP connections. A shared
+//! Redis response cache does not share sessions, subscriptions, in-flight calls,
+//! cancellation state, backend connections or management state. Configure every
+//! replica with the same public authentication/resource identity and policies;
+//! affinity is routing, never authentication or permission to reuse a session.
+//!
+//! The Helm chart keeps one replica by default and enables Service `ClientIP`
+//! affinity with a 10,800-second timeout. For direct Service traffic with a stable
+//! source IP, a two-replica configuration is:
+//!
+//! ```text
+//! replicaCount: 2
+//! service:
+//!   sessionAffinity: ClientIP
+//!   sessionAffinityTimeoutSeconds: 10800
+//! ```
+//!
+//! This requires the Service to see a consistent source address and traffic to
+//! pass through its affinity implementation. An ingress controller may route
+//! directly to pod endpoints, bypassing Service affinity. Configure and verify
+//! affinity at that controller instead; setting Service affinity alone is not
+//! enough. Source NAT, a changing client IP, multiple ingress egress IPs, affinity
+//! expiry and endpoint membership changes can move a session. Many clients
+//! behind one NAT share an affinity bucket, concentrating load. Cookie-based
+//! affinity additionally requires the MCP client to retain/send the cookie;
+//! do not assume all MCP clients do. Hashing only `Mcp-Session-Id` cannot route
+//! the initial request, whose session ID does not yet exist.
+//!
+//! [The NGINX example](https://github.com/joshrotenberg/mcp-proxy/blob/main/examples/nginx-session-affinity.conf)
+//! supplies an executable two-instance source-IP routing model: adapt the listen
+//! and upstream addresses, run the replicas on ports 8081/8082, and expose the
+//! balancer on 8080. It preserves Host/auth/session headers and SSE, uses HTTP/1.1,
+//! disables response buffering/cache and upstream retries, and sets explicit
+//! stream timeouts. Add TLS/public-endpoint policy for your deployment. NGINX
+//! `ip_hash` uses the first three IPv4 octets (full IPv6 address); it can concentrate
+//! even more clients than Kubernetes ClientIP affinity. Keep the visible source
+//! stable at every balancer; neither model promises even per-session distribution.
+//!
+//! **Rollouts, scale-in and pod loss destroy session ownership.** Keep readiness
+//! probes enabled, allow connection draining, and set the pod termination grace
+//! period above `proxy.shutdown_timeout_seconds` plus cleanup time. A surviving
+//! replica does not inherit the retired process's sessions. A call to an
+//! unreachable owner can fail at the transport/balancer (for example HTTP 502);
+//! a stale ID delivered to another proxy currently returns HTTP 200 with JSON-RPC
+//! `-32005`. Check the MCP result as well as HTTP status. Removal of unhealthy
+//! endpoints restores reachability, not the lost session. Changing the affinity
+//! timeout or restarting a balancer may also require reinitialization.
+//!
+//! On ownership loss, authenticate and initialize a **new** session, send the
+//! initialized notification, rediscover tools and restore subscriptions/application
+//! state as needed. Do not transparently replay a tool call after an ambiguous
+//! failure: the old process/backend may have executed it before disconnecting.
+//! Reconcile its result or use an application-level idempotency contract before
+//! explicitly retrying. Proxy backend failover/retries do not migrate frontend
+//! sessions. Keep a single replica if the deployment cannot provide this routing
+//! and client recovery contract; HPA alone does not make sessions portable.
+//!
+//! `tests/replica_sessions.rs` runs the example with real NGINX and two configured
+//! CLI processes, proving full sessions across new connections and no replay after
+//! graceful/abrupt owner loss, followed by fresh initialization on the survivor.
+//! Helm tests verify the Service affinity fields and timeout bounds. These are
+//! local routing/application tests, not a Kubernetes controller or ingress
+//! conformance test. Validate the actual controller, network path and client
+//! during deployment. Shared/stateless session scaling, including the experimental
+//! `protocol-2026-07-28` mode, is separate work; this guide makes no portability
+//! claim for that feature.
+//!
 //! # Feature Flags
 //!
 //! | Feature | Default | Description |
