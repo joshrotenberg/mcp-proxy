@@ -11,14 +11,17 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# Proxy configuration (rendered as proxy.toml in a ConfigMap)
+# Application listener and named container/probe port, independent of service.port.
+containerPort: 8080
+
+# Proxy configuration (rendered as a Helm template into proxy.toml in a ConfigMap)
 # This is the full mcp-proxy TOML config. See config.example.toml for all options.
 config: |
   [proxy]
   name = "mcp-proxy"
   [proxy.listen]
   host = "0.0.0.0"
-  port = 8080
+  port = {{ .Values.containerPort }}
 
   [observability]
   log_level = "info"
@@ -41,6 +44,7 @@ secrets: {}
 
 service:
   type: ClusterIP
+  # Client-facing Service port; traffic targets the named application port.
   port: 8080
 
 ingress:
