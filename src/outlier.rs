@@ -5,8 +5,39 @@
 //! outlier detection triggers on *consecutive* errors, catching hard-down backends
 //! faster. The shared [`crate::outcome`] policy counts server/transport failures;
 //! tool failures and known client/protocol errors do not trigger ejection.
-//! Cross-backend coordination via `max_ejection_percent` prevents ejecting
-//! all backends simultaneously.
+//! Cross-backend coordination via `max_ejection_percent` bounds new ejections
+//! across registered backends.
+//!
+//! # Concurrency and lifetime
+//!
+//! A short synchronous lock serializes fleet admission and per-backend state;
+//! no lock is held over backend I/O, readiness, tracing or an await. Every new
+//! service registers one owner. Service clones and dispatched futures share its
+//! lifetime; final drop unregisters it and releases any outstanding ejection.
+//! Reusing a namespace creates independent state. Pending calls retain the old
+//! owner until completion/cancellation; removing an entry cannot cancel remote
+//! side effects or make its in-flight work disappear from accounting.
+//!
+//! Recovery uses monotonic time and occurs on the next call at/after the ejection
+//! duration. One caller releases the reservation and resets the error streak.
+//! Responses admitted before that recovery cannot alter the new generation.
+//! Already-admitted responses while ejected are ignored for health accounting;
+//! their original results still reach their callers. There is no background
+//! evaluation/probe timer; `interval_seconds` is a compatibility setting.
+//!
+//! The quota is `floor(registered * percent / 100)`, with one slot minimum for
+//! any nonzero percentage and a nonempty fleet. Zero disables ejection; direct
+//! detector percentages above 100 are clamped. Removing a healthy owner can
+//! shrink the quota below existing ejections: those retain their deadlines and
+//! new admissions are blocked until capacity is available. Quotas are per
+//! detector, not coordinated across replicas. Configured proxies register only
+//! outlier-enabled backends and use their largest configured percentage.
+//!
+//! Low-level `register_backend`/`try_eject`/`record_uneject` remain anonymous
+//! manual accounting APIs. Manual registrations persist for the detector's
+//! lifetime; do not double-register middleware. Extra manual releases are safe
+//! and cannot steal middleware-owned reservations. Existing service/layer public
+//! signatures and configuration keys are unchanged.
 //!
 //! # Configuration
 //!
@@ -18,17 +49,19 @@
 //!
 //! [backends.outlier_detection]
 //! consecutive_errors = 5       # eject after 5 consecutive errors
-//! interval_seconds = 10        # evaluation interval
+//! interval_seconds = 10        # compatibility setting; no background evaluator
 //! base_ejection_seconds = 30   # how long to eject
-//! max_ejection_percent = 50    # never eject more than half of backends
+//! max_ejection_percent = 50    # new-ejection quota; nonzero allows one slot minimum
 //! ```
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use tower::Service;
 use tower_mcp::router::{RouterRequest, RouterResponse};
@@ -78,91 +111,212 @@ pub struct OutlierDetector {
 }
 
 struct OutlierDetectorInner {
-    /// Total number of backends registered.
-    total_backends: AtomicU32,
-    /// Number of currently ejected backends.
-    ejected_count: AtomicU32,
+    state: Mutex<FleetState>,
     /// Maximum percentage of backends that can be ejected (0-100).
     max_ejection_percent: u32,
+}
+
+#[derive(Default)]
+struct FleetState {
+    next_id: u64,
+    backends: HashMap<u64, BackendStatus>,
+    ejected: usize,
+    // Compatibility APIs manage anonymous registrations separately: an extra
+    // manual release must never consume a middleware-owned reservation.
+    manual_backends: u32,
+    manual_ejected: u32,
+}
+
+impl FleetState {
+    fn total(&self) -> u128 {
+        self.backends.len() as u128 + u128::from(self.manual_backends)
+    }
+
+    fn ejected(&self) -> u128 {
+        self.ejected as u128 + u128::from(self.manual_ejected)
+    }
+
+    fn allows_ejection(&self, percent: u32) -> bool {
+        let quota = (self.total() * u128::from(percent) / 100)
+            .max(u128::from(percent > 0 && self.total() > 0));
+        self.ejected() < quota
+    }
+}
+
+struct BackendStatus {
+    consecutive_errors: u32,
+    ejected_at: Option<Instant>,
+    // Pointer identity cannot wrap or be reused while an old call retains it.
+    generation: Arc<()>,
 }
 
 impl OutlierDetector {
     /// Create a new outlier detector.
     ///
-    /// `max_ejection_percent` caps how many backends can be ejected at once
-    /// (as a percentage of total registered backends).
+    /// `max_ejection_percent` bounds new ejection admissions relative to
+    /// registered backends. Values above 100
+    /// are clamped; nonzero percentages allow at least one ejection.
     pub fn new(max_ejection_percent: u32) -> Self {
         Self {
             inner: Arc::new(OutlierDetectorInner {
-                total_backends: AtomicU32::new(0),
-                ejected_count: AtomicU32::new(0),
-                max_ejection_percent,
+                state: Mutex::new(FleetState::default()),
+                max_ejection_percent: max_ejection_percent.min(100),
             }),
         }
     }
 
-    /// Register a backend. Call once per backend at startup.
+    /// Register an anonymous backend for the manual accounting API.
+    ///
+    /// Manual registrations persist for this detector's lifetime. Middleware
+    /// registers its own owned lifetime automatically; do not also register it
+    /// here. Pair manual [`Self::try_eject`] calls with [`Self::record_uneject`].
+    /// Panics if more than `u32::MAX` manual registrations are requested.
     pub fn register_backend(&self) {
-        self.inner.total_backends.fetch_add(1, Ordering::Relaxed);
+        let mut fleet = self.lock();
+        fleet.manual_backends = fleet
+            .manual_backends
+            .checked_add(1)
+            .expect("too many manual outlier registrations");
     }
 
-    /// Try to eject a backend. Returns `true` if ejection is allowed.
+    /// Reserve one anonymous manual ejection. Returns whether it is allowed.
     ///
     /// Respects `max_ejection_percent` -- if ejecting this backend would
     /// exceed the threshold, returns `false`.
     pub fn try_eject(&self) -> bool {
-        let total = self.inner.total_backends.load(Ordering::Relaxed);
-        if total == 0 {
+        let mut fleet = self.lock();
+        if fleet.manual_ejected >= fleet.manual_backends
+            || !fleet.allows_ejection(self.inner.max_ejection_percent)
+        {
             return false;
         }
-
-        let currently_ejected = self.inner.ejected_count.load(Ordering::Relaxed);
-        let max_ejectable = (total as u64 * self.inner.max_ejection_percent as u64 / 100) as u32;
-        // Always allow at least 1 ejection if max_ejection_percent > 0
-        let max_ejectable = if self.inner.max_ejection_percent > 0 {
-            max_ejectable.max(1)
-        } else {
-            0
-        };
-
-        if currently_ejected >= max_ejectable {
-            tracing::debug!(
-                currently_ejected,
-                max_ejectable,
-                total,
-                "Ejection blocked: max_ejection_percent reached"
-            );
-            return false;
-        }
-
-        self.inner.ejected_count.fetch_add(1, Ordering::Relaxed);
+        fleet.manual_ejected += 1;
         true
     }
 
-    /// Record that a backend has been un-ejected.
+    /// Release one manual ejection. Extra releases are harmless and cannot
+    /// consume middleware-owned reservations.
     pub fn record_uneject(&self) {
-        self.inner.ejected_count.fetch_sub(1, Ordering::Relaxed);
+        let mut fleet = self.lock();
+        fleet.manual_ejected = fleet.manual_ejected.saturating_sub(1);
     }
 
-    /// Current number of ejected backends (for observability).
+    /// Current manual plus owned ejections (saturates at `u32::MAX`).
     pub fn ejected_count(&self) -> u32 {
-        self.inner.ejected_count.load(Ordering::Relaxed)
+        u32::try_from(self.lock().ejected()).unwrap_or(u32::MAX)
     }
 
-    /// Total registered backends.
+    /// Current owned plus lifetime manual registrations (saturates at `u32::MAX`).
     pub fn total_backends(&self) -> u32 {
-        self.inner.total_backends.load(Ordering::Relaxed)
+        u32::try_from(self.lock().total()).unwrap_or(u32::MAX)
+    }
+
+    fn lock(&self) -> MutexGuard<'_, FleetState> {
+        self.inner.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn register_owned(&self) -> u64 {
+        let mut fleet = self.lock();
+        let id = fleet.next_id;
+        fleet.next_id = id
+            .checked_add(1)
+            .expect("outlier registration IDs exhausted");
+        fleet.backends.insert(
+            id,
+            BackendStatus {
+                consecutive_errors: 0,
+                ejected_at: None,
+                generation: Arc::new(()),
+            },
+        );
+        id
     }
 }
 
-/// Per-backend outlier detection state.
+/// Shared registration lease, retained by service clones and dispatched calls.
 struct BackendOutlierState {
-    /// Number of consecutive errors observed.
-    consecutive_errors: AtomicU32,
-    /// Whether this backend is currently ejected.
-    ejected: AtomicBool,
-    /// When the backend was ejected (millis since UNIX epoch).
-    ejected_at_ms: AtomicU64,
+    id: u64,
+    detector: OutlierDetector,
+    config: OutlierDetectionConfig,
+    name: String,
+}
+
+impl Drop for BackendOutlierState {
+    fn drop(&mut self) {
+        let mut fleet = self.detector.lock();
+        if let Some(backend) = fleet.backends.remove(&self.id)
+            && backend.ejected_at.is_some()
+        {
+            fleet.ejected -= 1;
+        }
+    }
+}
+
+impl BackendOutlierState {
+    fn admit(&self) -> Option<Arc<()>> {
+        let (generation, recovered) = {
+            let mut fleet = self.detector.lock();
+            let mut recovered = None;
+            let generation = {
+                let backend = fleet.backends.get_mut(&self.id).expect("live registration");
+                if let Some(since) = backend.ejected_at {
+                    let elapsed = Instant::now().saturating_duration_since(since);
+                    if elapsed < Duration::from_secs(self.config.base_ejection_seconds) {
+                        return None;
+                    }
+                    backend.ejected_at = None;
+                    backend.consecutive_errors = 0;
+                    backend.generation = Arc::new(());
+                    recovered = Some(elapsed);
+                }
+                backend.generation.clone()
+            };
+            if recovered.is_some() {
+                fleet.ejected -= 1;
+            }
+            (generation, recovered)
+        };
+        if let Some(elapsed) = recovered {
+            tracing::info!(backend = %self.name, ejected_for_secs = elapsed.as_secs(),
+                "Backend un-ejected, allowing traffic");
+        }
+        Some(generation)
+    }
+
+    fn record(&self, generation: &Arc<()>, failed: bool) {
+        let (errors, ejected) = {
+            let mut fleet = self.detector.lock();
+            let errors = {
+                let backend = fleet.backends.get_mut(&self.id).expect("live registration");
+                if backend.ejected_at.is_some() || !Arc::ptr_eq(&backend.generation, generation) {
+                    return; // A response admitted before ejection/recovery is stale.
+                }
+                if !failed {
+                    backend.consecutive_errors = 0;
+                    return;
+                }
+                backend.consecutive_errors = backend.consecutive_errors.saturating_add(1);
+                backend.consecutive_errors
+            };
+            let ejected = errors >= self.config.consecutive_errors
+                && fleet.allows_ejection(self.detector.inner.max_ejection_percent);
+            if ejected {
+                fleet.backends.get_mut(&self.id).unwrap().ejected_at = Some(Instant::now());
+                fleet.ejected += 1;
+            }
+            (errors, ejected)
+        };
+        tracing::debug!(backend = %self.name, consecutive_errors = errors,
+            threshold = self.config.consecutive_errors, "Backend error observed");
+        if ejected {
+            tracing::warn!(backend = %self.name, consecutive_errors = errors,
+                ejection_seconds = self.config.base_ejection_seconds,
+                "Backend ejected due to consecutive errors");
+        } else if errors >= self.config.consecutive_errors {
+            tracing::warn!(backend = %self.name, consecutive_errors = errors,
+                "Backend would be ejected but max_ejection_percent reached");
+        }
+    }
 }
 
 /// Per-backend outlier detection middleware.
@@ -174,9 +328,6 @@ struct BackendOutlierState {
 pub struct OutlierDetectionService<S> {
     inner: S,
     state: Arc<BackendOutlierState>,
-    detector: OutlierDetector,
-    config: OutlierDetectionConfig,
-    name: String,
 }
 
 impl<S> OutlierDetectionService<S> {
@@ -187,51 +338,17 @@ impl<S> OutlierDetectionService<S> {
         config: OutlierDetectionConfig,
         detector: OutlierDetector,
     ) -> Self {
-        detector.register_backend();
+        let id = detector.register_owned();
         Self {
             inner,
             state: Arc::new(BackendOutlierState {
-                consecutive_errors: AtomicU32::new(0),
-                ejected: AtomicBool::new(false),
-                ejected_at_ms: AtomicU64::new(0),
+                id,
+                detector,
+                config,
+                name,
             }),
-            detector,
-            config,
-            name,
         }
     }
-
-    /// Check if the ejection period has expired and un-eject if so.
-    fn maybe_uneject(&self) -> bool {
-        if !self.state.ejected.load(Ordering::Relaxed) {
-            return false;
-        }
-
-        let ejected_at = self.state.ejected_at_ms.load(Ordering::Relaxed);
-        let now = now_ms();
-        let elapsed_secs = now.saturating_sub(ejected_at) / 1000;
-
-        if elapsed_secs >= self.config.base_ejection_seconds {
-            self.state.ejected.store(false, Ordering::Relaxed);
-            self.state.consecutive_errors.store(0, Ordering::Relaxed);
-            self.detector.record_uneject();
-            tracing::info!(
-                backend = %self.name,
-                ejected_for_secs = elapsed_secs,
-                "Backend un-ejected, allowing traffic"
-            );
-            true
-        } else {
-            false
-        }
-    }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 /// Returns true if the MCP response indicates a server-side error.
@@ -256,12 +373,9 @@ where
     }
 
     fn call(&mut self, req: RouterRequest) -> Self::Future {
-        // Check if ejected
-        self.maybe_uneject();
-
-        if self.state.ejected.load(Ordering::Relaxed) {
+        let Some(generation) = self.state.admit() else {
             let id = req.id.clone();
-            let name = self.name.clone();
+            let name = self.state.name.clone();
             return Box::pin(async move {
                 tracing::debug!(backend = %name, "Request rejected: backend ejected");
                 Ok(RouterResponse {
@@ -273,48 +387,15 @@ where
                     }),
                 })
             });
-        }
+        };
 
         let state = Arc::clone(&self.state);
-        let detector = self.detector.clone();
-        let config = self.config.clone();
-        let name = self.name.clone();
         let fut = self.inner.call(req);
 
         Box::pin(async move {
             let response = fut.await?;
 
-            if is_server_error(&response) {
-                let errors = state.consecutive_errors.fetch_add(1, Ordering::Relaxed) + 1;
-                tracing::debug!(
-                    backend = %name,
-                    consecutive_errors = errors,
-                    threshold = config.consecutive_errors,
-                    "Backend error observed"
-                );
-
-                if errors >= config.consecutive_errors && !state.ejected.load(Ordering::Relaxed) {
-                    if detector.try_eject() {
-                        state.ejected.store(true, Ordering::Relaxed);
-                        state.ejected_at_ms.store(now_ms(), Ordering::Relaxed);
-                        tracing::warn!(
-                            backend = %name,
-                            consecutive_errors = errors,
-                            ejection_seconds = config.base_ejection_seconds,
-                            "Backend ejected due to consecutive errors"
-                        );
-                    } else {
-                        tracing::warn!(
-                            backend = %name,
-                            consecutive_errors = errors,
-                            "Backend would be ejected but max_ejection_percent reached"
-                        );
-                    }
-                }
-            } else {
-                // Success resets the counter
-                state.consecutive_errors.store(0, Ordering::Relaxed);
-            }
+            state.record(&generation, is_server_error(&response));
 
             Ok(response)
         })
@@ -326,10 +407,62 @@ mod tests {
     use super::*;
     use crate::config::OutlierDetectionConfig;
     use crate::test_util::{MockService, call_service};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tower::Service;
     use tower_mcp::protocol::RequestId;
     use tower_mcp::router::Extensions;
     use tower_mcp_types::protocol::McpRequest;
+
+    fn switchable() -> (
+        impl Service<RouterRequest, Response = RouterResponse, Error = Infallible, Future: Send> + Clone,
+        Arc<AtomicBool>,
+    ) {
+        let failed = Arc::new(AtomicBool::new(true));
+        let flag = failed.clone();
+        let backend = tower::service_fn(move |request: RouterRequest| {
+            std::future::ready(Ok::<_, Infallible>(RouterResponse {
+                id: request.id,
+                inner: if flag.load(Ordering::SeqCst) {
+                    Err(JsonRpcError::internal_error("transient"))
+                } else {
+                    Ok(tower_mcp::McpResponse::Pong(Default::default()))
+                },
+            }))
+        });
+        (backend, failed)
+    }
+
+    fn status<S>(service: &OutlierDetectionService<S>) -> (u32, bool) {
+        let fleet = service.state.detector.lock();
+        let backend = &fleet.backends[&service.state.id];
+        (backend.consecutive_errors, backend.ejected_at.is_some())
+    }
+
+    fn assert_counts(detector: &OutlierDetector, total: u32, ejected: u32) {
+        let fleet = detector.lock();
+        assert_eq!(fleet.total(), u128::from(total));
+        assert_eq!(fleet.ejected(), u128::from(ejected));
+        assert!(fleet.manual_ejected <= fleet.manual_backends);
+        assert_eq!(
+            fleet.ejected,
+            fleet
+                .backends
+                .values()
+                .filter(|b| b.ejected_at.is_some())
+                .count()
+        );
+        assert!(fleet.ejected() <= fleet.total());
+    }
+
+    fn finish(
+        mut future: <OutlierDetectionService<ErrorService> as Service<RouterRequest>>::Future,
+    ) -> RouterResponse {
+        let mut context = Context::from_waker(std::task::Waker::noop());
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(Ok(response)) => response,
+            _ => panic!("controlled immediate backend must finish in one poll"),
+        }
+    }
 
     fn make_config(consecutive: u32, ejection_secs: u64, max_pct: u32) -> OutlierDetectionConfig {
         OutlierDetectionConfig {
@@ -405,56 +538,26 @@ mod tests {
         for _ in 0..2 {
             let _ = svc.call(make_error_request()).await;
         }
-        assert!(!svc.state.ejected.load(Ordering::Relaxed));
+        assert!(!status(&svc).1);
 
         // 3rd error triggers ejection
         let _ = svc.call(make_error_request()).await;
-        assert!(svc.state.ejected.load(Ordering::Relaxed));
+        assert!(status(&svc).1);
     }
 
     #[tokio::test]
     async fn test_success_resets_counter() {
-        let mock = MockService::with_tools(&["test/hello"]);
+        let (backend, failed) = switchable();
         let detector = OutlierDetector::new(50);
-        let config = make_config(3, 30, 50);
-
-        // We need a service that can return errors then success.
-        // Use ErrorService first, then switch to mock.
-        let mut error_svc = OutlierDetectionService::new(
-            ErrorService,
-            "test".to_string(),
-            config.clone(),
-            detector.clone(),
-        );
-
-        // 2 errors
-        let _ = error_svc.call(make_error_request()).await;
-        let _ = error_svc.call(make_error_request()).await;
-        assert_eq!(
-            error_svc.state.consecutive_errors.load(Ordering::Relaxed),
-            2
-        );
-
-        // Simulate success by directly resetting (the real service would do this)
-        error_svc
-            .state
-            .consecutive_errors
-            .store(0, Ordering::Relaxed);
-        assert_eq!(
-            error_svc.state.consecutive_errors.load(Ordering::Relaxed),
-            0
-        );
-
-        // Now test with mock service that returns success
-        let mut success_svc =
-            OutlierDetectionService::new(mock, "test2".to_string(), config, detector);
-        // Send a success request
-        let resp = call_service(&mut success_svc, McpRequest::ListTools(Default::default())).await;
+        let mut service =
+            OutlierDetectionService::new(backend, "test".into(), make_config(3, 30, 50), detector);
+        service.call(make_error_request()).await.unwrap();
+        service.call(make_error_request()).await.unwrap();
+        assert_eq!(status(&service), (2, false));
+        failed.store(false, Ordering::SeqCst);
+        let resp = service.call(make_error_request()).await.unwrap();
         assert!(resp.inner.is_ok());
-        assert_eq!(
-            success_svc.state.consecutive_errors.load(Ordering::Relaxed),
-            0
-        );
+        assert_eq!(status(&service), (0, false));
     }
 
     #[tokio::test]
@@ -467,7 +570,7 @@ mod tests {
         // Trigger ejection
         let _ = svc.call(make_error_request()).await;
         let _ = svc.call(make_error_request()).await;
-        assert!(svc.state.ejected.load(Ordering::Relaxed));
+        assert!(status(&svc).1);
 
         // Next request should be rejected without hitting the backend
         let resp = svc.call(make_error_request()).await.unwrap();
@@ -488,11 +591,13 @@ mod tests {
 
         // Trigger ejection
         let _ = svc.call(make_error_request()).await;
-        assert!(svc.state.ejected.load(Ordering::Relaxed));
+        assert!(status(&svc).1);
 
         // With 0-second ejection, next call should uneject
-        // The maybe_uneject runs before checking ejection status
+        // Admission performs recovery before checking ejection status.
         let _ = svc.call(make_error_request()).await;
+        assert!(status(&svc).1);
+        assert_eq!(svc.state.detector.ejected_count(), 1);
         // After uneject, the error from this call will increment counter again
         // but with threshold=1, it will re-eject. That's fine -- the point is
         // the uneject happened.
@@ -537,6 +642,257 @@ mod tests {
         assert_eq!(detector.ejected_count(), 1);
         detector.record_uneject();
         assert_eq!(detector.ejected_count(), 0);
+    }
+
+    #[test]
+    fn competing_fleet_ejections_share_one_atomic_reservation() {
+        let detector = OutlierDetector::new(1);
+        let mut services: Vec<_> = (0..100)
+            .map(|index| {
+                OutlierDetectionService::new(
+                    ErrorService,
+                    index.to_string(),
+                    make_config(1, 3600, 1),
+                    detector.clone(),
+                )
+            })
+            .collect();
+        // Admit every request before releasing any backend response. No winner
+        // or thread execution order is assumed.
+        let pending: Vec<_> = services
+            .iter_mut()
+            .map(|s| s.call(make_error_request()))
+            .collect();
+        let barrier = Arc::new(std::sync::Barrier::new(pending.len()));
+        std::thread::scope(|scope| {
+            for future in pending {
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    assert!(finish(future).inner.is_err());
+                });
+            }
+        });
+        assert_counts(&detector, 100, 1);
+        assert_eq!(services.iter().filter(|s| status(s).1).count(), 1);
+        drop(services);
+        assert_counts(&detector, 0, 0);
+    }
+
+    #[test]
+    fn competing_responses_eject_one_backend_only_once() {
+        let detector = OutlierDetector::new(100);
+        for _ in 0..99 {
+            detector.register_backend();
+        }
+        let mut service = OutlierDetectionService::new(
+            ErrorService,
+            "same".into(),
+            make_config(1, 3600, 100),
+            detector.clone(),
+        );
+        let pending: Vec<_> = (0..32)
+            .map(|_| service.call(make_error_request()))
+            .collect();
+        let barrier = Arc::new(std::sync::Barrier::new(pending.len()));
+        std::thread::scope(|scope| {
+            for future in pending {
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    finish(future);
+                });
+            }
+        });
+        assert_counts(&detector, 100, 1);
+        assert_eq!(status(&service), (1, true));
+        detector.record_uneject(); // Cannot steal a managed reservation.
+        assert_counts(&detector, 100, 1);
+        drop(service);
+        assert_counts(&detector, 99, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn concurrent_recovery_releases_once_at_the_monotonic_deadline() {
+        let detector = OutlierDetector::new(100);
+        let service = OutlierDetectionService::new(
+            ErrorService,
+            "recovery".into(),
+            make_config(1, 10, 100),
+            detector.clone(),
+        );
+        let mut original = service.clone();
+        original.call(make_error_request()).await.unwrap();
+        tokio::time::advance(Duration::from_secs(9)).await;
+        assert!(service.state.admit().is_none());
+        assert_counts(&detector, 1, 1);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let handle = tokio::runtime::Handle::current();
+        let barrier = Arc::new(std::sync::Barrier::new(32));
+        let generations = std::thread::scope(|scope| {
+            let jobs: Vec<_> = (0..32)
+                .map(|_| {
+                    let handle = handle.clone();
+                    let barrier = barrier.clone();
+                    let state = service.state.clone();
+                    scope.spawn(move || {
+                        let _runtime = handle.enter();
+                        barrier.wait();
+                        state.admit().expect("deadline expired")
+                    })
+                })
+                .collect();
+            jobs.into_iter()
+                .map(|job| job.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert!(generations.iter().all(|g| Arc::ptr_eq(g, &generations[0])));
+        assert_eq!(status(&service), (0, false));
+        assert_counts(&detector, 1, 0);
+        original.call(make_error_request()).await.unwrap();
+        assert_counts(&detector, 1, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stale_successes_and_failures_cannot_change_a_recovered_generation() {
+        let detector = OutlierDetector::new(100);
+        let (backend, failed) = switchable();
+        let mut service = OutlierDetectionService::new(
+            backend,
+            "stale".into(),
+            make_config(2, 10, 100),
+            detector.clone(),
+        );
+        failed.store(false, Ordering::SeqCst);
+        let stale_success = service.call(make_error_request());
+        failed.store(true, Ordering::SeqCst);
+        let stale_failure = service.call(make_error_request());
+        service.call(make_error_request()).await.unwrap();
+        service.call(make_error_request()).await.unwrap();
+        assert_counts(&detector, 1, 1);
+        tokio::time::advance(Duration::from_secs(10)).await;
+        service.call(make_error_request()).await.unwrap();
+        assert_eq!(status(&service), (1, false));
+        assert!(stale_success.await.unwrap().inner.is_ok());
+        assert_eq!(
+            status(&service),
+            (1, false),
+            "stale success reset the new streak"
+        );
+        assert!(stale_failure.await.unwrap().inner.is_err());
+        assert_eq!(status(&service), (1, false));
+        assert_counts(&detector, 1, 0);
+        service.call(make_error_request()).await.unwrap();
+        assert_counts(&detector, 1, 1);
+    }
+
+    #[tokio::test]
+    async fn clones_and_pending_calls_retain_then_release_replaced_registrations() {
+        let detector = OutlierDetector::new(100);
+        let config = make_config(1, u64::MAX, 100);
+        let mut old = OutlierDetectionService::new(
+            ErrorService,
+            "api".into(),
+            config.clone(),
+            detector.clone(),
+        );
+        let clone = old.clone();
+        let pending = old.call(make_error_request());
+        old.call(make_error_request()).await.unwrap();
+        drop(old);
+        drop(clone);
+        assert_counts(&detector, 1, 1);
+        let mut replacement =
+            OutlierDetectionService::new(ErrorService, "api".into(), config, detector.clone());
+        replacement.call(make_error_request()).await.unwrap();
+        assert_counts(&detector, 2, 2);
+        pending.await.unwrap();
+        assert_counts(&detector, 1, 1);
+        drop(replacement);
+        assert_counts(&detector, 0, 0);
+
+        let mut cancelled = OutlierDetectionService::new(
+            ErrorService,
+            "cancelled".into(),
+            make_config(1, 60, 100),
+            detector.clone(),
+        );
+        let pending = cancelled.call(make_error_request());
+        cancelled.call(make_error_request()).await.unwrap();
+        drop(cancelled);
+        assert_counts(&detector, 1, 1);
+        drop(pending);
+        assert_counts(&detector, 0, 0);
+    }
+
+    #[tokio::test]
+    async fn shrinking_fleet_preserves_existing_ejections_and_blocks_new_admissions() {
+        let detector = OutlierDetector::new(50);
+        let mut services: Vec<_> = (0..4)
+            .map(|index| {
+                OutlierDetectionService::new(
+                    ErrorService,
+                    index.to_string(),
+                    make_config(1, 3600, 50),
+                    detector.clone(),
+                )
+            })
+            .collect();
+        services[0].call(make_error_request()).await.unwrap();
+        services[1].call(make_error_request()).await.unwrap();
+        assert_counts(&detector, 4, 2);
+        services.pop(); // Healthy removal reduces the new-admission quota.
+        services[2].call(make_error_request()).await.unwrap();
+        assert_counts(&detector, 3, 2);
+        assert!(!status(&services[2]).1);
+        services.remove(0); // Ejected removal releases its reservation.
+        assert_counts(&detector, 2, 1);
+        drop(services);
+        assert_counts(&detector, 0, 0);
+    }
+
+    #[test]
+    fn manual_accounting_bounds_and_extra_releases_are_safe() {
+        let detector = OutlierDetector::new(u32::MAX);
+        assert!(!detector.try_eject());
+        detector.record_uneject();
+        detector.register_backend();
+        assert!(detector.try_eject());
+        assert!(!detector.try_eject());
+        for _ in 0..3 {
+            detector.record_uneject();
+        }
+        assert_counts(&detector, 1, 0);
+
+        let detector = OutlierDetector::new(1);
+        for _ in 0..100 {
+            detector.register_backend();
+        }
+        let barrier = std::sync::Barrier::new(32);
+        let admitted = std::thread::scope(|scope| {
+            let jobs: Vec<_> = (0..32)
+                .map(|_| {
+                    let detector = &detector;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        detector.try_eject()
+                    })
+                })
+                .collect();
+            jobs.into_iter()
+                .map(|job| u32::from(job.join().unwrap()))
+                .sum::<u32>()
+        });
+        assert_eq!(admitted, 1);
+        assert_counts(&detector, 100, 1);
+        std::thread::scope(|scope| {
+            for _ in 0..32 {
+                let detector = &detector;
+                scope.spawn(move || detector.record_uneject());
+            }
+        });
+        assert_counts(&detector, 100, 0);
     }
 
     #[test]

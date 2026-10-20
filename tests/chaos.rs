@@ -488,8 +488,8 @@ async fn retry_budget_caps_attempts_under_sustained_failure() {
 //
 // Outlier detection observes the response plane (`inner = Err` with internal
 // or server error codes), so the same response-rewriting fault layer used
-// for retry stands in for an unhealthy backend. Each `OutlierDetectionLayer`
-// registers its backend with the shared `OutlierDetector` on construction;
+// for retry stands in for an unhealthy backend. Applying an `OutlierDetectionLayer`
+// registers one service owner; clones share its lifetime with the `OutlierDetector`;
 // ejection quota is total * max_ejection_percent / 100 with a floor of one.
 
 fn outlier_config(consecutive_errors: u32, base_ejection_seconds: u64) -> OutlierDetectionConfig {

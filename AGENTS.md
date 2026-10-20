@@ -66,6 +66,7 @@ tests/
   coalesce_runtime.rs # Configured HTTP/MCP capacity, expiry and recovery
   outcome_runtime.rs # Configured cache recovery, breaker state, hedge winners and metrics
   retry_runtime.rs # Configured authenticated sessions and exact volume-budget attempt counts
+  outlier_runtime.rs # Competing configured calls and raw backend removal/re-registration
   shutdown_runtime.rs # SIGTERM/SSE, short drain, construction/drop and stdio reap regressions
   cli_logging.rs   # Real CLI JSON/text/OTel request records and privacy regressions
   outbound_headers.rs # Actual HTTP requests and WebSocket handshake headers
@@ -161,6 +162,15 @@ regressions and exact configured attempt-count tests. Parsed configs reject
 over 1000 retries or 300000 ms planned sleep; outer backend timeout bounds total
 execution, retry readiness and sleeps after dispatch (not initial admission).
 See retry module rustdoc for migration.
+
+Outlier fleet admission, per-owner ejection/recovery and unregister run under
+one short synchronous lock, never across I/O or tracing. Clones/pending calls
+retain one owned registration; last drop releases it and its reservation.
+Recovery uses monotonic time and new generation identity so stale responses
+cannot change recovered state. Preserve barrier-driven fleet/same-backend races,
+paused-clock competing recovery, late completion and removal/replacement tests.
+Manual detector accounting is separate and extra releases cannot consume owned
+reservations. See outlier rustdoc for quota shrink and compatibility semantics.
 
 ### Adding a new middleware layer
 

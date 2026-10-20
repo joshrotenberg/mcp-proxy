@@ -122,6 +122,7 @@ Reusable fixtures live under `tests/support/` (included by integration binaries)
 | Cancellation during initialization, SIGTERM with pending work/SSE, short drain, child reap and embedded owner cleanup | `shutdown_runtime.rs` |
 | CLI log flags/privacy and configured resilience/cache/metric outcomes | `cli_logging.rs`, `outcome_runtime.rs` |
 | Configured request-volume retry budget, exact backend attempts and preserved RPC errors | `retry_runtime.rs`; paused-clock timing/volume/cancellation cases in `retry.rs` |
+| Concurrent outlier admission, exact backend calls and removal/re-registration | `outlier_runtime.rs`; barriers, paused recovery, stale completions and owner counts in `outlier.rs` |
 | Persistent cache isolation, shared capacity, expiry and configured restart generations | `cache_backends.rs`, `cache_runtime.rs` |
 
 Logical SQLite cache tests use real files through `support/sqlite.rs`, on Linux
