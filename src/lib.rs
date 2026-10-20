@@ -219,6 +219,13 @@
 //!
 //! Minimal build: `cargo install mcp-proxy --no-default-features`
 //!
+//! # Telemetry ownership
+//!
+//! See [`telemetry`] for request spans, OTLP HTTP endpoints, explicit CLI/host
+//! provider shutdown and per-proxy/shared metrics ownership. Configured proxies
+//! never install process-global metrics or tracing providers. The CLI installs
+//! one subscriber and flushes its owned provider after proxy shutdown.
+//!
 //! # Request logging
 //!
 //! Configured audit/access middleware emits INFO completion events on
@@ -279,6 +286,7 @@ mod reload_policy;
 pub mod retry;
 #[cfg(feature = "skills")]
 pub mod skills;
+pub mod telemetry;
 #[cfg(feature = "oauth")]
 pub mod token;
 pub mod validation;

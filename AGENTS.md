@@ -38,7 +38,8 @@ src/
   cache/           # Bounded SQLite blocking I/O and Redis indexed storage
   coalesce.rs      # Request deduplication (CoalesceService)
   validation.rs    # Argument size limits (ValidationService)
-  metrics.rs       # Prometheus counters and histograms (MetricsService)
+  metrics.rs       # Scoped/shared Prometheus ownership, bounded namespace attribution
+  telemetry.rs     # Privacy-preserving MCP/HTTP spans and explicit OTLP provider factory
   rbac.rs          # Role-based access control (RbacService)
   token.rs         # Legacy identity-only helper; no credential forwarding
   management.rs    # Explicit HTTP/MCP management authority and credential-bound sessions
@@ -90,7 +91,7 @@ The middleware stack is built in `proxy.rs::build_middleware_stack()`. Order mat
 **Global middleware** (wraps the entire proxy service):
 ```
 Request flow (outer to inner):
-Auth (axum layer) -> Global Rate Limit -> Audit -> Access Log -> Metrics
+HTTP spans -> Auth (axum layer) -> MCP spans -> Metrics -> Global Rate Limit -> Audit -> Access Log
   -> Management Dispatch -> Ordinary Guard -> Search Invocation -> Token Validation -> RBAC -> Bearer Scoping -> Composite -> Alias
   -> Search Mode Filter -> Capability Filter -> Validation -> Coalesce -> Cache
   -> Mirror -> Failover -> Canary -> Parameter Overrides -> Inject Args
@@ -243,6 +244,16 @@ every subscriber path. Audit records must omit raw backend error messages as
 well as arguments/response bodies; failures may echo private values. Keep these
 invariants covered through actual initialized CLI MCP sessions, including policy
 denials, disabled flags and builds without default features.
+
+Telemetry emits only bounded method/startup-namespace/outcome and coarse HTTP
+route/status fields; unknown methods/namespaces collapse to fixed labels. CLI
+OTel filters to mcp::trace independently of audit/access/application logging,
+retains its provider and shuts it down on a blocking worker after proxy cleanup.
+Library callers own subscribers/providers. Configured metrics use private or
+injected MetricsRecorder owners, never the process-global facade; local-recorder
+guards cover synchronous emission only, never an await. Preserve decoded real
+collector shutdown/HTTP401/privacy and concurrent isolated/shared metrics tests
+in telemetry_runtime.rs. See telemetry rustdoc for migration and attribution.
 
 Hyper must remain >=1.12: older HTTP/1 dispatch can advertise stale readiness,
 pool a busy SSE connection and strand startup notifications/discovery behind it

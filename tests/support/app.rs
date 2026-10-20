@@ -38,12 +38,16 @@ impl App {
         }
     }
     pub async fn cli(config: &str, port: u16) -> Self {
+        Self::cli_with_env(config, port, &[]).await
+    }
+    pub async fn cli_with_env(config: &str, port: u16, env: &[(&str, &str)]) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("proxy.toml");
         std::fs::write(&path, config).unwrap();
         let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mcp-proxy"))
             .args(["--config", path.to_str().unwrap()])
             .env("RUST_LOG", "info")
+            .envs(env.iter().copied())
             .kill_on_drop(true)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())

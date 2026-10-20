@@ -337,5 +337,5 @@ enabled = true
 # OpenTelemetry distributed tracing (OTLP export)
 # [observability.tracing]
 # enabled = true
-# endpoint = "http://localhost:4317"
+# endpoint = "http://localhost:4318/v1/traces"
 # service_name = "mcp-proxy"

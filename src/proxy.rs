@@ -49,11 +49,53 @@ impl Proxy {
     /// Connects to all backends, builds the middleware stack, and prepares
     /// the axum router. Call [`serve()`](Self::serve) to run standalone or
     /// [`into_router()`](Self::into_router) to embed in an existing app.
-    pub async fn from_config(mut config: ProxyConfig) -> Result<Self> {
+    pub async fn from_config(config: ProxyConfig) -> Result<Self> {
+        Self::from_config_inner(
+            config,
+            #[cfg(feature = "metrics")]
+            None,
+        )
+        .await
+    }
+
+    /// Construct with a shared/custom Prometheus owner, without global state.
+    ///
+    /// Requires `observability.metrics.enabled = true`. Clone one recorder to
+    /// aggregate multiple proxies, or supply distinct owners for isolation.
+    /// Library callers independently own their tracing subscriber/provider.
+    #[cfg(feature = "metrics")]
+    pub async fn from_config_with_metrics(
+        config: ProxyConfig,
+        metrics: crate::metrics::MetricsRecorder,
+    ) -> Result<Self> {
+        Self::from_config_inner(config, Some(metrics)).await
+    }
+
+    async fn from_config_inner(
+        mut config: ProxyConfig,
+        #[cfg(feature = "metrics")] metrics: Option<crate::metrics::MetricsRecorder>,
+    ) -> Result<Self> {
         config.prepare()?;
+        #[cfg(feature = "metrics")]
+        let metrics = if config.observability.metrics.enabled {
+            Some(metrics.unwrap_or_default())
+        } else {
+            anyhow::ensure!(
+                metrics.is_none(),
+                "injected metrics require observability.metrics.enabled = true"
+            );
+            None
+        };
         let reload_policy = crate::reload_policy::ReloadPolicy::new(&config);
         let runtime = crate::lifecycle::Runtime::new(reload_policy.connections().clone());
-        let result = Self::construct(config, reload_policy, runtime.clone()).await;
+        let result = Self::construct(
+            config,
+            reload_policy,
+            runtime.clone(),
+            #[cfg(feature = "metrics")]
+            metrics,
+        )
+        .await;
         if result.is_err() && runtime.shutdown().await.is_err() {
             tracing::error!("Proxy cleanup after construction failure failed");
         }
@@ -64,6 +106,7 @@ impl Proxy {
         config: ProxyConfig,
         reload_policy: crate::reload_policy::ReloadPolicy,
         runtime: std::sync::Arc<crate::lifecycle::Runtime>,
+        #[cfg(feature = "metrics")] metrics: Option<crate::metrics::MetricsRecorder>,
     ) -> Result<Self> {
         let (mcp_proxy, cb_handles) = build_mcp_proxy(&config, &runtime.connections).await?;
         *runtime.proxy.lock().expect("backend owner") = Some(mcp_proxy.clone());
@@ -73,22 +116,27 @@ impl Proxy {
         let mut proxy_for_caller = mcp_proxy.clone();
         let proxy_for_management = mcp_proxy.clone();
 
-        // Install Prometheus metrics recorder (must happen before middleware)
         #[cfg(feature = "metrics")]
-        let metrics_handle = if config.observability.metrics.enabled {
-            tracing::info!("Prometheus metrics enabled at /admin/metrics");
-            let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
-            let handle = builder
-                .install_recorder()
-                .context("installing Prometheus metrics recorder")?;
-            Some(handle)
-        } else {
-            None
-        };
+        let metrics_handle = metrics
+            .as_ref()
+            .map(crate::metrics::MetricsRecorder::handle);
         #[cfg(not(feature = "metrics"))]
         let metrics_handle = None;
 
         let (service, cache_handle) = build_middleware_stack(&config, mcp_proxy)?;
+        #[cfg(feature = "metrics")]
+        let service = if let Some(metrics) = metrics {
+            BoxCloneService::new(crate::metrics::MetricsService::with_recorder(
+                service, metrics, &config,
+            ))
+        } else {
+            service
+        };
+        let service = if config.observability.tracing.enabled {
+            BoxCloneService::new(crate::telemetry::RequestSpans::new(service, &config))
+        } else {
+            service
+        };
 
         let (router, session_handle) =
             tower_mcp::transport::http::HttpTransport::from_service(service)
@@ -151,6 +199,12 @@ impl Proxy {
         let router = router
             .route("/livez", axum::routing::get(|| async { "ok" }))
             .route("/readyz", axum::routing::get(|| async { "ok" }));
+
+        let router = if config.observability.tracing.enabled {
+            crate::telemetry::http_spans(router)
+        } else {
+            router
+        };
 
         // Build discovery index if enabled (search mode implies discovery)
         #[cfg(feature = "discovery")]
@@ -1132,12 +1186,6 @@ fn build_middleware_stack(
         data_service,
         admin_service,
     ));
-
-    // Metrics
-    #[cfg(feature = "metrics")]
-    if config.observability.metrics.enabled {
-        service = BoxCloneService::new(crate::metrics::MetricsService::new(service));
-    }
 
     // Structured access logging
     if config.observability.access_log.enabled {

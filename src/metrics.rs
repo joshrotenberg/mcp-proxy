@@ -2,17 +2,68 @@
 //!
 //! Request counters use MCP method, coarse status and the bounded
 //! [`crate::outcome`] class. Duration histograms use MCP method. Tool `isError`
-//! results count as errors without recording response bodies.
+//! results count as errors without recording response bodies. Configured
+//! requests add a bounded `namespace` label: `backend:<configured name>` or
+//! `_aggregate`, `_management`, `_composite`, `_unknown`. It describes the
+//! requested target, not a routed execution destination. No tool/user labels.
+//!
+//! [`MetricsRecorder`] owns Prometheus state without installing a global
+//! recorder. Proxies use independent recorders or share an injected owner.
+//! Each completion emits synchronously into its explicit owner, so async thread
+//! migration cannot switch recorders. Maintenance runs on completions at most once per second
+//! and before scraping/rendering, without a detached worker. Low-level
+//! [`MetricsService::new`] retains facade global/thread-local behavior;
+//! configured proxies use [`MetricsService::with_recorder`] instead.
 
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Instant;
 
 use metrics::{counter, histogram};
 use tower::{Layer, Service};
 use tower_mcp::{RouterRequest, RouterResponse};
+
+/// Shareable, explicitly owned Prometheus recorder for configured proxies.
+#[derive(Clone)]
+pub struct MetricsRecorder {
+    recorder: Arc<metrics_exporter_prometheus::PrometheusRecorder>,
+    upkeep: Arc<Mutex<Instant>>,
+}
+impl Default for MetricsRecorder {
+    fn default() -> Self {
+        Self::new(metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder())
+    }
+}
+impl MetricsRecorder {
+    /// Own a custom-built recorder without changing process-global state.
+    pub fn new(recorder: metrics_exporter_prometheus::PrometheusRecorder) -> Self {
+        Self {
+            recorder: Arc::new(recorder),
+            upkeep: Arc::new(Mutex::new(Instant::now())),
+        }
+    }
+    /// Return a shared scrape handle; call `run_upkeep` before rendering it.
+    pub fn handle(&self) -> metrics_exporter_prometheus::PrometheusHandle {
+        self.recorder.handle()
+    }
+    /// Perform maintenance and render this recorder's Prometheus metrics.
+    pub fn render(&self) -> String {
+        let handle = self.handle();
+        handle.run_upkeep();
+        handle.render()
+    }
+    fn maintain(&self) {
+        if let Ok(mut last) = self.upkeep.try_lock()
+            && last.elapsed() >= std::time::Duration::from_secs(1)
+        {
+            *last = Instant::now();
+            self.handle().run_upkeep();
+        }
+    }
+}
 
 /// Tower layer that produces a [`MetricsService`].
 #[derive(Clone, Default)]
@@ -37,12 +88,26 @@ impl<S> Layer<S> for MetricsLayer {
 #[derive(Clone)]
 pub struct MetricsService<S> {
     inner: S,
+    recorder: Option<MetricsRecorder>,
+    namespaces: crate::telemetry::Namespaces,
 }
 
 impl<S> MetricsService<S> {
     /// Create a new metrics service wrapping `inner`.
     pub fn new(inner: S) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            recorder: None,
+            namespaces: Default::default(),
+        }
+    }
+    /// Use an owned/shared recorder and bounded configured namespaces.
+    pub fn with_recorder(inner: S, recorder: MetricsRecorder, config: &crate::ProxyConfig) -> Self {
+        Self {
+            inner,
+            recorder: Some(recorder),
+            namespaces: crate::telemetry::Namespaces::new(config),
+        }
     }
 }
 
@@ -63,7 +128,9 @@ where
     }
 
     fn call(&mut self, req: RouterRequest) -> Self::Future {
-        let method = req.inner.method_name().to_string();
+        let method = crate::telemetry::method(&req.inner).to_string();
+        let namespace = self.namespaces.requested(&req.inner);
+        let recorder = self.recorder.clone();
         let start = Instant::now();
         let fut = self.inner.call(req);
 
@@ -72,15 +139,17 @@ where
             let duration = start.elapsed().as_secs_f64();
 
             let outcome = crate::outcome::Outcome::from_result(&result);
-            let status = outcome.status();
-
-            counter!("mcp_proxy_requests_total", "method" => method.clone(), "status" => status, "outcome" => outcome.as_str())
-                .increment(1);
-            histogram!(
-                "mcp_proxy_request_duration_seconds",
-                "method" => method,
-            )
-            .record(duration);
+            let record = || {
+                counter!("mcp_proxy_requests_total","method"=>method.clone(),"namespace"=>namespace.clone(),"status"=>outcome.status(),"outcome"=>outcome.as_str()).increment(1);
+                histogram!("mcp_proxy_request_duration_seconds","method"=>method,"namespace"=>namespace).record(duration);
+            };
+            if let Some(recorder) = recorder {
+                // The guard covers only these synchronous emissions, no await.
+                metrics::with_local_recorder(recorder.recorder.as_ref(), record);
+                recorder.maintain();
+            } else {
+                record();
+            }
 
             result
         })

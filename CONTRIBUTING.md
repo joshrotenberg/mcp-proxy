@@ -123,6 +123,7 @@ Reusable fixtures live under `tests/support/` (included by integration binaries)
 | CLI log flags/privacy and configured resilience/cache/metric outcomes | `cli_logging.rs`, `outcome_runtime.rs` |
 | Configured request-volume retry budget, exact backend attempts and preserved RPC errors | `retry_runtime.rs`; paused-clock timing/volume/cancellation cases in `retry.rs` |
 | Concurrent outlier admission, exact backend calls and removal/re-registration | `outlier_runtime.rs`; barriers, paused recovery, stale completions and owner counts in `outlier.rs` |
+| Request spans/exporter shutdown, HTTP auth rejections, metric owner isolation/sharing and privacy | `telemetry_runtime.rs`: decoded OTLP HTTP/protobuf collector, CLI shutdown with delayed batch, host provider, concurrent embedded owners; `telemetry.rs`: bounded labels and cancelled spans |
 | Persistent cache isolation, shared capacity, expiry and configured restart generations | `cache_backends.rs`, `cache_runtime.rs` |
 | Backend credentials stay fixed across caller identities and cache hits; forwarding is rejected | `forward_auth.rs`: real HTTP/WebSocket captures, static/JWT/introspection callers, session binding, shared cache and redirects; preparation/reload regressions reject before effects |
 | Shared configuration preparation, strict fields, safe numeric boundaries and no effects on rejection | `config_preparation.rs`: CLI check/startup, raw library configs, builder, REST/MCP additions and active-session continuity; `config_env.rs`: watched-file rejection and required-secret rollback |

@@ -301,6 +301,12 @@ logged fields. Records are emitted when the MCP service completes. HTTP
 authentication rejections occur before this middleware and are not included;
 these records do not yet attribute callers.
 
+Request spans use OTLP HTTP/protobuf (`http://localhost:4318/v1/traces` by
+default) and include HTTP authentication rejections. Configured proxies own
+independent metrics recorders; embedders can inject a shared recorder. See the
+[telemetry guide](https://docs.rs/mcp-proxy/latest/mcp_proxy/telemetry/index.html)
+for provider shutdown/flush, bounded namespace labels and embedding migration.
+
 ### MCP outcome policy
 
 Resilience, cache admission and telemetry share a classifier based on typed

@@ -275,5 +275,5 @@ enabled = true
 
 [observability.tracing]
 enabled = true
-endpoint = "http://otel-collector.internal:4317"
+endpoint = "http://otel-collector.internal:4318/v1/traces"
 service_name = "mcp-proxy"

@@ -146,5 +146,5 @@ enabled = true
 
 [observability.tracing]
 enabled = true
-endpoint = "http://jaeger.internal:4317"
+endpoint = "http://jaeger.internal:4318/v1/traces"
 service_name = "mcp-proxy"

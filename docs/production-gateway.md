@@ -130,7 +130,10 @@ execute once, which is usually acceptable but worth knowing.
 ## Operating it
 
 - Scrape `GET /admin/metrics` with Prometheus; request counts and duration
-  histograms are labeled per backend.
+  histograms use bounded public requested-namespace labels (`backend:<name>`), not the actual
+  canary/failover destination. Unknown dynamic namespaces collapse to `_unknown`.
+  Configured instances own isolated recorders unless an embedding host injects
+  a shared owner; see the telemetry rustdoc for ownership and tracing setup.
 - `GET /admin/health` for liveness dashboards, `GET /admin/backends` for
   per-backend health and middleware, `GET /admin/cache/stats` for hit rates.
 - With JWT auth, the admin API requires `[security] admin_token`; send it as
