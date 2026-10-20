@@ -1,5 +1,6 @@
 //! Lazy SQLite I/O runs only on bounded blocking workers, never on Tokio workers.
 use rusqlite::{Connection, params};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,6 +12,7 @@ pub(crate) struct Store {
     ttl: Duration,
     capacity: u64,
     conn: Arc<Mutex<Option<Connection>>>,
+    initialized: Arc<AtomicBool>,
     permit: Arc<tokio::sync::Semaphore>,
 }
 impl Store {
@@ -28,6 +30,7 @@ impl Store {
             ttl,
             capacity,
             conn: Default::default(),
+            initialized: Default::default(),
             permit: Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
@@ -39,6 +42,14 @@ impl Store {
         let permit = self.permit.clone().try_acquire_owned().map_err(|_| {
             tracing::debug!(target:"mcp_proxy::cache",stage="admission", "SQLite cache bypassed");
         }).ok()?;
+        // Cold schema/WAL creation requires filesystem syncs even with NORMAL.
+        // Keep this bounded separately from steady-state queries; healthy CI
+        // disks took ~480 ms to initialize, exceeding the 200 ms query budget.
+        let budget = if self.initialized.load(Ordering::Acquire) {
+            Duration::from_millis(200)
+        } else {
+            Duration::from_secs(2)
+        };
         let store = self.clone();
         let started = std::time::Instant::now();
         let job = tokio::task::spawn_blocking(move || {
@@ -66,6 +77,7 @@ impl Store {
                 .ok()?;
                 tracing::debug!(target:"mcp_proxy::cache",stage="schema_ready",elapsed_ms=started.elapsed().as_millis() as u64,"SQLite cache operation");
                 *guard = Some(conn);
+                store.initialized.store(true, Ordering::Release);
             }
             let conn = guard.as_mut()?;
             let now = SystemTime::now()
@@ -83,7 +95,7 @@ impl Store {
             tracing::debug!(target:"mcp_proxy::cache",stage="complete",elapsed_ms=started.elapsed().as_millis() as u64,"SQLite cache operation");
             result
         });
-        match tokio::time::timeout(Duration::from_millis(200), job).await {
+        match tokio::time::timeout(budget, job).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
                 tracing::debug!(target:"mcp_proxy::cache",stage="worker_failure","SQLite cache bypassed");
@@ -143,5 +155,55 @@ impl Store {
 fn trace_error(stage: &'static str, error: &rusqlite::Error) {
     if !matches!(error, rusqlite::Error::QueryReturnedNoRows) {
         tracing::debug!(target:"mcp_proxy::cache",stage,code=?error.sqlite_error_code(),"SQLite cache bypassed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn timed_out_worker_retains_admission_until_io_finishes() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::new(
+            directory.path().join("cache.db").to_str().unwrap().into(),
+            "scope".into(),
+            "tool",
+            Duration::from_secs(60),
+            10,
+        );
+        store.insert("key".into(), "value".into()).await;
+        assert_eq!(store.count().await, 1);
+        let worker = store.clone();
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let request = tokio::spawn(async move {
+            worker
+                .run(move |_, _, _| {
+                    entered.send(()).unwrap();
+                    blocked.recv_timeout(Duration::from_secs(3)).unwrap();
+                    Ok(())
+                })
+                .await
+        });
+        waiting.await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), request)
+                .await
+                .expect("initialized I/O must use the shorter budget")
+                .unwrap()
+                .is_none()
+        );
+        // A detached blocking job must prevent another filesystem operation,
+        // even after its async waiter has already returned a timeout.
+        assert_eq!(store.count().await, 0);
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while store.count().await != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("completed I/O must release admission");
     }
 }

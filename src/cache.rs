@@ -42,7 +42,9 @@
 //! a reader, and later SQLite operations reclaim expired inactive generations.
 //!
 //! SQLite opens/queries on blocking workers: one outstanding job per kind/store,
-//! including cancelled waiters, a 25 ms busy timeout and 200 ms async wait budget.
+//! including cancelled waiters, a 25 ms busy timeout and 200 ms async wait budget
+//! for initialized stores. Cold connection/schema/WAL setup has a separate bounded
+//! two-second budget for filesystem syncs; it never runs on Tokio workers.
 //! Redis reuses one multiplexed connection per kind/store, at most 16 admitted
 //! operations, 75 ms connection/response deadlines and a 200 ms overall budget.
 //! Busy, unavailable or invalid stores fail open as misses/bypassed writes; stats
