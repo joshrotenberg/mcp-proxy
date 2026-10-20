@@ -5,6 +5,9 @@
 mod app;
 #[path = "support/http.rs"]
 mod http;
+#[cfg(feature = "sqlite-cache")]
+#[path = "support/sqlite.rs"]
+mod sqlite_fixture;
 use serde_json::json;
 use std::sync::{
     Arc,
@@ -74,7 +77,7 @@ max_entries=1
 #[cfg(feature = "sqlite-cache")]
 #[tokio::test]
 async fn configured_sqlite_generation_and_restart_contract() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = sqlite_fixture::directory();
     configured_contract("sqlite", dir.path().join("cache.db").to_str().unwrap()).await;
 }
 #[cfg(feature = "redis-cache")]

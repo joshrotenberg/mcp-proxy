@@ -121,6 +121,15 @@ Reusable fixtures live under `tests/support/` (included by integration binaries)
 | Controlled pending work, deadlines, recovery without replay | `coalesce_runtime.rs` |
 | Cancellation during initialization, SIGTERM with pending work/SSE, short drain, child reap and embedded owner cleanup | `shutdown_runtime.rs` |
 | CLI log flags/privacy and configured resilience/cache/metric outcomes | `cli_logging.rs`, `outcome_runtime.rs` |
+| Persistent cache isolation, shared capacity, expiry and configured restart generations | `cache_backends.rs`, `cache_runtime.rs` |
+
+Logical SQLite cache tests use real files through `support/sqlite.rs`, on Linux
+`/dev/shm` tmpfs when available and the platform temporary directory elsewhere.
+This keeps durable-filesystem sync latency from triggering the bounded fail-open
+policy while asserting exact residency, capacity and restart reuse. Locked-store,
+invalid-path and controlled worker deadline/admission tests retain platform temp
+files and explicitly verify bypass and recovery. Preserve production I/O budgets
+and exact assertions; do not add retries to logical cache checks.
 
 Run `cargo test --test configured_sessions --all-features` for the new contract
 matrix, and repeat with `--no-default-features` to exercise bearer sessions
