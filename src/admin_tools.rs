@@ -229,6 +229,12 @@ fn build_admin_router(
         .handler(move |input: AddBackendInput| {
             let s = state_for_add.clone();
             async move {
+                if let Err(error) =
+                    s.reload_policy
+                        .prepare_http_backend(&input.name, &input.url, None)
+                {
+                    return Ok(CallToolResult::error(error.to_string()));
+                }
                 if let Err(error) = s.reload_policy.check_backend_change(&input.name) {
                     return Ok(CallToolResult::error(error.to_string()));
                 }
@@ -299,6 +305,7 @@ struct HealthCheckResult {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct AddBackendInput {
     /// Name/namespace for the new backend
     name: String,

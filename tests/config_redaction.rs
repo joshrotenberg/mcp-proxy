@@ -24,7 +24,10 @@ const SECRETS: &[&str] = &[
 fn config(backend_url: &str) -> ProxyConfig {
     // The URL may contain user info/query credentials; arbitrary header/env
     // names ensure protection does not depend on a secret-key blacklist.
-    ProxyConfig::parse(&format!(
+    // Diagnostic projection must redact every field even in configurations
+    // whose optional middleware is absent from this build. Configured-session
+    // tests below still run this raw serde input through Proxy::from_config.
+    toml::from_str(&format!(
         r#"
         [proxy]
         name = "redaction-test"

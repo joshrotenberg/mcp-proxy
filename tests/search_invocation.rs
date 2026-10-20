@@ -176,10 +176,6 @@ tools = ["api{separator}private"]
 name = "mixed_composite"
 description = "Independent target authorization"
 tools = ["api{separator}public", "api{separator}private"]
-[[composite_tools]]
-name = "nested_composite"
-description = "Unsupported nested target"
-tools = ["allowed_composite"]
 "#,
             backend_url = backend.url
         ))
@@ -262,12 +258,7 @@ async fn assert_scoped_delegation(fixture: &Fixture, token: &str) {
     success(&session.call("allowed_composite", json!({})).await);
     success(&session.wrapped("/", "allowed_composite", json!({})).await);
     for wrapped in [false, true] {
-        for name in [
-            "api/private",
-            "denied_composite",
-            "mixed_composite",
-            "nested_composite",
-        ] {
+        for name in ["api/private", "denied_composite", "mixed_composite"] {
             let result = if wrapped {
                 session.wrapped("/", name, json!({})).await
             } else {
@@ -304,7 +295,7 @@ async fn scoped_bearer_authorizes_actual_targets_and_composite_delegation() {
 type = "bearer"
 [[auth.scoped_tokens]]
 token = "scoped"
-allow_tools = ["api/public", "allowed_composite", "denied_composite", "mixed_composite", "nested_composite"]
+allow_tools = ["api/public", "allowed_composite", "denied_composite", "mixed_composite"]
 "#,
         "/",
     )
@@ -371,7 +362,7 @@ audience = "http://127.0.0.1:8080"
 jwks_uri = "{issuer}/jwks"
 [[auth.roles]]
 name = "reader"
-allow_tools = ["api/public", "allowed_composite", "denied_composite", "mixed_composite", "nested_composite"]
+allow_tools = ["api/public", "allowed_composite", "denied_composite", "mixed_composite"]
 deny_tools = ["api/private"]
 [auth.role_mapping]
 claim = "scope"

@@ -448,6 +448,20 @@ impl CacheLayer {
         };
         (Self { caches }, handle)
     }
+
+    /// Create a cache layer after offline validation of storage and TTL/capacity
+    /// settings. Returns an error instead of allowing invalid configuration to
+    /// reach cache constructors. Performs no storage I/O.
+    pub fn try_new(
+        configs: Vec<(String, &BackendCacheConfig)>,
+        backend_config: &CacheBackendConfig,
+    ) -> anyhow::Result<(Self, CacheHandle)> {
+        crate::config_validation::cache_backend(backend_config)?;
+        for (_, config) in &configs {
+            crate::config_validation::cache_policy(config)?;
+        }
+        Ok(Self::new(configs, backend_config))
+    }
 }
 
 impl<S> Layer<S> for CacheLayer {
@@ -480,6 +494,23 @@ impl<S> CacheService<S> {
             caches: Arc::clone(&caches),
         };
         (Self { inner, caches }, handle)
+    }
+
+    /// Create a cache service with fallible offline validation, as in
+    /// [`CacheLayer::try_new`]. Configured proxies always use this constructor.
+    pub fn try_new(
+        inner: S,
+        configs: Vec<(String, &BackendCacheConfig)>,
+        backend_config: &CacheBackendConfig,
+    ) -> anyhow::Result<(Self, CacheHandle)> {
+        let (layer, handle) = CacheLayer::try_new(configs, backend_config)?;
+        Ok((
+            Self {
+                inner,
+                caches: layer.caches,
+            },
+            handle,
+        ))
     }
 }
 

@@ -311,7 +311,7 @@ async fn watch_loop(
 // Resolve and validate the entire revision before any backend mutation.
 fn load_runtime_config(path: &std::path::Path) -> anyhow::Result<ProxyConfig> {
     let mut config = ProxyConfig::load(path)?;
-    config.resolve_env_vars()?;
+    config.prepare()?;
     Ok(config)
 }
 

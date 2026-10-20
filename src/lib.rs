@@ -249,6 +249,7 @@ pub mod coalesce;
 pub mod composite;
 pub mod config;
 mod config_env;
+mod config_validation;
 mod config_view;
 #[cfg(feature = "discovery")]
 pub mod discovery;

@@ -1046,7 +1046,13 @@ mod config_tests {
         [backends.concurrency]
         max_concurrent = 5
         "#;
-        let config = ProxyConfig::parse(toml).unwrap();
+        // This positive fixture enables only features present in the binary;
+        // config_preparation separately requires rejection when enabled but absent.
+        let toml = toml.replace(
+            "enabled = true",
+            &format!("enabled = {}", cfg!(feature = "metrics")),
+        );
+        let config = ProxyConfig::parse(&toml).unwrap();
         assert_eq!(config.proxy.name, "enterprise");
         assert_eq!(config.proxy.version, "2.0.0");
         assert_eq!(config.proxy.separator, "::");
@@ -1058,7 +1064,10 @@ mod config_tests {
         assert!(config.performance.coalesce_requests);
         assert_eq!(config.security.max_argument_size, Some(1048576));
         assert!(config.observability.audit);
-        assert!(config.observability.metrics.enabled);
+        assert_eq!(
+            config.observability.metrics.enabled,
+            cfg!(feature = "metrics")
+        );
         assert_eq!(config.backends.len(), 2);
         assert_eq!(config.backends[0].expose_tools.len(), 2);
         assert!(config.backends[0].timeout.is_some());

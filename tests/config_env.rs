@@ -104,7 +104,10 @@ async fn check_and_startup_reject_every_missing_required_reference() {
     let reference = format!("${{{absent}}}");
     for field in [
         "admin", "token", "scoped", "backend", "env", "header", "oauth",
-    ] {
+    ]
+    .into_iter()
+    .filter(|field| cfg!(feature = "oauth") || !matches!(*field, "oauth" | "scoped"))
+    {
         let config = reference_config(field, &reference);
         for check in [true, false] {
             rejected(
@@ -123,7 +126,10 @@ async fn library_rejects_missing_references_before_starting_a_backend() {
     let marker = temp.path().join("backend-started");
     for field in [
         "admin", "token", "scoped", "backend", "env", "header", "oauth",
-    ] {
+    ]
+    .into_iter()
+    .filter(|field| cfg!(feature = "oauth") || !matches!(*field, "oauth" | "scoped"))
+    {
         let mut config = reference_config(field, &reference);
         config.backends[0].command = Some("touch".into());
         config.backends[0].args = vec![marker.to_string_lossy().into()];
@@ -175,6 +181,7 @@ async fn cli_rejects_empty_invalid_recursive_and_non_unicode_values() {
     }
 }
 
+#[cfg(feature = "oauth")]
 #[tokio::test]
 async fn resolved_token_collisions_and_header_values_are_validated_and_redacted() {
     let mut config = reference_config("token", "${MCP_PROXY_272_TOKEN}");
@@ -363,8 +370,47 @@ async fn management_preserves_references_and_invalid_reload_keeps_active_backend
     assert_eq!(std::fs::read_to_string(&path).unwrap(), template);
 
     // External edits pass the same validation before removal/addition begins.
+    // Invalid filters/names/counts must not retire the old namespace or spawn a
+    // newly added process. Check real calls after each watcher rejection.
+    let live = tower_mcp::client::McpClient::connect(tower_mcp::client::HttpClientTransport::new(
+        format!("{base}/"),
+    ))
+    .await
+    .unwrap();
+    let marker = temp.path().join("invalid-reload-started");
+    for (expected, patch) in [
+        (
+            "invalid capability filter pattern",
+            serde_json::json!({"name":"replacement", "expose_tools":["re:["]}),
+        ),
+        (
+            "backend.name 'proxy' is reserved",
+            serde_json::json!({"name":"proxy"}),
+        ),
+        (
+            "concurrency.max_concurrent",
+            serde_json::json!({"name":"replacement", "concurrency":{"max_concurrent":usize::MAX}}),
+        ),
+    ] {
+        let mut value = serde_json::to_value(&config).unwrap();
+        for (key, entry) in patch.as_object().unwrap() {
+            value["backends"][0][key] = entry.clone();
+        }
+        let mut desired: ProxyConfig = serde_json::from_value(value).unwrap();
+        desired.backends.push(serde_json::from_value(serde_json::json!({"name":"new-process","transport":"stdio","command":"touch","args":[marker]})).unwrap());
+        std::fs::write(&path, toml::to_string(&desired).unwrap()).unwrap();
+        wait_for_log(&mut rx, expected).await;
+        assert_eq!(
+            live.call_tool_text("api/ping", serde_json::json!({}))
+                .await
+                .unwrap(),
+            "pong"
+        );
+        assert!(!marker.exists(), "invalid reload started a new backend");
+    }
+    live.shutdown().await.unwrap();
     std::fs::write(&path, invalid_body).unwrap();
-    wait_for_log(&mut rx, "skipping reload").await;
+    wait_for_log(&mut rx, "required environment variable is not set").await;
     let response: serde_json::Value = client
         .get(format!("{base}/admin/backends"))
         .bearer_auth("manager")

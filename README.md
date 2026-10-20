@@ -203,13 +203,14 @@ non-Unicode, malformed, and recursively unresolved references fail startup and
 `--check`; diagnostics identify the configuration field without printing the
 reference or secret. Literal empty backend environment/header values remain valid.
 
-Library callers must handle the result of `config.resolve_env_vars()?`; it now
-returns an error and revalidates resolved values, including duplicate tokens and
-invalid headers. `Proxy::from_config` (including `ProxyBuilder::build`) resolves
-and validates before contacting any backend. Parsing/loading still permits
-unresolved templates. Management validation/update and hot reload use the same
-strict checks, retaining the original template on disk and the active backends
-when a reload revision is invalid.
+Use `config.prepare()?` for the shared offline runtime check;
+`resolve_env_vars()` remains a fallible compatible alias. `Proxy::from_config`
+(including `ProxyBuilder::build`), CLI check/startup, management and reload use
+this contract before backend effects. Unknown config fields, invalid regexes,
+reserved/ambiguous names, routing conflicts, unsafe numeric values and enabled
+features missing from the binary are errors. See [configuration rustdoc](https://docs.rs/mcp-proxy/latest/mcp_proxy/config/index.html#preparation-strict-fields-and-limits)
+for limits and migration. Parsing/loading permits unresolved templates; rejected
+management saves/reloads retain stored templates and active backends.
 
 An explicit `Authorization` header overrides `bearer_token` regardless of casing.
 Rust callers upgrading from 0.4 to 0.5 who construct `BackendConfig` literals

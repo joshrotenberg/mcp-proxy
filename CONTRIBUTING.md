@@ -124,6 +124,23 @@ Reusable fixtures live under `tests/support/` (included by integration binaries)
 | Configured request-volume retry budget, exact backend attempts and preserved RPC errors | `retry_runtime.rs`; paused-clock timing/volume/cancellation cases in `retry.rs` |
 | Concurrent outlier admission, exact backend calls and removal/re-registration | `outlier_runtime.rs`; barriers, paused recovery, stale completions and owner counts in `outlier.rs` |
 | Persistent cache isolation, shared capacity, expiry and configured restart generations | `cache_backends.rs`, `cache_runtime.rs` |
+| Shared configuration preparation, strict fields, safe numeric boundaries and no effects on rejection | `config_preparation.rs`: CLI check/startup, raw library configs, builder, REST/MCP additions and active-session continuity; `config_env.rs`: watched-file rejection and required-secret rollback |
+
+`ProxyConfig::prepare` is the runtime admission contract, including for raw serde
+configs and public-field edits. Keep structural checks in the shared validation
+path, before backend creation/discovery/cache work. Configuration objects deny
+unknown fields; maps for user arguments/environment/headers remain open data.
+The configuration module rustdoc records limits and migration. Preserve the
+no-default-feature rejection cases rather than accepting unsupported settings;
+run `cargo test --no-default-features --test config_preparation --test config_env`
+when changing this contract. Low-level cache users can choose fallible `try_new`
+constructors; configured construction must use them. Connection failures during
+otherwise valid live replacement remain the separate #277 limitation.
+
+Run Cargo feature modes sequentially when sharing a target directory, or use
+separate target directories. The build lock does not cover the entire test run:
+another mode can replace `target/debug/mcp-proxy` while CLI integration tests are
+still using it, invalidating feature checks. CI matrix jobs have isolated targets.
 
 Logical SQLite cache tests use real files through `support/sqlite.rs`, on Linux
 `/dev/shm` tmpfs when available and the platform temporary directory elsewhere.
