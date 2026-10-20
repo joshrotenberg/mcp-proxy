@@ -34,7 +34,8 @@ src/
   filter.rs        # Capability filtering -- allow/deny lists, glob patterns (CapabilityFilterService)
   inject.rs        # Argument injection into tool calls (InjectArgsService)
   mirror.rs        # Traffic mirroring to canary backends (MirrorService)
-  cache.rs         # Response caching with memory, Redis, or SQLite storage
+  cache.rs         # Scoped response caching, shared budgets and generation ownership
+  cache/           # Bounded SQLite blocking I/O and Redis indexed storage
   coalesce.rs      # Request deduplication (CoalesceService)
   validation.rs    # Argument size limits (ValidationService)
   metrics.rs       # Prometheus counters and histograms (MetricsService)
@@ -241,6 +242,16 @@ HTTP status and JSON-RPC error/result assertions together; non-401 alone proves
 nothing. Reuse strict local peers, call journals, bounded readiness and wire
 traces. Do not retry handshakes internally or hide startup failures. See the
 coverage map and feature-matrix commands in CONTRIBUTING.md.
+
+Persistent cache scopes include exact prefix, generation and backend namespace;
+tool/resource entries share capacity. Default generations isolate cache owners;
+explicit generations opt into restart/instance reuse and must change with backend
+or authority semantics. SQLite opens/queries only on admitted blocking workers;
+cancelled waiters retain permits until work finishes. Redis uses reused connections,
+operation deadlines and exact atomic indexes, never database-wide KEYS. Keep real
+prefix/clear/stats/capacity/expiry/concurrent-writer, configured restart-generation,
+and unavailable-store responsiveness regressions. See cache module rustdoc for
+migration, eviction, byte-budget and failure semantics.
 
 Every feature gets tests. No exceptions.
 
