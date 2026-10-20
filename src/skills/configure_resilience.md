@@ -1,11 +1,26 @@
 You are helping the user configure resilience policies for their mcp-proxy backends. Guide them through choosing appropriate protection for each backend.
 
+Each TOML block below is an independent configuration using defaults. Merge the
+desired settings into your actual backend; do not concatenate repeated backend
+blocks with the same name. The example HTTP peer must be supplied separately.
+
 ## Resilience Options
 
 ### Timeout
 Prevents slow backends from blocking requests. Recommended for all backends.
 
 ```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [backends.timeout]
 seconds = 30
 ```
@@ -14,6 +29,17 @@ seconds = 30
 Stops sending requests to failing backends. Recommended for external APIs.
 
 ```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [backends.circuit_breaker]
 failure_rate_threshold = 0.5     # Trip after 50% failure rate
 minimum_calls = 5                # Need at least 5 calls before evaluating
@@ -25,6 +51,17 @@ permitted_calls_in_half_open = 3 # Allow 3 probe requests
 Caps request volume. Recommended for expensive or metered APIs.
 
 ```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [backends.rate_limit]
 requests = 100
 period_seconds = 1
@@ -34,6 +71,17 @@ period_seconds = 1
 Automatically retries failed requests. Good for transient errors.
 
 ```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [backends.retry]
 max_retries = 3
 initial_backoff_ms = 100
@@ -53,9 +101,21 @@ backend timeout to bound execution and sleep together. Retrying tool calls can
 duplicate remote side effects.
 
 ### Hedging
-Sends parallel requests to reduce tail latency. For latency-sensitive backends.
+Duplicates execution to seek a successful alternative. Use only where duplicate
+side effects are acceptable; tool annotations alone do not prove safety.
 
 ```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [backends.hedging]
 delay_ms = 200    # Wait 200ms before sending hedge
 max_hedges = 1
@@ -65,6 +125,17 @@ max_hedges = 1
 Passively tracks errors and ejects unhealthy backends.
 
 ```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [backends.outlier_detection]
 consecutive_errors = 5
 interval_seconds = 10 # Compatibility setting; no background evaluation timer
@@ -83,11 +154,26 @@ outlier rustdoc for quota shrink and low-level manual accounting semantics.
 Cache responses to reduce backend load.
 
 ```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [backends.cache]
 resource_ttl_seconds = 300
 tool_ttl_seconds = 60
 max_entries = 1000
 ```
+
+Caching and coalescing can suppress independent writes, while retries/hedges
+can repeat them. Apply the following suggestions only after checking each
+backend's tools and idempotency contract; they are not safe defaults for writes.
 
 ## Recommendations by Backend Type
 

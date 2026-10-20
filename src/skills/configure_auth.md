@@ -6,6 +6,17 @@ You are helping the user configure authentication for their mcp-proxy. Guide the
 Best for: development, internal tools, small teams.
 
 ```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "files"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [auth]
 type = "bearer"
 tokens = ["${API_TOKEN}"]
@@ -13,6 +24,17 @@ tokens = ["${API_TOKEN}"]
 
 With per-token tool scoping:
 ```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "files"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [auth]
 type = "bearer"
 
@@ -21,14 +43,25 @@ token = "${FRONTEND_TOKEN}"
 allow_tools = ["files/read_file", "files/list_directory"]
 
 [[auth.scoped_tokens]]
-token = "${ADMIN_TOKEN}"
-# Empty = all tools allowed
+token = "${UNRESTRICTED_TOKEN}"
+# Empty = all ordinary backend tools allowed; not management authority
 ```
 
 ### 2. JWT/JWKS (Standard)
 Best for: existing JWT infrastructure, manual endpoint configuration.
 
 ```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "files"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [auth]
 type = "jwt"
 issuer = "https://auth.example.com"
@@ -41,8 +74,25 @@ jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 admin_token = "${ADMIN_TOKEN}"
 ```
 
-With RBAC roles:
+Standalone JWT/RBAC example with a placeholder HTTP backend:
 ```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "files"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
+[auth]
+type = "jwt"
+issuer = "https://auth.example.com"
+audience = "https://mcp.example.com/mcp"
+jwks_uri = "https://auth.example.com/.well-known/jwks.json"
+
 [[auth.roles]]
 name = "reader"
 allow_tools = ["files/read_file"]
@@ -53,8 +103,10 @@ name = "admin"
 [auth.role_mapping]
 claim = "scope"
 mapping = { "mcp:read" = "reader", "mcp:admin" = "admin" }
-# default_deny = true   # gateway hardening: deny authenticated tokens whose
-                        # scope is not in `mapping` (default false = pass-through)
+default_deny = true # Deny authenticated principals without a mapped role
+
+[security]
+admin_token = "${ADMIN_TOKEN}"
 ```
 
 For gateway deployments, set `default_deny = true` so that an authenticated
@@ -72,9 +124,23 @@ otherwise it is space-delimited; array elements match exactly.
 
 ### 3. OAuth 2.1 (Enterprise)
 Best for: enterprise IdP integration (Okta, Auth0, Azure AD, Google, Keycloak).
-Auto-discovers JWKS and introspection endpoints from the issuer URL.
+Discovers endpoints missing for the selected strategy from the exact issuer.
+Audience must be the public MCP resource URL. Set referenced secrets before
+`--check`; it is offline and cannot verify actual IdP availability. Only the
+dedicated admin credential grants management; ordinary/scoped tokens never do.
 
 ```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "files"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [auth]
 type = "oauth"
 issuer = "https://accounts.google.com"
@@ -87,6 +153,17 @@ admin_token = "${ADMIN_TOKEN}"
 
 With token introspection (for opaque tokens):
 ```toml
+[proxy]
+name = "example"
+[proxy.listen]
+host = "127.0.0.1"
+port = 8080
+
+[[backends]]
+name = "files"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"
+
 [auth]
 type = "oauth"
 issuer = "https://auth.example.com"
@@ -94,6 +171,9 @@ audience = "https://mcp.example.com/mcp"
 client_id = "my-client"
 client_secret = "${OAUTH_SECRET}"
 token_validation = "both"  # jwt first, introspection fallback
+
+[security]
+admin_token = "${ADMIN_TOKEN}"
 ```
 
 ## Questions to Ask

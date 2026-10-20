@@ -19,7 +19,8 @@ Call `proxy/session_count` to see active connections.
 - Too many sessions = possible leak or misconfigured clients
 
 ### 4. Review Configuration
-Call `proxy/config` to review the current config.
+Call `proxy/config` for a redacted startup snapshot, not current live topology.
+Verify private fields against the original file locally; never request secrets.
 - Check listen address (0.0.0.0 vs 127.0.0.1)
 - Verify auth settings match client expectations
 - Check for overly aggressive rate limits or timeouts
@@ -31,9 +32,9 @@ Call `proxy/config` to review the current config.
 | 401 Unauthorized | Auth misconfigured | Check token/JWT/OAuth config |
 | Backend unhealthy | Backend not running | Verify backend process/URL |
 | Timeout errors | Timeout too short | Increase `[backends.timeout]` |
-| Circuit breaker open | Backend failing | Check backend logs, reduce threshold |
+| Circuit breaker open | Backend failures | Diagnose backend outcomes; do not weaken protection blindly |
 | Missing tools | Filter too strict | Check expose_tools/hide_tools |
-| High latency | No caching | Enable response caching |
+| High latency | Backend work or contention | Measure first; cache only suitable read-only results |
 | Connection refused | Wrong listen address | Use 0.0.0.0 for containers |
 
 ## Tools Available

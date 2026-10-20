@@ -31,7 +31,8 @@ GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}"
 name = "filesystem"
 transport = "stdio"
 command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "${HOME}/projects"]
+# Replace /tmp with your absolute project directory; args are literal.
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 
 [[backends]]
 name = "postgres"

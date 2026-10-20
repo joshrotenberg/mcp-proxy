@@ -23,9 +23,10 @@ backend identity; tools are routed with their local names at this boundary.
 In mcp-proxy's configured stack, `src/proxy.rs::build_middleware_stack` applies
 local authentication, RBAC, filtering, and validation before routing to the
 per-backend services. `BackendMiddlewareLayer` in that file is the composition
-point for a custom per-backend gate. The corresponding hot-reload construction
-is `src/reload.rs::build_backend_layer`; update both paths when maintaining a
-custom integration.
+point for a custom per-backend gate. Startup is the only configured middleware constructor. Reload admits only
+plain, unreferenced connections; custom gate/policy changes require restart.
+Do not introduce an alternate reload stack; define and test the restart admission
+contract for a custom integration. See the [middleware order](https://docs.rs/mcp-proxy/latest/mcp_proxy/#middleware-order).
 
 `Proxy::mcp_proxy()` exposes the underlying routing service. It does not include
 the configured global middleware or HTTP authentication layer. An embedding

@@ -46,15 +46,11 @@
 //!
 //! # Middleware stack position
 //!
-//! Aliasing runs after capability filtering and search-mode filtering, so
-//! filters operate on original names and aliases are applied last. The
-//! ordering in `proxy.rs`:
-//!
-//! 1. Request validation ([`crate::validation`])
-//! 2. Capability filtering ([`crate::filter`])
-//! 3. Search-mode filtering ([`crate::filter`])
-//! 4. **Tool aliasing** (this module)
-//! 5. Composite tools ([`crate::composite`])
+//! Requests translate public aliases before capability filtering. Responses
+//! filter original backend names first and then rename surviving entries.
+//! Authorization checks public names before this translation.
+//! See the [authoritative middleware order](crate#middleware-order) for the
+//! complete configured request path and management branch.
 
 use std::collections::HashMap;
 use std::convert::Infallible;

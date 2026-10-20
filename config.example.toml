@@ -1,7 +1,8 @@
 # mcp-proxy configuration reference
 #
-# All options shown. Uncommented options are commonly used defaults;
-# commented options show available settings with their default values.
+# Annotated recipe, not an exhaustive generated schema. The config module
+# rustdoc owns the typed reference and limits. Commented blocks are alternatives
+# to merge deliberately; uncommenting every block is not a valid configuration.
 
 # =============================================================================
 # Proxy Settings
@@ -14,7 +15,8 @@ name = "my-proxy"
 # Namespace separator between backend name and tool/resource/prompt names
 # separator = "/"
 
-# Watch config file for backend changes and apply without restart
+# Watch plain, unreferenced backend connection/topology changes only.
+# Global/auth/backend policy edits require restart; see crate Hot Reload guide.
 # hot_reload = true
 
 # Graceful shutdown timeout (seconds)
@@ -171,7 +173,7 @@ url = "http://mcp-server:8080"
 # Passive health checks that eject unhealthy backends
 # [backends.outlier_detection]
 # consecutive_errors = 5          # errors before ejection
-# interval_seconds = 10           # evaluation interval
+# interval_seconds = 10           # compatibility field, no background timer
 # base_ejection_seconds = 30      # ejection duration
 # max_ejection_percent = 50       # max % of backends ejectable
 
@@ -229,7 +231,7 @@ url = "http://mcp-server:8080"
 # --- Bearer tokens with per-token tool scoping ---
 # [auth]
 # type = "bearer"
-# tokens = ["${ADMIN_TOKEN}"]       # unrestricted tokens
+# tokens = ["${API_TOKEN}"]         # unrestricted ordinary tool access
 #
 # [[auth.scoped_tokens]]
 # token = "${FRONTEND_TOKEN}"
@@ -243,7 +245,7 @@ url = "http://mcp-server:8080"
 # [auth]
 # type = "jwt"
 # issuer = "https://auth.example.com"
-# audience = "mcp-proxy"
+# audience = "https://gateway.example.com/mcp"
 # jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 #
 # [[auth.roles]]
@@ -262,7 +264,7 @@ url = "http://mcp-server:8080"
 # [auth]
 # type = "oauth"
 # issuer = "https://accounts.google.com"   # or any OIDC/OAuth 2.1 provider
-# audience = "mcp-proxy"
+# audience = "https://gateway.example.com/mcp"
 #
 # # Token validation strategy: "jwt" (default), "introspection", or "both"
 # # token_validation = "jwt"
@@ -289,7 +291,8 @@ url = "http://mcp-server:8080"
 # Cache Backend
 # =============================================================================
 # Global cache backend for per-backend response caching.
-# Default: in-memory (moka). External backends share state across instances.
+# Default: in-memory (moka). Explicit matching generations opt into response
+# sharing/restart reuse; Redis/SQLite do not share MCP sessions. See cache rustdoc.
 
 # [cache]
 # backend = "memory"             # "memory" (default), "redis", or "sqlite"
@@ -297,6 +300,7 @@ url = "http://mcp-server:8080"
 # # backend = "redis"
 # # url = "redis://localhost:6379"
 # # prefix = "mcp-proxy:"        # key prefix
+# # generation = "deployment-v1" # explicit reuse; change with backend/auth semantics
 # # For sqlite:
 # # backend = "sqlite"
 # # url = "cache.db"
@@ -314,9 +318,9 @@ url = "http://mcp-server:8080"
 
 # [security]
 # max_argument_size = 1048576    # 1MB limit on tool call arguments
-# admin_token = "${ADMIN_TOKEN}" # Bearer token for the /admin API. REQUIRED when
-#                                # auth.type is jwt/oauth (those auth types have no
-#                                # token fallback for admin); optional otherwise.
+# admin_token = "${ADMIN_TOKEN}" # Dedicated HTTP/MCP management credential.
+#                                # No ordinary-token fallback; absent disables management.
+#                                # Required by validation with auth.type jwt/oauth.
 
 # =============================================================================
 # Observability
