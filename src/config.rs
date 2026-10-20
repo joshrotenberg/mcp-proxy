@@ -841,7 +841,7 @@ pub struct BackendCacheConfig {
     /// TTL for cached tool call results in seconds (0 = disabled)
     #[serde(default)]
     pub tool_ttl_seconds: u64,
-    /// Maximum number of cached entries per backend (default: 1000)
+    /// Maximum live entries per backend across tool/resource responses (default: 1000).
     #[serde(default = "default_max_cache_entries")]
     pub max_entries: u64,
 }
@@ -855,9 +855,9 @@ pub struct BackendCacheConfig {
 ///
 /// - `"memory"` (default): In-process cache using moka. Fast, no external deps,
 ///   but not shared across proxy instances.
-/// - `"redis"`: External Redis cache. Shared across instances. Requires the
+/// - `"redis"`: External Redis cache. Explicit generations allow sharing. Requires the
 ///   `redis-cache` feature.
-/// - `"sqlite"`: Local SQLite cache. Persistent across restarts. Requires the
+/// - `"sqlite"`: Local SQLite cache. Explicit generations allow restart reuse. Requires the
 ///   `sqlite-cache` feature.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CacheBackendConfig {
@@ -866,7 +866,12 @@ pub struct CacheBackendConfig {
     pub backend: String,
     /// Connection URL for external backends (Redis or SQLite path).
     pub url: Option<String>,
-    /// Key prefix for external cache entries (default: "mcp-proxy:").
+    /// Explicit persistent-cache generation for intentional restart/instance sharing.
+    /// By default, each new cache service uses a fresh generation. Change this
+    /// value whenever backend configuration or authorization semantics change.
+    #[serde(default)]
+    pub generation: Option<String>,
+    /// Exact namespace prefix for external cache entries (default: "mcp-proxy:").
     #[serde(default = "default_cache_prefix")]
     pub prefix: String,
 }
@@ -877,6 +882,7 @@ impl Default for CacheBackendConfig {
             backend: default_cache_backend(),
             url: None,
             prefix: default_cache_prefix(),
+            generation: None,
         }
     }
 }
@@ -1656,6 +1662,20 @@ impl ProxyConfig {
                     "unknown cache backend \"{}\", expected \"memory\", \"redis\", or \"sqlite\"",
                     other
                 );
+            }
+        }
+
+        if self
+            .cache
+            .generation
+            .as_ref()
+            .is_some_and(|g| g.trim().is_empty())
+        {
+            anyhow::bail!("cache.generation must not be empty");
+        }
+        for backend in &self.backends {
+            if backend.cache.as_ref().is_some_and(|c| c.max_entries == 0) {
+                anyhow::bail!("backend cache.max_entries must be > 0");
             }
         }
 
@@ -3605,6 +3625,26 @@ jwks_uri = "https://issuer.example.test/keys"
             format!("{err}").contains("duplicate rename target"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn cache_capacity_and_explicit_generation_must_be_valid() {
+        let base = "[proxy]\nname='cache-validation'\n[proxy.listen]\n[[backends]]\nname='api'\ntransport='stdio'\ncommand='echo'\n";
+        assert!(
+            ProxyConfig::parse(&format!("{base}[backends.cache]\nmax_entries=0"))
+                .unwrap_err()
+                .to_string()
+                .contains("max_entries")
+        );
+        assert!(
+            ProxyConfig::parse(&format!("[cache]\ngeneration='   '\n{base}"))
+                .unwrap_err()
+                .to_string()
+                .contains("generation")
+        );
+        let parsed =
+            ProxyConfig::parse(&format!("[cache]\ngeneration='deploy-v2'\n{base}")).unwrap();
+        assert_eq!(parsed.cache.generation.as_deref(), Some("deploy-v2"));
     }
 
     #[test]

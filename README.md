@@ -652,8 +652,8 @@ Pre-built binaries and `cargo install` include the default features. If you're b
 | `discovery` | yes | BM25 tool discovery and search exposure mode |
 | `yaml` | yes | YAML configuration files using the maintained `yaml_serde` parser |
 | `skills` | yes | agentskills.io prompts for proxy administration |
-| `redis-cache` | no | Shared Redis response cache |
-| `sqlite-cache` | no | Persistent SQLite response cache |
+| `redis-cache` | no | Redis response cache; explicit generations enable sharing |
+| `sqlite-cache` | no | SQLite response cache; explicit generations enable restart reuse |
 | `protocol-2026-07-28` | no | Released MCP 2026-07-28 protocol support through tower-mcp |
 
 ```bash

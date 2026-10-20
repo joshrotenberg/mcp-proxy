@@ -9,10 +9,51 @@
 //! The cache backend is configurable via `[cache]` in the proxy config:
 //!
 //! - `"memory"` (default): In-process moka cache. Fast, no external deps.
-//! - `"redis"`: External Redis cache. Shared across instances. Requires the
+//! - `"redis"`: External Redis cache; explicit generations enable sharing. Requires the
 //!   `redis-cache` feature flag.
-//! - `"sqlite"`: Local SQLite cache. Persistent across restarts. Requires the
+//! - `"sqlite"`: Local SQLite cache; explicit generations enable restart reuse. Requires the
 //!   `sqlite-cache` feature flag.
+//!
+//! # Isolation, lifetime and migration
+//!
+//! Every cache service starts with a fresh generation unless `[cache].generation`
+//! explicitly opts into persistent reuse. External scopes hash the exact prefix,
+//! generation and backend namespace; tool/resource entries use separate keys and
+//! share `max_entries`. Clear/count affect only the exact scope, never a prefix
+//! wildcard. Request identities are hashed before storage. Hashes do not add
+//! caller authorization: caller-aware caching remains a separate concern.
+//!
+//! Set a non-secret generation only when all sharing instances have equivalent
+//! backend configuration, response and authorization semantics. Bump it when any
+//! of those change. Default generations isolate restarts and replacement owners;
+//! cached work is never migrated between generations automatically. Low-level
+//! Rust `CacheBackendConfig` literals need `generation: None` (or default update
+//! syntax). Cloned services/layers continue sharing their original cache state.
+//!
+//! SQLite uses `mcp_cache_v2`, indexed expiry cleanup on every operation, and
+//! transactional oldest-write eviction across resource/tool entries. The old
+//! `cache_entries` table is ignored; retire it manually after stopping old
+//! deployments. Redis uses exact hashes and sorted indexes with atomic expiry,
+//! capacity and clearing scripts, plus TTLs on all index/data keys. Legacy Redis
+//! keys are ignored and expire under their original TTL; avoid broad deletion.
+//! Existing v2 scopes are pruned on access; inactive Redis scopes expire without
+//! a reader, and later SQLite operations reclaim expired inactive generations.
+//!
+//! SQLite opens/queries on blocking workers: one outstanding job per kind/store,
+//! including cancelled waiters, a 25 ms busy timeout and 200 ms async wait budget.
+//! Redis reuses one multiplexed connection per kind/store, at most 16 admitted
+//! operations, 75 ms connection/response deadlines and a 200 ms overall budget.
+//! Busy, unavailable or invalid stores fail open as misses/bypassed writes; stats
+//! report zero when unavailable. SQLite OS filesystem calls are not cancellable;
+//! their admission permit remains held until the worker actually finishes.
+//!
+//! Persistent eviction is oldest-write, memory uses moka admission/eviction;
+//! reads do not renew TTLs. `max_entries` bounds live entries per backend scope,
+//! across both response kinds. It does not bound response bytes, the number of
+//! explicitly distinct scopes, or the SQLite file's high-water allocation. Use
+//! Redis memory limits/filesystem quotas for hard byte budgets. SQLite reuses
+//! freed pages and does not automatically VACUUM. In-flight backend calls can
+//! refill a cleared cache. Only successful completed responses are cached.
 //!
 //! # Per-Backend Configuration
 //!
@@ -44,226 +85,129 @@ use tower_mcp_types::protocol::{InputResponses, McpRequest};
 
 use crate::config::{BackendCacheConfig, CacheBackendConfig};
 
-/// Pluggable cache storage backend.
-///
-/// Each variant provides the same logical operations (get, insert, invalidate,
-/// count) but differs in where entries are stored:
-///
-/// - [`Memory`](CacheStore::Memory): in-process moka cache (default)
-/// - [`Redis`](CacheStore::Redis): external Redis server (requires `redis-cache` feature)
-/// - [`Sqlite`](CacheStore::Sqlite): local SQLite database (requires `sqlite-cache` feature)
+#[cfg(feature = "redis-cache")]
+mod redis;
+#[cfg(feature = "sqlite-cache")]
+mod sqlite;
+
+/// Pluggable, scoped storage. External I/O fails open as cache misses.
 #[derive(Clone)]
 pub(crate) enum CacheStore {
-    /// In-process moka cache.
     Memory(Cache<String, RouterResponse>),
-    /// Redis-backed cache.
     #[cfg(feature = "redis-cache")]
-    Redis {
-        client: redis::Client,
-        prefix: String,
-        ttl: Duration,
-    },
-    /// SQLite-backed cache.
+    Redis(redis::Store),
     #[cfg(feature = "sqlite-cache")]
-    Sqlite {
-        conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
-        ttl: Duration,
-    },
+    Sqlite(sqlite::Store),
 }
-
 impl CacheStore {
-    /// Retrieve a cached response by key.
     async fn get(&self, key: &str) -> Option<RouterResponse> {
         match self {
-            CacheStore::Memory(cache) => cache.get(key).await,
+            Self::Memory(cache) => cache.get(key).await,
             #[cfg(feature = "redis-cache")]
-            CacheStore::Redis {
-                client,
-                prefix,
-                ttl: _,
-            } => {
-                let full_key = format!("{prefix}{key}");
-                let mut conn = client.get_multiplexed_async_connection().await.ok()?;
-                let data: Option<String> =
-                    redis::AsyncCommands::get(&mut conn, &full_key).await.ok()?;
-                data.and_then(|s| serde_json::from_str(&s).ok())
-            }
+            Self::Redis(store) => serde_json::from_str(&store.get(&digest(key)).await?).ok(),
             #[cfg(feature = "sqlite-cache")]
-            CacheStore::Sqlite { conn, ttl: _ } => {
-                let key = key.to_string();
-                let conn = conn.lock().ok()?;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
-                let result: Option<String> = conn
-                    .query_row(
-                        "SELECT value FROM cache_entries WHERE key = ?1 AND expires_at > ?2",
-                        rusqlite::params![key, now],
-                        |row| row.get(0),
-                    )
-                    .ok();
-                result.and_then(|s| serde_json::from_str(&s).ok())
-            }
+            Self::Sqlite(store) => serde_json::from_str(&store.get(&digest(key)).await?).ok(),
         }
     }
-
-    /// Insert a response into the cache.
     async fn insert(&self, key: String, value: RouterResponse) {
         match self {
-            CacheStore::Memory(cache) => {
+            Self::Memory(cache) => {
                 cache.insert(key, value).await;
             }
             #[cfg(feature = "redis-cache")]
-            CacheStore::Redis {
-                client,
-                prefix,
-                ttl,
-            } => {
-                let full_key = format!("{prefix}{key}");
-                if let Ok(json) = serde_json::to_string(&value)
-                    && let Ok(mut conn) = client.get_multiplexed_async_connection().await
-                {
-                    let _: Result<(), _> =
-                        redis::AsyncCommands::set_ex(&mut conn, &full_key, &json, ttl.as_secs())
-                            .await;
+            Self::Redis(store) => {
+                if let Ok(value) = serde_json::to_string(&value) {
+                    store.insert(digest(&key), value).await;
                 }
             }
             #[cfg(feature = "sqlite-cache")]
-            CacheStore::Sqlite { conn, ttl } => {
-                if let Ok(json) = serde_json::to_string(&value) {
-                    let expires_at = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64
-                        + ttl.as_secs() as i64;
-                    if let Ok(conn) = conn.lock() {
-                        let _ = conn.execute(
-                            "INSERT OR REPLACE INTO cache_entries (key, value, expires_at) VALUES (?1, ?2, ?3)",
-                            rusqlite::params![key, json, expires_at],
-                        );
-                    }
+            Self::Sqlite(store) => {
+                if let Ok(value) = serde_json::to_string(&value) {
+                    store.insert(digest(&key), value).await;
                 }
             }
         }
     }
-
-    /// Remove all entries from the cache.
     async fn invalidate_all(&self) {
         match self {
-            CacheStore::Memory(cache) => {
-                cache.invalidate_all();
-            }
+            Self::Memory(cache) => cache.invalidate_all(),
             #[cfg(feature = "redis-cache")]
-            CacheStore::Redis {
-                client,
-                prefix,
-                ttl: _,
-            } => {
-                if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
-                    let pattern = format!("{prefix}*");
-                    let keys: Vec<String> = redis::AsyncCommands::keys(&mut conn, &pattern)
-                        .await
-                        .unwrap_or_default();
-                    if !keys.is_empty() {
-                        let _: Result<(), _> = redis::AsyncCommands::del(&mut conn, &keys).await;
-                    }
-                }
-            }
+            Self::Redis(store) => store.clear().await,
             #[cfg(feature = "sqlite-cache")]
-            CacheStore::Sqlite { conn, ttl: _ } => {
-                if let Ok(conn) = conn.lock() {
-                    let _ = conn.execute("DELETE FROM cache_entries", []);
-                }
-            }
+            Self::Sqlite(store) => store.clear().await,
         }
     }
-
-    /// Return the approximate number of entries in the cache.
     async fn entry_count(&self) -> u64 {
         match self {
-            CacheStore::Memory(cache) => cache.entry_count(),
+            Self::Memory(cache) => {
+                cache.run_pending_tasks().await;
+                cache.entry_count()
+            }
             #[cfg(feature = "redis-cache")]
-            CacheStore::Redis {
-                client,
-                prefix,
-                ttl: _,
-            } => {
-                if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
-                    let pattern = format!("{prefix}*");
-                    let keys: Vec<String> = redis::AsyncCommands::keys(&mut conn, &pattern)
-                        .await
-                        .unwrap_or_default();
-                    keys.len() as u64
-                } else {
-                    0
-                }
-            }
+            Self::Redis(store) => store.count().await,
             #[cfg(feature = "sqlite-cache")]
-            CacheStore::Sqlite { conn, ttl: _ } => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
-                if let Ok(conn) = conn.lock() {
-                    conn.query_row(
-                        "SELECT COUNT(*) FROM cache_entries WHERE expires_at > ?1",
-                        rusqlite::params![now],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .unwrap_or(0) as u64
-                } else {
-                    0
-                }
-            }
+            Self::Sqlite(store) => store.count().await,
         }
     }
 }
+#[cfg(any(feature = "sqlite-cache", feature = "redis-cache"))]
+fn digest(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(value.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
 
-/// Build a [`CacheStore`] from the global cache backend configuration and
-/// a per-backend TTL.
 fn build_cache_store(
-    backend_config: &CacheBackendConfig,
+    config: &CacheBackendConfig,
     ttl: Duration,
     max_entries: u64,
+    scope: &str,
+    kind: &'static str,
 ) -> CacheStore {
-    match backend_config.backend.as_str() {
+    let _ = (scope, kind); // Builds without external cache features use memory only.
+    match config.backend.as_str() {
         #[cfg(feature = "redis-cache")]
-        "redis" => {
-            let url = backend_config.url.as_deref().unwrap_or("redis://127.0.0.1");
-            let client =
-                redis::Client::open(url).expect("invalid Redis URL in cache configuration");
-            CacheStore::Redis {
-                client,
-                prefix: backend_config.prefix.clone(),
-                ttl,
-            }
-        }
+        "redis" => CacheStore::Redis(redis::Store::new(
+            config.url.as_deref().unwrap_or("redis://127.0.0.1"),
+            scope.into(),
+            kind,
+            ttl,
+            max_entries,
+        )),
         #[cfg(feature = "sqlite-cache")]
-        "sqlite" => {
-            let path = backend_config.url.as_deref().unwrap_or("cache.db");
-            let conn =
-                rusqlite::Connection::open(path).expect("failed to open SQLite cache database");
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS cache_entries (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL,
-                    expires_at INTEGER NOT NULL
-                )",
-            )
-            .expect("failed to create SQLite cache table");
-            CacheStore::Sqlite {
-                conn: Arc::new(std::sync::Mutex::new(conn)),
-                ttl,
-            }
-        }
-        // Default: memory backend (also handles "memory" explicitly)
+        "sqlite" => CacheStore::Sqlite(sqlite::Store::new(
+            config.url.clone().unwrap_or_else(|| "cache.db".into()),
+            scope.into(),
+            kind,
+            ttl,
+            max_entries,
+        )),
         _ => CacheStore::Memory(
             Cache::builder()
                 .max_capacity(max_entries)
                 .time_to_live(ttl)
                 .build(),
         ),
+    }
+}
+struct KindExpiry {
+    resource: Duration,
+    tool: Duration,
+}
+impl moka::Expiry<String, RouterResponse> for KindExpiry {
+    fn expire_after_create(
+        &self,
+        key: &String,
+        _: &RouterResponse,
+        _: std::time::Instant,
+    ) -> Option<Duration> {
+        Some(if key.starts_with("res:") {
+            self.resource
+        } else {
+            self.tool
+        })
     }
 }
 
@@ -328,9 +272,10 @@ impl CacheHandle {
                 Some(store) => store.entry_count().await,
                 None => 0,
             };
-            let tool_count = match &bc.tool_cache {
-                Some(store) => store.entry_count().await,
-                None => 0,
+            let tool_count = match (&bc.tool_cache, &bc.resource_cache) {
+                (Some(CacheStore::Memory(_)), Some(CacheStore::Memory(_))) => 0,
+                (Some(store), _) => store.entry_count().await,
+                (None, _) => 0,
             };
             snapshots.push(CacheStatsSnapshot {
                 namespace: bc.namespace.clone(),
@@ -370,14 +315,37 @@ fn build_caches(
     configs: Vec<(String, &BackendCacheConfig)>,
     backend_config: &CacheBackendConfig,
 ) -> Arc<Vec<BackendCache>> {
+    let generation = backend_config
+        .generation
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let caches: Vec<BackendCache> = configs
         .into_iter()
         .map(|(namespace, cfg)| {
+            #[cfg(any(feature = "sqlite-cache", feature = "redis-cache"))]
+            let scope = digest(
+                &serde_json::to_string(&(&backend_config.prefix, &generation, &namespace))
+                    .expect("cache scope"),
+            );
+            #[cfg(not(any(feature = "sqlite-cache", feature = "redis-cache")))]
+            let scope = {
+                let _ = &generation;
+                String::new()
+            };
+            let memory = Cache::builder()
+                .max_capacity(cfg.max_entries)
+                .expire_after(KindExpiry {
+                    resource: Duration::from_secs(cfg.resource_ttl_seconds),
+                    tool: Duration::from_secs(cfg.tool_ttl_seconds),
+                })
+                .build();
             let resource_cache = if cfg.resource_ttl_seconds > 0 {
                 Some(build_cache_store(
                     backend_config,
                     Duration::from_secs(cfg.resource_ttl_seconds),
                     cfg.max_entries,
+                    &scope,
+                    "resource",
                 ))
             } else {
                 None
@@ -387,14 +355,28 @@ fn build_caches(
                     backend_config,
                     Duration::from_secs(cfg.tool_ttl_seconds),
                     cfg.max_entries,
+                    &scope,
+                    "tool",
                 ))
             } else {
                 None
             };
             BackendCache {
                 namespace,
-                resource_cache,
-                tool_cache,
+                resource_cache: resource_cache.map(|store| {
+                    if backend_config.backend == "memory" {
+                        CacheStore::Memory(memory.clone())
+                    } else {
+                        store
+                    }
+                }),
+                tool_cache: tool_cache.map(|store| {
+                    if backend_config.backend == "memory" {
+                        CacheStore::Memory(memory.clone())
+                    } else {
+                        store
+                    }
+                }),
                 stats: Arc::new(CacheStats::new()),
             }
         })
@@ -900,10 +882,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn memory_tool_and_resource_entries_share_capacity_but_keep_distinct_ttls() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let executions = Arc::new(AtomicUsize::new(0));
+        let calls = executions.clone();
+        let backend = tower::service_fn(move |req: tower_mcp::RouterRequest| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let value = if matches!(req.inner, McpRequest::ReadResource(_)) {
+                McpResponse::ReadResource(
+                    serde_json::from_value(
+                        serde_json::json!({"contents":[{"uri":"api/item","text":"resource"}]}),
+                    )
+                    .unwrap(),
+                )
+            } else {
+                McpResponse::CallTool(tower_mcp::CallToolResult::text("tool"))
+            };
+            std::future::ready(Ok::<_, std::convert::Infallible>(
+                tower_mcp::RouterResponse {
+                    id: req.id,
+                    inner: Ok(value),
+                },
+            ))
+        });
+        let config = BackendCacheConfig {
+            tool_ttl_seconds: 60,
+            resource_ttl_seconds: 1,
+            max_entries: 1,
+        };
+        let (mut service, handle) = CacheService::new(
+            backend,
+            vec![("api/".into(), &config)],
+            &default_backend_config(),
+        );
+        let resource = || {
+            McpRequest::ReadResource(
+                serde_json::from_value(serde_json::json!({"uri":"api/item"})).unwrap(),
+            )
+        };
+        call_service(&mut service, tool_call("api/query")).await;
+        call_service(&mut service, resource()).await;
+        assert!(
+            handle.stats().await[0].entry_count <= 1,
+            "tool/resource stores exceeded their combined budget"
+        );
+        handle.clear().await;
+        call_service(&mut service, resource()).await;
+        let before = executions.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        call_service(&mut service, resource()).await;
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            before + 1,
+            "resource TTL was not applied"
+        );
+        handle.clear().await;
+        call_service(&mut service, tool_call("api/query")).await;
+        let before = executions.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        call_service(&mut service, tool_call("api/query")).await;
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            before,
+            "resource TTL expired a tool entry"
+        );
+        // Moka may evict/reject entries during maintenance; residency is not guaranteed.
+        assert!(
+            handle.stats().await[0].entry_count <= 1,
+            "shared memory cache was double counted"
+        );
+    }
+
+    #[tokio::test]
     async fn test_cache_store_memory_get_insert() {
         use super::{CacheStore, build_cache_store};
 
-        let store = build_cache_store(&default_backend_config(), Duration::from_secs(60), 100);
+        let store = build_cache_store(
+            &default_backend_config(),
+            Duration::from_secs(60),
+            100,
+            "construction-test",
+            "tool",
+        );
         assert!(matches!(store, CacheStore::Memory(_)));
 
         // Initially empty
@@ -920,9 +983,16 @@ mod tests {
             backend: "redis".to_string(),
             url: Some("redis://127.0.0.1:6379".to_string()),
             prefix: "test:".to_string(),
+            generation: None,
         };
-        let store = build_cache_store(&cfg, Duration::from_secs(60), 100);
-        assert!(matches!(store, super::CacheStore::Redis { .. }));
+        let store = build_cache_store(
+            &cfg,
+            Duration::from_secs(60),
+            100,
+            "construction-test",
+            "tool",
+        );
+        assert!(matches!(store, super::CacheStore::Redis(_)));
     }
 
     #[cfg(feature = "sqlite-cache")]
@@ -938,9 +1008,16 @@ mod tests {
             backend: "sqlite".to_string(),
             url: Some(db_path.to_string_lossy().to_string()),
             prefix: "test:".to_string(),
+            generation: None,
         };
-        let store = build_cache_store(&cfg, Duration::from_secs(60), 100);
-        assert!(matches!(store, super::CacheStore::Sqlite { .. }));
+        let store = build_cache_store(
+            &cfg,
+            Duration::from_secs(60),
+            100,
+            "construction-test",
+            "tool",
+        );
+        assert!(matches!(store, super::CacheStore::Sqlite(_)));
         assert_eq!(store.entry_count().await, 0);
 
         // Clean up
