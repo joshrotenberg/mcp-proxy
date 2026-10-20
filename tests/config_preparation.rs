@@ -510,6 +510,21 @@ async fn enabled_features_are_checked_offline_consistently_for_this_binary() {
             cfg!(feature = "metrics"),
             json!({"metrics":{"enabled":true}}),
         ),
+        (
+            "websocket",
+            cfg!(feature = "websocket"),
+            json!({"backend":{"transport":"websocket","command":null,"url":"ws://127.0.0.1:9/mcp"}}),
+        ),
+        (
+            "redis-cache",
+            cfg!(feature = "redis-cache"),
+            json!({"cache":{"backend":"redis","url":"redis://127.0.0.1:9/0"}}),
+        ),
+        (
+            "sqlite-cache",
+            cfg!(feature = "sqlite-cache"),
+            json!({"cache":{"backend":"sqlite","url":dir.path().join("not-created.db").to_str().unwrap()}}),
+        ),
     ];
     for (feature, supported, patch) in checks {
         let mut value = serde_json::to_value(config(&marker, &json!({}))).unwrap();
@@ -523,6 +538,14 @@ async fn enabled_features_are_checked_offline_consistently_for_this_binary() {
             if patch.get(field).is_some() {
                 value["observability"][field] = patch[field].clone();
             }
+        }
+        if let Some(patch) = patch.get("backend") {
+            for (field, replacement) in patch.as_object().unwrap() {
+                value["backends"][1][field] = replacement.clone();
+            }
+        }
+        if let Some(cache) = patch.get("cache") {
+            value["cache"] = cache.clone();
         }
         let mut candidate: ProxyConfig = serde_json::from_value(value.clone()).unwrap();
         let result = candidate.prepare();
@@ -543,6 +566,24 @@ async fn enabled_features_are_checked_offline_consistently_for_this_binary() {
         for check in [true, false] {
             assert!(cli(&path, check).await.contains(&expected));
         }
+    }
+    assert!(!marker.exists());
+    assert!(!dir.path().join("not-created.db").exists());
+}
+
+#[cfg(not(feature = "yaml"))]
+#[tokio::test]
+async fn yaml_files_fail_explicitly_before_effects_without_feature() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("started");
+    let path = dir.path().join("proxy.yaml");
+    std::fs::write(&path, format!("proxy:\n  name: feature-boundary\n  listen: {{}}\nbackends:\n  - name: first\n    transport: stdio\n    command: touch\n    args: ['{}']\n", marker.display())).unwrap();
+    for check in [true, false] {
+        let error = cli(&path, check).await;
+        assert!(
+            error.contains("yaml") && error.contains("feature"),
+            "{error}"
+        );
     }
     assert!(!marker.exists());
 }

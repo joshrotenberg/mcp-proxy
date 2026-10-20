@@ -95,6 +95,63 @@ separate test matrix and are not included in this coverage report. Line coverage
 is a guide to missing tests, not proof of correctness. No percentage gate is set
 until there is a representative baseline and a reason for the chosen threshold.
 
+## Invariants, protocol versions and bounded fuzzing
+
+The following checks complement the default/all/no-default-feature suites. They
+exercise these contracts, rather than claiming exhaustive protocol conformance:
+
+| Contract | Regression coverage |
+| --- | --- |
+| Legacy initialization selects the proxy's supported `2025-11-25` baseline, including when the client requests an older, modern or unknown revision | `protocol_contracts`: configured library and real CLI; initialized notification, exact listing/call/denial, injection and session cleanup |
+| `2026-07-28` requests use per-request metadata plus matching HTTP method/name headers, without initialization or a frontend session | `protocol_contracts`: both entry points; explicit unsupported-version error without the feature; malformed metadata/header and invalid credential denials make zero tool calls |
+| Feature-disabled configuration fails before backend, store or IdP effects | `config_preparation`: prepare/library/CLI check/startup; OAuth, discovery, telemetry, metrics, WebSocket, Redis, SQLite and CLI YAML rejection |
+| Preparation is idempotent; equivalent representable JSON/TOML/YAML revisions agree; invalid revisions do not partially mutate configuration | `invariant_properties`: bounded generated configurations |
+| Role order/duplicates cannot widen grants; deny and static filter win; management remains separate | `invariant_properties`: generated JWT roles through a configured proxy, direct/search calls, aliased names, exact transformed arguments and backend call counts |
+| Alias/parameter/injection transformations preserve request IDs, continuation/task/meta fields and extensions | `invariant_properties` and `request_transform` fuzz target share `support/invariants.rs` assertions against the actual services |
+| Cancelled followers free capacity; completion/cancellation/expiry releases the generation without replay | `invariant_properties`: generated controlled future schedules with a paused clock; existing configured coalescing regressions remain required |
+| Bounded parser inputs do not panic, and accepted configurations round-trip | `invariant_properties` and `config_parse` fuzz target; parsing only, never configuration preparation or runtime startup |
+
+The sessionful proxy advertises `2025-11-25`; recognizing older transport headers
+does not promise negotiation of every older protocol revision. The optional
+modern protocol is selected by per-request metadata, not by requesting it in
+legacy initialization. These tests establish single-process behavior; replica
+portability remains separate work.
+
+CI also tests two reduced builds (`--no-default-features --features
+protocol-2026-07-28` and `--no-default-features --features oauth,discovery`) against
+`protocol_contracts`, `invariant_properties` and `config_preparation`. Run each
+feature mode sequentially when sharing a target directory, as described below.
+
+Install the pinned fuzz tools and run the same finite, AddressSanitizer and
+coverage-instrumented smoke checks used by CI:
+
+```sh
+rustup toolchain install nightly-2026-10-19 --profile minimal
+cargo install cargo-fuzz --version 0.13.2 --locked
+./scripts/fuzz-smoke.sh
+```
+
+The isolated `fuzz/Cargo.toml` workspace has its own committed lockfile and uses
+the same approved upstream Git revision as the main package. CI audits both
+lockfiles for known security advisories. The runner fetches
+that lock with `--locked`, runs cargo-fuzz offline, and checks that the lock did
+not change (cargo-fuzz 0.13.2 has no `--locked` flag). Each target has a 4 KiB
+input limit, 256 runs, a 30-second total execution limit, a 5-second per-input
+timeout and a 1 GiB RSS limit. The CI job has a separate 10-minute build/run
+budget. Property cases and generated structures are also bounded; concurrency
+properties do not depend on sleeps, handshake retries or timing luck.
+
+Checked-in `fuzz/seeds/` inputs are also exercised by ordinary tests. The smoke
+runner copies them into a temporary corpus, so mutations do not dirty the
+checkout. Failures leave reproducers in `fuzz/artifacts/` (uploaded by CI).
+Reproduce one with `cargo +nightly-2026-10-19 fuzz run TARGET PATH_TO_ARTIFACT
+--dev`; minimize it with cargo-fuzz's `tmin`, then promote the smallest useful
+input into `fuzz/seeds/TARGET/` and add a focused regression for its expected
+behavior. Fuzz inputs only reach pure parsing/transformation code; they cannot
+spawn backends, resolve secrets or contact stores/identity providers. A bounded
+smoke run is an ongoing regression check, not evidence that all inputs or
+concurrent schedules have been explored.
+
 ## Configured application contracts
 
 Keep fast middleware/unit tests, but use `Proxy::from_config` or the executable

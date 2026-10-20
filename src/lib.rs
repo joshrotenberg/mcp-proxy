@@ -303,7 +303,11 @@
 //! conformance test. Validate the actual controller, network path and client
 //! during deployment. Shared/stateless session scaling, including the experimental
 //! `protocol-2026-07-28` mode, is separate work; this guide makes no portability
-//! claim for that feature.
+//! claim for that feature. The optional modern protocol uses per-request metadata
+//! and matching HTTP method/name headers without initialization or a frontend
+//! session. Requesting it in legacy initialization still selects the proxy's
+//! `2025-11-25` baseline. See the protocol coverage matrix in the repository's
+//! `CONTRIBUTING.md` for configured library/CLI and feature-negative checks.
 //!
 //! # Feature Flags
 //!

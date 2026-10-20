@@ -76,6 +76,8 @@ tests/
   chaos.rs         # Fault injection and resilience recovery regressions
   cache_backends.rs # Real Redis containers and temporary SQLite databases
   config_properties.rs # Property tests for config validation
+  invariant_properties.rs # Config/authorization/transform properties and paused-clock schedules
+  protocol_contracts.rs # Configured library/CLI legacy baseline and modern feature contracts
   examples.rs      # Load and validate every example TOML config
 
 examples/
@@ -151,6 +153,20 @@ cannot change recovered state. Preserve barrier-driven fleet/same-backend races,
 paused-clock competing recovery, late completion and removal/replacement tests.
 Manual detector accounting is separate and extra releases cannot consume owned
 reservations. See outlier rustdoc for quota shrink and compatibility semantics.
+
+### Invariant and protocol regressions
+
+`tests/invariant_properties.rs` and `tests/protocol_contracts.rs` complement the
+configured runtime regressions. Preserve the legacy `2025-11-25` negotiation
+baseline and feature-gated modern per-request contract; never treat a successful
+HTTP response alone as permission to dispatch. Reduced protocol-only and
+OAuth/discovery builds must keep feature-negative configuration failures before
+effects. Pure parser/transform assertions in `tests/support/invariants.rs` are
+shared with the isolated, locked `fuzz/` workspace. Run `scripts/fuzz-smoke.sh`
+with the pinned tools for changes to these assertions/targets/runner. Keep finite
+input/run/time/RSS limits and temporary mutation corpora; promote minimized
+failures to tracked seeds and focused regressions. See CONTRIBUTING.md for the
+coverage matrix and reproduction commands.
 
 ### Adding a new middleware layer
 

@@ -1,0 +1,7 @@
+[proxy]
+name = "fuzz"
+[proxy.listen]
+[[backends]]
+name = "api"
+transport = "stdio"
+command = "not-executed"

@@ -23,6 +23,19 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  fuzz-audit:
+    name: Fuzz dependency audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: fuzz
+
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -32,6 +45,7 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
 
   clippy:
     name: Clippy
@@ -72,6 +86,45 @@ jobs:
         run: |
           docker pull redis:7-alpine
       - run: cargo test ${{ matrix.flags }}
+
+  feature-contracts:
+    name: Feature contracts (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [protocol-2026-07-28, 'oauth,discovery']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: contracts-${{ matrix.features }}
+      - run: cargo test --locked --no-default-features --features ${{ matrix.features }} --test protocol_contracts --test invariant_properties --test config_preparation
+
+  fuzz:
+    name: Bounded fuzz smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-19
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+          key: fuzz-nightly-2026-10-19
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz@0.13.2
+      - run: ./scripts/fuzz-smoke.sh
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: fuzz-reproducers
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
 
   msrv:
     name: MSRV (1.90, ${{ matrix.features }})
