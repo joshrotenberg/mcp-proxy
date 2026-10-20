@@ -824,25 +824,6 @@ fn invocation_policy(
             );
             service = BoxCloneService::new(tower::Layer::layer(&layer, service));
         }
-
-        // Token passthrough (inject ClientToken for forward_auth backends)
-        let forward_namespaces: std::collections::HashSet<String> = config
-            .backends
-            .iter()
-            .filter(|b| b.forward_auth)
-            .map(|b| format!("{}{}", b.name, config.proxy.separator))
-            .collect();
-
-        if !forward_namespaces.is_empty() {
-            tracing::info!(
-                backends = ?forward_namespaces,
-                "Enabling token passthrough for forward_auth backends"
-            );
-            service = BoxCloneService::new(crate::token::TokenPassthroughService::new(
-                service,
-                forward_namespaces,
-            ));
-        }
     }
 
     Ok(BoxCloneService::new(crate::management::Guard::new(

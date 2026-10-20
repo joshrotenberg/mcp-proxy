@@ -103,6 +103,11 @@
 //! - **OAuth 2.1** -- auto-discovery (RFC 8414), token introspection (RFC 7662),
 //!   JWT+introspection fallback
 //!
+//! Backend credentials are configured separately. Inbound tokens are never
+//! forwarded; `forward_auth = true` is rejected. See [backend authentication and
+//! migration](config#backend-authentication-and-migration) for identity, cache
+//! and redirect boundaries.
+//!
 //! # Admin API
 //!
 //! REST API at `/admin/` for monitoring and management:

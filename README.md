@@ -30,7 +30,7 @@ For how mcp-proxy relates to other MCP gateways (Docker MCP Gateway, IBM Context
 
 **Manages traffic for rollouts and load.** Traffic mirroring shadows a percentage of requests to a canary backend; canary routing and ordered failover control weighted rollouts; response caching (in-memory, Redis, or SQLite) and request coalescing cut duplicate work.
 
-**Applies policy at the front door.** Bearer token, JWT/JWKS, and OAuth 2.1 authentication; role-based tool visibility (RBAC); token passthrough to backends; and request argument validation.
+**Applies policy at the front door.** Bearer token, JWT/JWKS, and OAuth 2.1 authentication; role-based tool visibility (RBAC); and request argument validation. Backend authentication uses separately configured credentials; inbound tokens are never forwarded.
 
 **Reports what is happening.** Prometheus metrics, OpenTelemetry trace export, structured audit logging, an admin HTTP API for health, backend status, and cache stats, and admin MCP tools under the `proxy/` namespace.
 
@@ -506,6 +506,10 @@ requests as the same subject.
 
 ### Authentication
 
+`forward_auth = true` is rejected. Use a separately configured backend credential;
+see the [backend authentication guide](https://docs.rs/mcp-proxy/latest/mcp_proxy/config/index.html#backend-authentication-and-migration)
+for migration, shared-cache identity and redirect boundaries.
+
 ```toml
 # Bearer token
 [auth]
@@ -639,7 +643,7 @@ JWKS startup diagnostics also omit endpoint values and untrusted response data.
 Client
   |
   v
-[Auth] -> [Audit] -> [Metrics] -> [Token Passthrough] -> [RBAC]
+[Auth] -> [Audit] -> [Metrics] -> [RBAC]
   -> [Alias] -> [Filter] -> [Validation] -> [Coalesce] -> [Cache]
   -> [Mirror] -> [Inject Args]
   -> McpProxy
@@ -662,7 +666,7 @@ Pre-built binaries and `cargo install` include the default features. If you're b
 |---------|---------|-----------------|
 | `otel` | yes | OpenTelemetry distributed tracing (OTLP export) |
 | `metrics` | yes | Prometheus metrics and `/admin/metrics` endpoint |
-| `oauth` | yes | JWT/JWKS auth, RBAC, and token passthrough |
+| `oauth` | yes | JWT/JWKS auth, OAuth, bearer scoping, and RBAC |
 | `openapi` | yes | OpenAPI schema and endpoint support |
 | `websocket` | yes | WebSocket backend transport |
 | `discovery` | yes | BM25 tool discovery and search exposure mode |

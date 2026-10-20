@@ -14,6 +14,10 @@ const BASE: &str = "[proxy]\nname='preparation'\n[proxy.listen]\n[security]\nadm
 fn cases() -> Vec<(&'static str, Value)> {
     vec![
         ("empty name", json!({"name":""})),
+        (
+            "unsupported credential forwarding",
+            json!({"forward_auth":true}),
+        ),
         ("reserved name", json!({"name":"proxy"})),
         ("ambiguous namespace", json!({"name":"nested/name"})),
         ("missing command", json!({"command":null})),
@@ -484,11 +488,6 @@ async fn enabled_features_are_checked_offline_consistently_for_this_binary() {
         (
             "oauth",
             cfg!(feature = "oauth"),
-            json!({"forward_auth": true}),
-        ),
-        (
-            "oauth",
-            cfg!(feature = "oauth"),
             json!({"auth":{"type":"bearer","scoped_tokens":[{"token":"data","allow_tools":["api/work"]}]}}),
         ),
         (
@@ -514,9 +513,6 @@ async fn enabled_features_are_checked_offline_consistently_for_this_binary() {
     ];
     for (feature, supported, patch) in checks {
         let mut value = serde_json::to_value(config(&marker, &json!({}))).unwrap();
-        if patch.get("forward_auth").is_some() {
-            value["backends"][1]["forward_auth"] = patch["forward_auth"].clone();
-        }
         if patch.get("auth").is_some() {
             value["auth"] = patch["auth"].clone();
         }

@@ -63,7 +63,7 @@
 //! url = "http://mcp-server:8080"
 //! bearer_token = "${API_TOKEN}"    # ${VAR} syntax for env vars
 //! headers = { "X-API-Key" = "${API_KEY}", "X-Tenant" = "acme" }  # custom outbound headers
-//! forward_auth = true              # Forward client's auth token
+//! forward_auth = false             # Optional; true is unsupported and rejected
 //!
 //! # WebSocket server
 //! [[backends]]
@@ -71,6 +71,33 @@
 //! transport = "websocket"
 //! url = "wss://mcp.example.com/ws"
 //! ```
+//!
+//! ## Backend authentication and migration
+//!
+//! Inbound bearer/JWT/OAuth credentials authenticate the caller to this proxy;
+//! they are never delegated to a backend. All transports and feature builds reject
+//! `forward_auth = true` during configuration preparation, before connecting or
+//! spawning any backend. Older versions accepted it but did not forward a token.
+//! Remove that setting or set it to false. HTTP and WebSocket peers use only their
+//! configured `bearer_token` or explicit `Authorization` header (which takes
+//! precedence), independent of the caller. Without either, no Authorization
+//! header is added. Use a least-privilege backend-specific credential, not a proxy
+//! inbound credential. Stdio credentials remain explicit process environment data.
+//!
+//! HTTP follows same-origin redirects only (same scheme, host and effective port,
+//! at most ten hops); cross-origin redirects and HTTPS downgrades are rejected.
+//! WebSocket upgrades do not follow redirects. Credentials must be safe for all
+//! paths on the configured origin. Configure a trusted final destination directly.
+//!
+//! Sessions remain bound to the verified inbound identity: switching identities
+//! requires a new session. Backend sessions, coalescing and response caches still
+//! operate under a fixed backend identity, with no per-caller identity partition.
+//! Cache only results safe to share with all authorized callers of a tool; disable
+//! caching/coalescing where responses require caller-specific isolation. Raw-token
+//! forwarding, token exchange, trust/audience policy and preservation of delegated
+//! identity through canary/failover/mirror routing are unsupported. A future
+//! delegation feature must define these boundaries and isolate backend sessions,
+//! caches and in-flight work before it can be enabled.
 //!
 //! ## Per-Backend Middleware
 //!
@@ -491,7 +518,7 @@ pub struct BackendConfig {
     pub mirror_percent: u32,
     /// Per-backend cache policy
     pub cache: Option<BackendCacheConfig>,
-    /// Static bearer token for authenticating to this backend (HTTP only).
+    /// Static bearer token for authenticating to this backend (HTTP/WebSocket).
     /// Supports `${ENV_VAR}` syntax for env var resolution.
     pub bearer_token: Option<String>,
     /// Custom headers sent on every request to this backend (HTTP/WebSocket only).
@@ -499,8 +526,11 @@ pub struct BackendConfig {
     /// An explicit `Authorization` header takes precedence over `bearer_token`.
     #[serde(default)]
     pub headers: HashMap<String, String>,
-    /// Forward the client's inbound auth token to this backend.
-    /// Only works with HTTP backends when the proxy has auth enabled.
+    /// Legacy credential-forwarding setting; must remain false (the default).
+    ///
+    /// True is rejected for every transport/auth mode and build, before backend
+    /// startup. Caller-token delegation is unsupported. Use a backend-specific
+    /// `bearer_token` or `headers`; see the module's backend authentication guide.
     #[serde(default)]
     pub forward_auth: bool,
     /// Tool aliases: rename tools exposed by this backend
@@ -2868,9 +2898,8 @@ jwks_uri = "https://issuer.example.test/keys"
         assert_eq!(headers.get("X-Literal").map(String::as_str), Some("plain"));
     }
 
-    #[cfg(feature = "oauth")]
     #[test]
-    fn test_parse_bearer_token_and_forward_auth() {
+    fn test_parse_bearer_token_with_forwarding_disabled() {
         let toml = r#"
         [proxy]
         name = "token-gw"
@@ -2881,7 +2910,7 @@ jwks_uri = "https://issuer.example.test/keys"
         transport = "http"
         url = "http://localhost:3000"
         bearer_token = "ghp_abc123"
-        forward_auth = true
+        forward_auth = false
 
         [[backends]]
         name = "db"
@@ -2894,7 +2923,7 @@ jwks_uri = "https://issuer.example.test/keys"
             config.backends[0].bearer_token.as_deref(),
             Some("ghp_abc123")
         );
-        assert!(config.backends[0].forward_auth);
+        assert!(!config.backends[0].forward_auth);
         assert!(config.backends[1].bearer_token.is_none());
         assert!(!config.backends[1].forward_auth);
     }

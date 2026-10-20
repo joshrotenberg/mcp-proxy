@@ -124,6 +124,7 @@ Reusable fixtures live under `tests/support/` (included by integration binaries)
 | Configured request-volume retry budget, exact backend attempts and preserved RPC errors | `retry_runtime.rs`; paused-clock timing/volume/cancellation cases in `retry.rs` |
 | Concurrent outlier admission, exact backend calls and removal/re-registration | `outlier_runtime.rs`; barriers, paused recovery, stale completions and owner counts in `outlier.rs` |
 | Persistent cache isolation, shared capacity, expiry and configured restart generations | `cache_backends.rs`, `cache_runtime.rs` |
+| Backend credentials stay fixed across caller identities and cache hits; forwarding is rejected | `forward_auth.rs`: real HTTP/WebSocket captures, static/JWT/introspection callers, session binding, shared cache and redirects; preparation/reload regressions reject before effects |
 | Shared configuration preparation, strict fields, safe numeric boundaries and no effects on rejection | `config_preparation.rs`: CLI check/startup, raw library configs, builder, REST/MCP additions and active-session continuity; `config_env.rs`: watched-file rejection and required-secret rollback |
 
 `ProxyConfig::prepare` is the runtime admission contract, including for raw serde

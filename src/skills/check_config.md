@@ -18,6 +18,8 @@ Report those checks as requiring local verification against the original file.
      reject unknown fields, check numeric bounds and confirm binary feature support
 
 2. **Auth configuration**
+   - `forward_auth` must be false or omitted; caller-token delegation is unsupported
+   - HTTP/WebSocket backend credentials are separate from inbound caller tokens
    - Bearer auth has at least one token
    - JWT auth has issuer, audience, and jwks_uri
    - OAuth auth has issuer and audience
