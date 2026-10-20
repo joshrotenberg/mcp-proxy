@@ -1,12 +1,17 @@
 //! Integration tests for external cache backends (Redis, SQLite).
 //!
-//! Redis tests require Docker. SQLite tests use a temp file.
+//! Redis tests require Docker. Logical SQLite tests use real temporary files on
+//! Linux tmpfs when available; unavailable-store tests use the platform temp dir.
 //! Both require tower-mcp 0.8.8+ for RouterResponse serialization.
 //!
 //! These tests only compile when the corresponding feature is enabled:
 //! `cargo test --test cache_backends --features sqlite-cache,redis-cache`
 
 #![cfg(any(feature = "redis-cache", feature = "sqlite-cache"))]
+
+#[cfg(feature = "sqlite-cache")]
+#[path = "support/sqlite.rs"]
+mod sqlite_fixture;
 
 use std::convert::Infallible;
 
@@ -93,7 +98,7 @@ mod sqlite {
 
     #[tokio::test]
     async fn test_sqlite_cache_hit_miss() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = sqlite_fixture::directory();
         let db_path = dir.path().join("test-cache.db");
 
         let backend_cfg = CacheBackendConfig {
@@ -132,7 +137,7 @@ mod sqlite {
 
     #[tokio::test]
     async fn test_sqlite_cache_clear() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = sqlite_fixture::directory();
         let db_path = dir.path().join("test-cache-clear.db");
 
         let backend_cfg = CacheBackendConfig {
@@ -482,7 +487,7 @@ async fn capacity_and_expiry(mut config: CacheBackendConfig) {
 #[cfg(feature = "sqlite-cache")]
 #[tokio::test]
 async fn sqlite_scopes_clear_restart_generation_capacity_and_expiry() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = sqlite_fixture::directory();
     let config = CacheBackendConfig {
         backend: "sqlite".into(),
         url: Some(dir.path().join("cache.db").to_str().unwrap().into()),

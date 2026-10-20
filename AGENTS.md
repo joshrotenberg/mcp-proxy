@@ -265,6 +265,12 @@ prefix/clear/stats/capacity/expiry/concurrent-writer, configured restart-generat
 and unavailable-store responsiveness regressions. See cache module rustdoc for
 migration, eviction, byte-budget and failure semantics.
 
+Logical SQLite cache fixtures use real files via tests/support/sqlite.rs (Linux
+tmpfs when available) so disk sync latency does not trigger intentional fail-open
+bypass during residency assertions. Keep locked-store and controlled worker
+deadline/admission recovery tests on platform temp files; preserve production
+deadlines and exact logical assertions without retries.
+
 Every feature gets tests. No exceptions.
 
 **Unit tests** (`#[cfg(test)]` in each module):
