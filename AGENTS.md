@@ -213,6 +213,15 @@ All config is in `config.rs`. The top-level type is `ProxyConfig`:
 - `security`: argument size limits
 - `observability`: logging, metrics, tracing
 
+`ProxyConfig::prepare` validates, resolves secrets atomically and revalidates
+before any backend/runtime effects. CLI, builder/library, reload and REST/MCP
+management use the same contract, including direct backend additions/replacements.
+`config_validation.rs` owns offline transport/name/filter/reference/numeric and
+feature checks; keep runtime construction free of config-controlled unwraps.
+All configuration objects deny unknown fields; argument/header/env maps remain
+open. Preserve `config_preparation.rs` entry-point, marker/TCP-sentinel, numeric
+boundary and feature tests, plus watched-file rejection in `config_env.rs`.
+
 Config maps directly to runtime: each optional config section (timeout, rate_limit, circuit_breaker, etc.) gates whether that middleware layer is applied.
 
 Environment variable substitution: supported whole-value `${VAR_NAME}` references
@@ -332,6 +341,8 @@ cargo test --doc --all-features          # catches stale doc examples
 See `CONTRIBUTING.md` for the full Rust 1.90 feature matrix and coverage commands.
 All-feature integration tests require Docker and `redis:7-alpine`; watched-file
 stdio fixtures require Python 3. Startup or readiness failures are test failures.
+Run different Cargo feature modes sequentially in a shared target directory;
+otherwise a rebuild can replace the CLI executable during another mode's tests.
 All Rust examples are checked, and the outlier recovery regression runs in the
 normal suite.
 

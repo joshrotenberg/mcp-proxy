@@ -66,12 +66,12 @@ async fn main() -> Result<()> {
         config
     };
 
-    config.resolve_env_vars()?;
+    config.prepare()?;
     if cli.check {
         return print_config_summary(&config);
     }
 
-    init_logging(&config);
+    init_logging(&config)?;
 
     tracing::info!(
         name = %config.proxy.name,
@@ -233,7 +233,7 @@ fn logging_filter(config: &ProxyConfig) -> String {
     )
 }
 
-fn init_logging(config: &ProxyConfig) {
+fn init_logging(config: &ProxyConfig) -> Result<()> {
     let env_filter = logging_filter(config);
 
     #[cfg(feature = "otel")]
@@ -248,7 +248,7 @@ fn init_logging(config: &ProxyConfig) {
             .with_http()
             .with_endpoint(&config.observability.tracing.endpoint)
             .build()
-            .expect("building OTLP span exporter");
+            .map_err(|_| anyhow::anyhow!("building OTLP span exporter failed"))?;
 
         let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
             .with_batch_exporter(exporter)
@@ -284,7 +284,7 @@ fn init_logging(config: &ProxyConfig) {
             service_name = %config.observability.tracing.service_name,
             "OpenTelemetry tracing enabled"
         );
-        return;
+        return Ok(());
     }
 
     let subscriber = tracing_subscriber::fmt()
@@ -296,4 +296,5 @@ fn init_logging(config: &ProxyConfig) {
     } else {
         subscriber.init();
     }
+    Ok(())
 }

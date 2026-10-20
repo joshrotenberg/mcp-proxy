@@ -218,7 +218,7 @@ mod tests {
     use super::*;
 
     fn config() -> ProxyConfig {
-        ProxyConfig::parse(
+        toml::from_str(
             r#"
 [proxy]
 name = "env-test"
@@ -248,7 +248,14 @@ env = { API_TOKEN = "${ENV}", EMPTY_LITERAL = "" }
         let mut config = config();
         let original = toml::to_string(&config).unwrap();
         let old = resolve_with(&mut config, |name| Ok(format!("resolved-{name}"))).unwrap();
-        config.resolve_env_vars().unwrap(); // Idempotent and validates all resolved values.
+        // Resolver unit coverage is independent of compiled auth middleware.
+        #[cfg(feature = "oauth")]
+        config.prepare().unwrap();
+        #[cfg(not(feature = "oauth"))]
+        resolve_with(&mut config, |_| {
+            panic!("resolved values must be idempotent")
+        })
+        .unwrap();
         assert_eq!(
             config.security.admin_token.as_deref(),
             Some("resolved-ADMIN")

@@ -138,6 +138,14 @@ async fn oauth_startup_discovery_and_introspection_diagnostics_are_private() {
     let backend_task = tokio::spawn(async move { axum::serve(listener, backend).await.unwrap() });
     mode.store(0, std::sync::atomic::Ordering::SeqCst);
     for (auth_type, strategy) in [("jwt", "jwt"), ("oauth", "jwt"), ("oauth", "both")] {
+        // JWT objects now reject OAuth-only fields instead of ignoring them.
+        let oauth_fields = if auth_type == "oauth" {
+            format!(
+                "token_validation = {strategy:?}\nclient_id = 'sentinel-client-id'\nclient_secret = 'sentinel-client-secret'\nintrospection_endpoint = {endpoint:?}"
+            )
+        } else {
+            String::new()
+        };
         let config = mcp_proxy::ProxyConfig::parse(&format!(
             r#"
             [proxy]
@@ -154,10 +162,7 @@ async fn oauth_startup_discovery_and_introspection_diagnostics_are_private() {
             issuer = "{issuer}"
             audience = "https://sentinel-audience.example/mcp"
             jwks_uri = "{endpoint}"
-            token_validation = "{strategy}"
-            client_id = "sentinel-client-id"
-            client_secret = "sentinel-client-secret"
-            introspection_endpoint = "{endpoint}"
+            {oauth_fields}
         "#
         ))
         .unwrap();

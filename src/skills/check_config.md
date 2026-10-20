@@ -12,7 +12,10 @@ Report those checks as requiring local verification against the original file.
    - Every stdio backend has a `command`
    - Every http/websocket backend has a `url`
    - Backend names are unique
+   - Names are nonempty, have no whitespace/separator, and are not reserved `proxy`
    - No conflicting filters (both `expose_tools` and `hide_tools`)
+   - Run `mcp-proxy --config ORIGINAL_FILE --check` locally to compile filters,
+     reject unknown fields, check numeric bounds and confirm binary feature support
 
 2. **Auth configuration**
    - Bearer auth has at least one token

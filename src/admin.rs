@@ -411,6 +411,7 @@ pub type MetricsHandle = Option<()>;
 
 /// Request body for adding an HTTP backend via REST.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 struct AddBackendRequest {
     /// Backend name (becomes the namespace prefix).
@@ -434,6 +435,19 @@ async fn handle_add_backend(
     Extension(policy): Extension<crate::reload_policy::ReloadPolicy>,
     Json(req): Json<AddBackendRequest>,
 ) -> (StatusCode, Json<BackendOpResponse>) {
+    let backend =
+        match policy.prepare_http_backend(&req.name, &req.url, req.bearer_token.as_deref()) {
+            Ok(backend) => backend,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(BackendOpResponse {
+                        ok: false,
+                        message: error.to_string(),
+                    }),
+                );
+            }
+        };
     if let Err(error) = policy.check_backend_change(&req.name) {
         return (
             StatusCode::CONFLICT,
@@ -445,7 +459,7 @@ async fn handle_add_backend(
     }
 
     let mut transport = tower_mcp::client::HttpClientTransport::new(&req.url);
-    if let Some(token) = &req.bearer_token {
+    if let Some(token) = &backend.bearer_token {
         transport = transport.bearer_token(token);
     }
 
@@ -514,7 +528,7 @@ async fn handle_get_config(
 fn resolve_config(
     mut config: crate::config::ProxyConfig,
 ) -> anyhow::Result<crate::config::ProxyConfig> {
-    config.resolve_env_vars()?;
+    config.prepare()?;
     Ok(config)
 }
 
@@ -609,6 +623,18 @@ async fn handle_update_backend(
     Extension(policy): Extension<crate::reload_policy::ReloadPolicy>,
     Json(req): Json<UpdateBackendRequest>,
 ) -> (StatusCode, Json<BackendOpResponse>) {
+    let backend = match policy.prepare_http_backend(&name, &req.url, req.bearer_token.as_deref()) {
+        Ok(backend) => backend,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(BackendOpResponse {
+                    ok: false,
+                    message: error.to_string(),
+                }),
+            );
+        }
+    };
     if let Err(error) = policy.check_backend_change(&name) {
         return (
             StatusCode::CONFLICT,
@@ -619,7 +645,7 @@ async fn handle_update_backend(
         );
     }
 
-    // Remove existing backend
+    // Validation must complete before the destructive replacement API (#277).
     if !proxy.remove_backend(&name).await {
         return (
             StatusCode::NOT_FOUND,
@@ -632,7 +658,7 @@ async fn handle_update_backend(
 
     // Re-add with new config
     let mut transport = tower_mcp::client::HttpClientTransport::new(&req.url);
-    if let Some(token) = &req.bearer_token {
+    if let Some(token) = &backend.bearer_token {
         transport = transport.bearer_token(token);
     }
 
@@ -655,6 +681,7 @@ async fn handle_update_backend(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 struct UpdateBackendRequest {
     /// New backend URL.

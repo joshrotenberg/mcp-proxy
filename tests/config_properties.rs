@@ -12,6 +12,11 @@ fn ident() -> impl Strategy<Value = String> {
     "[a-z][a-z0-9_]{0,11}"
 }
 
+// Generated backend names must respect the reserved management namespace.
+fn backend_ident() -> impl Strategy<Value = String> {
+    ident().prop_filter("proxy is reserved", |name| name != "proxy")
+}
+
 fn minimal_backend(name: &str) -> String {
     format!(
         r#"
@@ -81,8 +86,8 @@ proptest! {
     /// are rejected, whatever the names involved.
     #[test]
     fn unknown_backend_references_are_rejected(
-        primary in ident(),
-        ghost in ident(),
+        primary in backend_ident(),
+        ghost in backend_ident(),
         role in 0usize..3,
     ) {
         prop_assume!(primary != ghost);
@@ -103,7 +108,7 @@ proptest! {
 
     /// Self-references are rejected for all three roles.
     #[test]
-    fn self_references_are_rejected(name in ident(), role in 0usize..3) {
+    fn self_references_are_rejected(name in backend_ident(), role in 0usize..3) {
         let field = ["mirror_of", "canary_of", "failover_for"][role];
         let extra = if field == "mirror_of" { "mirror_percent = 10\n" } else { "" };
         let toml = format!(
@@ -152,7 +157,7 @@ proptest! {
 
     /// Duplicate backend names are rejected.
     #[test]
-    fn duplicate_backend_names_are_rejected(name in ident()) {
+    fn duplicate_backend_names_are_rejected(name in backend_ident()) {
         let toml = format!(
             "{}{}{}",
             base_config("p", 8080),

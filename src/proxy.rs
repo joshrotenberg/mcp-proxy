@@ -44,11 +44,13 @@ pub struct Proxy {
 impl Proxy {
     /// Build a proxy from a [`ProxyConfig`].
     ///
+    /// Runs [`ProxyConfig::prepare`] before any backend or runtime side effects,
+    /// including for directly deserialized or subsequently mutated configs.
     /// Connects to all backends, builds the middleware stack, and prepares
     /// the axum router. Call [`serve()`](Self::serve) to run standalone or
     /// [`into_router()`](Self::into_router) to embed in an existing app.
     pub async fn from_config(mut config: ProxyConfig) -> Result<Self> {
-        config.resolve_env_vars()?;
+        config.prepare()?;
         let reload_policy = crate::reload_policy::ReloadPolicy::new(&config);
         let runtime = crate::lifecycle::Runtime::new(reload_policy.connections().clone());
         let result = Self::construct(config, reload_policy, runtime.clone()).await;
@@ -316,15 +318,24 @@ impl Proxy {
         );
         let timeout = Duration::from_secs(self.config.proxy.shutdown_timeout_seconds);
         let runtime = self.runtime.clone();
-        let listener = match tokio::net::TcpListener::bind(&addr).await {
-            Ok(listener) => listener,
-            Err(error) => {
-                if runtime.shutdown().await.is_err() {
-                    tracing::error!("Proxy cleanup after bind failure failed");
+        // Tuple binding supports bare IPv6; accept bracketed IPv6 config too.
+        let host = self
+            .config
+            .proxy
+            .listen
+            .host
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let listener =
+            match tokio::net::TcpListener::bind((host, self.config.proxy.listen.port)).await {
+                Ok(listener) => listener,
+                Err(error) => {
+                    if runtime.shutdown().await.is_err() {
+                        tracing::error!("Proxy cleanup after bind failure failed");
+                    }
+                    return Err(error).with_context(|| format!("binding to {}", addr));
                 }
-                return Err(error).with_context(|| format!("binding to {}", addr));
-            }
-        };
+            };
         tracing::info!(listen = %addr, "Proxy ready");
         let (router, _) = self.into_router();
         let result =
@@ -539,7 +550,10 @@ async fn build_mcp_proxy(
 
         match backend.transport {
             TransportType::Stdio => {
-                let command = backend.command.as_deref().unwrap();
+                let command = backend
+                    .command
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("stdio backend requires command"))?;
                 let args: Vec<&str> = backend.args.iter().map(|s| s.as_str()).collect();
 
                 let mut cmd = Command::new(command);
@@ -559,7 +573,10 @@ async fn build_mcp_proxy(
                     .await;
             }
             TransportType::Http => {
-                let url = backend.url.as_deref().unwrap();
+                let url = backend
+                    .url
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("remote backend requires url"))?;
                 let transport = build_http_transport(url, backend);
 
                 builder = builder
@@ -568,7 +585,10 @@ async fn build_mcp_proxy(
             }
             #[cfg(feature = "websocket")]
             TransportType::Websocket => {
-                let url = backend.url.as_deref().unwrap();
+                let url = backend
+                    .url
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("remote backend requires url"))?;
                 tracing::info!(backend = %backend.name, "Connecting to WebSocket backend");
                 let transport =
                     crate::ws_transport::WebSocketClientTransport::connect_with_headers(
@@ -1025,7 +1045,8 @@ fn build_middleware_stack(
                 "Applying response cache"
             );
         }
-        let (cache_svc, handle) = cache::CacheService::new(service, cache_configs, &config.cache);
+        let (cache_svc, handle) =
+            cache::CacheService::try_new(service, cache_configs, &config.cache)?;
         service = BoxCloneService::new(cache_svc);
         cache_handle = Some(handle);
     }
@@ -1323,8 +1344,12 @@ async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
                         })?;
                         let validator = crate::introspection::IntrospectionValidator::new(
                             endpoint,
-                            client_id.as_deref().unwrap(),
-                            client_secret.as_deref().unwrap(),
+                            client_id.as_deref().ok_or_else(|| {
+                                anyhow::anyhow!("introspection requires client_id")
+                            })?,
+                            client_secret.as_deref().ok_or_else(|| {
+                                anyhow::anyhow!("introspection requires client_secret")
+                            })?,
                         )
                         .expected_audience(audience)
                         .expected_issuer(issuer);
@@ -1353,8 +1378,12 @@ async fn apply_auth(config: &ProxyConfig, router: Router) -> Result<Router> {
                         let introspection_validator =
                             crate::introspection::IntrospectionValidator::new(
                                 endpoint,
-                                client_id.as_deref().unwrap(),
-                                client_secret.as_deref().unwrap(),
+                                client_id.as_deref().ok_or_else(|| {
+                                    anyhow::anyhow!("introspection requires client_id")
+                                })?,
+                                client_secret.as_deref().ok_or_else(|| {
+                                    anyhow::anyhow!("introspection requires client_secret")
+                                })?,
                             )
                             .expected_audience(audience)
                             .expected_issuer(issuer);

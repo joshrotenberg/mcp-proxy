@@ -162,6 +162,13 @@ async fn proxy_with_policy(
     } else {
         String::new()
     };
+    let oauth_fields = if auth == "oauth" {
+        format!(
+            "token_validation = {strategy:?}\nclient_id = 'fixture'\nclient_secret = 'fixture-secret'\nrequired_scopes = ['tools', 'read']"
+        )
+    } else {
+        String::new()
+    };
     let config = mcp_proxy::ProxyConfig::parse(&format!(
         r#"
 [proxy]
@@ -175,10 +182,7 @@ admin_token = "manager"
 type = "{auth}"
 issuer = "{issuer}"
 audience = "{RESOURCE}"
-token_validation = "{strategy}"
-client_id = "fixture"
-client_secret = "fixture-secret"
-required_scopes = ["tools", "read"]
+{oauth_fields}
 {endpoints}
 {policy}
 [[backends]]

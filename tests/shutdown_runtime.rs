@@ -352,13 +352,50 @@ async fn bind_failure_waits_for_owned_worker_and_child_cleanup() {
 }
 
 #[tokio::test]
-async fn failed_construction_after_connecting_a_backend_reaps_child() {
+async fn invalid_configuration_is_rejected_before_starting_child() {
     let fixture = Fixture::new();
-    // Invalid runtime regex deliberately bypasses parse validation through the
-    // public config type; construction must still clean up its connected child.
     let mut config = ProxyConfig::parse(&fixture.config(0, "ready")).unwrap();
     config.backends[0].expose_tools = vec!["re:[".into()];
     assert!(Proxy::from_config(config).await.is_err());
+    assert!(
+        !fixture.pid.exists(),
+        "invalid configuration started a child"
+    );
+    assert!(!fixture.pid.with_extension("pid.initialize").exists());
+}
+
+#[cfg(feature = "oauth")]
+#[tokio::test]
+async fn failed_auth_construction_after_connecting_a_backend_reaps_child() {
+    let fixture = Fixture::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/jwks", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            axum::Router::new().route(
+                "/jwks",
+                axum::routing::get(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    // Structurally valid auth fails on real I/O, after the MCP child initializes.
+    // Keep cleanup coverage now that malformed regexes fail before any spawn.
+    let text = format!(
+        "{}\n[security]\nadmin_token='manager'\n[auth]\ntype='jwt'\nissuer='https://issuer.test'\naudience='https://resource.test/mcp'\njwks_uri='{url}'\n",
+        fixture.config(0, "ready")
+    );
+    assert!(
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            Proxy::from_config(ProxyConfig::parse(&text).unwrap())
+        )
+        .await
+        .unwrap()
+        .is_err()
+    );
     assert!(fixture.pid.with_extension("pid.initialize").exists());
     let pid = std::fs::read_to_string(&fixture.pid).unwrap();
     assert!(
@@ -366,6 +403,8 @@ async fn failed_construction_after_connecting_a_backend_reaps_child() {
         "error returned before child reap"
     );
     fixture.gone().await;
+    server.abort();
+    let _ = server.await;
 }
 
 #[tokio::test]
@@ -418,4 +457,49 @@ async fn shutdown_joins_watcher_and_reaps_reloaded_children_even_during_initiali
         original.gone().await;
         dynamic.gone().await;
     }
+}
+
+#[tokio::test]
+async fn configured_bare_ipv6_listen_serves_a_real_probe_and_cleans_up() {
+    let reservation = std::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)).unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    drop(reservation);
+    let fixture = Fixture::new();
+    let text = fixture
+        .config(port, "ready")
+        .replace("host='127.0.0.1'", "host='::1'");
+    let proxy = Proxy::from_config(ProxyConfig::parse(&text).unwrap())
+        .await
+        .unwrap();
+    let shutdown = proxy.shutdown_handle();
+    let server = tokio::spawn(proxy.serve());
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(response) = client
+                .get(format!("http://[::1]:{port}/livez"))
+                .send()
+                .await
+            {
+                break response;
+            }
+            assert!(
+                !server.is_finished(),
+                "configured IPv6 server exited before probe"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), "ok");
+    shutdown.shutdown().await.unwrap();
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+    fixture.gone().await;
 }

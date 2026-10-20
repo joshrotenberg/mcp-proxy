@@ -81,6 +81,27 @@ impl ReloadPolicy {
     pub fn connections(&self) -> &crate::lifecycle::Connections {
         &self.0.connections
     }
+    /// Validate management additions against the same complete startup contract.
+    pub fn prepare_http_backend(
+        &self,
+        name: &str,
+        url: &str,
+        bearer_token: Option<&str>,
+    ) -> anyhow::Result<BackendConfig> {
+        let mut config: ProxyConfig = serde_json::from_value(self.0.startup.clone())?;
+        config.backends.retain(|backend| backend.name != name);
+        config
+            .backends
+            .push(serde_json::from_value(serde_json::json!({
+                "name": name, "transport": "http", "url": url,
+                "bearer_token": bearer_token,
+            }))?);
+        config.prepare()?;
+        config
+            .backends
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("missing prepared backend"))
+    }
     pub fn status(&self) -> ReloadStatus {
         self.0.status.lock().expect("reload status").clone()
     }

@@ -216,12 +216,65 @@
 //! prefix = "mcp-proxy:"
 //! ```
 //!
+//! # Preparation, strict fields and limits
+//!
+//! [`ProxyConfig::parse`], [`ProxyConfig::load`] and YAML parsing validate
+//! structure while permitting secret templates. [`ProxyConfig::prepare`] is the
+//! shared offline runtime check: validate, resolve required secrets atomically,
+//! and revalidate. The CLI (`--check` and startup), [`crate::ProxyBuilder`],
+//! [`crate::Proxy::from_config`], reload and management use it before backend
+//! processes/connections, auth discovery or cache work. Public-field mutations
+//! and direct serde deserialization are rechecked. File loading materializes
+//! configured `.mcp.json` imports; callers with a file should use `load` first.
+//!
+//! Unknown fields are errors in every configuration object, including auth,
+//! nested resilience/security and observability settings. Free-form maps such
+//! as backend environment, headers, injected arguments and parameter defaults
+//! remain data. Fix existing typos instead of relying on ignored fields. Backend
+//! names must be nonempty, contain neither whitespace nor the separator, and
+//! cannot be `proxy` (reserved for management/discovery).
+//! Listen hosts must be IP addresses (bare/bracketed IPv6) or DNS hostnames,
+//! without a port; port zero remains available for ephemeral binding.
+//! Namespace prefixes cannot overlap, including across multi-character separator
+//! boundaries or with internal `proxy` routing. Capability regexes are checked
+//! even on hidden canary/failover backends. Duplicate alias sources or targets,
+//! ambiguous routing roles/destinations, routing cycles, unknown
+//! composite references (backend or built-in `proxy`) and composite namespace
+//! collisions are rejected. Nested composite targets are rejected before startup.
+//! Actual backend tool existence/schema collisions require runtime discovery;
+//! offline checking does not connect to validate them.
+//!
+//! Timeout, rate-period, shutdown, breaker-wait, outlier interval/ejection and
+//! cache TTL settings are limited to 31,536,000 seconds (365 days);
+//! hedge delays use the same limit in milliseconds. Timeouts, rate periods,
+//! breaker wait and outlier durations must be positive; cache TTL zero disables
+//! that cache kind and shutdown timeout zero forces immediate HTTP drain.
+//! Allocation/admission counts (rate requests, concurrency, breaker window and
+//! half-open calls, cache entries, coalescing entries/waiters) are 1..=1,000,000.
+//! Hedges allow 0..=16 additional attempts. Existing retry/coalescing limits
+//! still apply; outlier percentages are 0..=100 with a positive error threshold.
+//! These bounds prevent overflow/unbounded constructor allocations and apply to
+//! parsed and programmatic configs alike. Reduce values outside these limits.
+//! All enabled optional features must be present in the binary, including
+//! token forwarding/scoped bearer/JWT/OAuth, discovery, tracing, metrics and cache/transport types;
+//! `--check` predicts unsupported-feature startup errors.
+//!
+//! [`crate::cache::CacheLayer::try_new`] and
+//! [`crate::cache::CacheService::try_new`] provide fallible offline validation for
+//! low-level cache users; configured proxies use the latter. Legacy `new`
+//! constructors retain their signatures and assume valid settings. Rejected
+//! management saves leave the file unchanged; invalid reloads retain active
+//! backends. Validated connection
+//! replacement still has the non-transactional limitation described in
+//! [`crate::reload`] (tracked separately).
+//!
 //! # Environment Variables
 //!
 //! Supported fields accept whole-value `${VAR_NAME}` references: `bearer_token`,
 //! `headers`, `env` values, auth `tokens`, `scoped_tokens[].token`, `client_secret`,
 //! `admin_token`. Runtime resolution is strict and fallible: call
-//! [`ProxyConfig::resolve_env_vars`] and handle its result. Missing/empty values,
+//! [`ProxyConfig::prepare`] and handle its result (`resolve_env_vars` remains a
+//! compatible alias). Missing/empty values,
 //! malformed or embedded references, and invalid resolved credentials/headers
 //! fail before runtime use; parsing/loading alone still permits templates.
 
@@ -236,6 +289,7 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level proxy configuration, typically loaded from a TOML file.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProxyConfig {
     /// Core proxy settings (name, version, listen address).
     pub proxy: ProxySettings,
@@ -289,6 +343,7 @@ pub enum CompositeStrategy {
 /// strategy = "parallel"
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompositeToolConfig {
     /// Name of the composite tool as it appears to MCP clients.
     pub name: String,
@@ -303,6 +358,7 @@ pub struct CompositeToolConfig {
 
 /// Core proxy identity and server settings.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProxySettings {
     /// Proxy name, used in MCP server info.
     pub name: String,
@@ -374,6 +430,7 @@ pub enum ToolExposure {
 
 /// Global rate limit configuration applied across all backends.
 #[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct GlobalRateLimitConfig {
     /// Maximum number of requests allowed per period.
     pub requests: usize,
@@ -384,6 +441,7 @@ pub struct GlobalRateLimitConfig {
 
 /// HTTP server listen address.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListenConfig {
     /// Bind host (default: "127.0.0.1").
     #[serde(default = "default_host")]
@@ -516,6 +574,7 @@ pub enum TransportType {
 
 /// Per-backend request timeout.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TimeoutConfig {
     /// Timeout duration in seconds.
     pub seconds: u64,
@@ -523,6 +582,7 @@ pub struct TimeoutConfig {
 
 /// Per-backend circuit breaker configuration.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CircuitBreakerConfig {
     /// Failure rate threshold (0.0-1.0) to trip open (default: 0.5)
     #[serde(default = "default_failure_rate")]
@@ -540,6 +600,7 @@ pub struct CircuitBreakerConfig {
 
 /// Per-backend rate limiting configuration.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
     /// Maximum requests per period
     pub requests: usize,
@@ -550,6 +611,7 @@ pub struct RateLimitConfig {
 
 /// Per-backend concurrency limit configuration.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConcurrencyConfig {
     /// Maximum concurrent requests.
     pub max_concurrent: usize,
@@ -557,6 +619,7 @@ pub struct ConcurrencyConfig {
 
 /// Per-backend retry policy with exponential backoff.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RetryConfig {
     /// Maximum retries after the original attempt (default: 3, maximum: 1000).
     /// Cumulative configured backoff must not exceed 300000 ms; configure a
@@ -585,6 +648,7 @@ pub struct RetryConfig {
 ///
 /// Tracks consecutive errors on live traffic and ejects unhealthy backends.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct OutlierDetectionConfig {
     /// Number of consecutive errors before ejecting (default: 5)
     #[serde(default = "default_consecutive_errors")]
@@ -605,6 +669,7 @@ pub struct OutlierDetectionConfig {
 
 /// Per-tool argument injection configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct InjectArgsConfig {
     /// Tool name (backend-local, without namespace prefix).
     pub tool: String,
@@ -631,6 +696,7 @@ pub struct InjectArgsConfig {
 /// rename = { recursive = "deep_search" }
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ParamOverrideConfig {
     /// Tool name (backend-local, without namespace prefix).
     pub tool: String,
@@ -656,6 +722,7 @@ pub struct ParamOverrideConfig {
 /// request hasn't completed after `delay_ms`, a hedge request is fired.
 /// The first successful response wins.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HedgingConfig {
     /// Delay in milliseconds before sending a hedge request (default: 200).
     /// Set to 0 for parallel mode (all requests fire immediately).
@@ -668,7 +735,7 @@ pub struct HedgingConfig {
 
 /// Inbound authentication configuration.
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum AuthConfig {
     /// Static bearer token authentication.
     Bearer {
@@ -776,6 +843,7 @@ pub enum TokenValidationStrategy {
 /// };
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BearerTokenConfig {
     /// The bearer token value. Supports `${ENV_VAR}` syntax.
     pub token: String,
@@ -790,6 +858,7 @@ pub struct BearerTokenConfig {
 
 /// RBAC role definition.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoleConfig {
     /// Unique, nonempty role name, referenced by `RoleMappingConfig`.
     pub name: String,
@@ -804,6 +873,7 @@ pub struct RoleConfig {
 
 /// Maps JWT claim values to RBAC role names.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoleMappingConfig {
     /// Verified token claim to read (e.g. "scope", "role", "groups").
     /// Scopes are space-delimited. Custom claims accept a string or string array;
@@ -831,6 +901,7 @@ pub struct RoleMappingConfig {
 
 /// Tool alias: exposes a backend tool under a different name.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AliasConfig {
     /// Original tool name (backend-local, without namespace prefix)
     pub from: String,
@@ -840,6 +911,7 @@ pub struct AliasConfig {
 
 /// Per-backend response cache configuration.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackendCacheConfig {
     /// TTL for cached resource reads in seconds (0 = disabled)
     #[serde(default)]
@@ -866,6 +938,7 @@ pub struct BackendCacheConfig {
 /// - `"sqlite"`: Local SQLite cache. Explicit generations allow restart reuse. Requires the
 ///   `sqlite-cache` feature.
 #[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct CacheBackendConfig {
     /// Cache backend type: "memory" (default), "redis", or "sqlite".
     #[serde(default = "default_cache_backend")]
@@ -903,6 +976,7 @@ fn default_cache_prefix() -> String {
 
 /// Performance tuning options.
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PerformanceConfig {
     /// Deduplicate identical concurrent tool calls and resource reads
     #[serde(default)]
@@ -915,6 +989,7 @@ pub struct PerformanceConfig {
 /// Resource and lifetime bounds for identical in-flight request groups.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct CoalesceConfig {
     /// Maximum active distinct request keys (default: 1024).
     pub max_entries: usize,
@@ -955,6 +1030,7 @@ impl CoalesceConfig {
 
 /// Security policies.
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityConfig {
     /// Maximum size of tool call arguments in bytes (default: unlimited)
     pub max_argument_size: Option<usize>,
@@ -967,6 +1043,7 @@ pub struct SecurityConfig {
 
 /// Logging, metrics, and distributed tracing configuration.
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
     /// Enable INFO audit records for completed MCP requests (default: false).
     /// Includes identifiers, duration, JSON-RPC status/error code and annotation
@@ -994,6 +1071,7 @@ pub struct ObservabilityConfig {
 
 /// Structured access log configuration.
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccessLogConfig {
     /// Enable INFO access records for completed MCP requests (default: false).
     /// The CLI enables this target independently of the application log level.
@@ -1003,6 +1081,7 @@ pub struct AccessLogConfig {
 
 /// Prometheus metrics configuration.
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetricsConfig {
     /// Enable Prometheus metrics at `/admin/metrics` (default: false).
     #[serde(default)]
@@ -1011,6 +1090,7 @@ pub struct MetricsConfig {
 
 /// OpenTelemetry distributed tracing configuration.
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TracingConfig {
     /// Enable OTLP trace export (default: false).
     #[serde(default)]
@@ -1186,7 +1266,8 @@ impl CompiledPattern {
 /// - **Glob** (default): `*` matches any sequence, `?` matches one character.
 /// - **Regex** (`re:` prefix): e.g. `re:^list_.*$` uses the `regex` crate.
 ///
-/// Regex patterns are compiled once at config parse time.
+/// Regex syntax is checked during configuration validation. Runtime filters
+/// compile and retain their patterns when the middleware stack is built.
 #[derive(Debug, Clone)]
 pub enum NameFilter {
     /// No filtering -- everything passes.
@@ -1606,6 +1687,7 @@ impl ProxyConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        crate::config_validation::validate(self)?;
         self.performance.coalesce.validate()?;
         for backend in &self.backends {
             if let Some(retry) = &backend.retry {
@@ -1637,67 +1719,6 @@ impl ProxyConfig {
         crate::management::validate(self)?;
         if self.backends.is_empty() {
             anyhow::bail!("at least one backend is required");
-        }
-
-        // Validate cache backend
-        match self.cache.backend.as_str() {
-            "memory" => {}
-            "redis" => {
-                if self.cache.url.is_none() {
-                    anyhow::bail!(
-                        "cache.url is required when cache.backend = \"{}\"",
-                        self.cache.backend
-                    );
-                }
-                #[cfg(not(feature = "redis-cache"))]
-                anyhow::bail!(
-                    "cache.backend = \"redis\" requires the 'redis-cache' feature. \
-                     Rebuild with: cargo install mcp-proxy --features redis-cache"
-                );
-            }
-            "sqlite" => {
-                if self.cache.url.is_none() {
-                    anyhow::bail!(
-                        "cache.url is required when cache.backend = \"{}\"",
-                        self.cache.backend
-                    );
-                }
-                #[cfg(not(feature = "sqlite-cache"))]
-                anyhow::bail!(
-                    "cache.backend = \"sqlite\" requires the 'sqlite-cache' feature. \
-                     Rebuild with: cargo install mcp-proxy --features sqlite-cache"
-                );
-            }
-            other => {
-                anyhow::bail!(
-                    "unknown cache backend \"{}\", expected \"memory\", \"redis\", or \"sqlite\"",
-                    other
-                );
-            }
-        }
-
-        if self
-            .cache
-            .generation
-            .as_ref()
-            .is_some_and(|g| g.trim().is_empty())
-        {
-            anyhow::bail!("cache.generation must not be empty");
-        }
-        for backend in &self.backends {
-            if backend.cache.as_ref().is_some_and(|c| c.max_entries == 0) {
-                anyhow::bail!("backend cache.max_entries must be > 0");
-            }
-        }
-
-        // Validate global rate limit
-        if let Some(rl) = &self.proxy.rate_limit {
-            if rl.requests == 0 {
-                anyhow::bail!("proxy.rate_limit.requests must be > 0");
-            }
-            if rl.period_seconds == 0 {
-                anyhow::bail!("proxy.rate_limit.period_seconds must be > 0");
-            }
         }
 
         // Validate bearer auth config
@@ -2046,6 +2067,7 @@ impl ProxyConfig {
             }
         }
 
+        crate::config_validation::validate_features(self)?;
         Ok(())
     }
 
@@ -2062,6 +2084,24 @@ impl ProxyConfig {
     /// construction, management validation/update, and reload require resolution.
     /// Library callers using this method directly must now handle its result.
     pub fn resolve_env_vars(&mut self) -> Result<()> {
+        self.prepare()
+    }
+
+    /// Prepare configuration for this build before starting any runtime work.
+    ///
+    /// Validates the complete configuration, compiles filters to check syntax,
+    /// resolves required secrets, then revalidates resolved values. CLI checking
+    /// and startup, library/builder construction, reload and management use this
+    /// same contract. Direct deserialization or public-field edits never bypass it.
+    /// No backend process, connection, cache file or auth discovery is started.
+    /// Secret resolution is atomic: failure retains the original configuration.
+    ///
+    /// Parsing/loading validates structure while permitting secret templates;
+    /// call this method for an offline runtime check. Runtime construction calls
+    /// it again because public fields can change after an earlier check.
+    /// See the [module documentation](crate::config) for limits and migration.
+    pub fn prepare(&mut self) -> Result<()> {
+        self.validate()?;
         let originals = crate::config_env::resolve(self)?;
         if let Err(error) = self.validate() {
             crate::config_env::restore(self, originals);
@@ -2190,6 +2230,7 @@ impl ProxyConfig {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "oauth")]
     #[test]
     fn rbac_configuration_rejects_incomplete_and_ambiguous_policies() {
         let base = r#"
@@ -2304,6 +2345,7 @@ jwks_uri = "https://issuer.example.test/keys"
         assert!(!config.observability.metrics.enabled);
     }
 
+    #[cfg(all(feature = "otel", feature = "metrics"))]
     #[test]
     fn test_parse_full_config() {
         let toml = r#"
@@ -2451,6 +2493,7 @@ jwks_uri = "https://issuer.example.test/keys"
         }
     }
 
+    #[cfg(feature = "oauth")]
     #[test]
     fn test_parse_jwt_auth_with_rbac() {
         let toml = r#"
@@ -2825,6 +2868,7 @@ jwks_uri = "https://issuer.example.test/keys"
         assert_eq!(headers.get("X-Literal").map(String::as_str), Some("plain"));
     }
 
+    #[cfg(feature = "oauth")]
     #[test]
     fn test_parse_bearer_token_and_forward_auth() {
         let toml = r#"
@@ -3314,6 +3358,7 @@ jwks_uri = "https://issuer.example.test/keys"
         );
     }
 
+    #[cfg(feature = "oauth")]
     #[test]
     fn test_validate_jwt_with_admin_token_ok() {
         // Same config with an explicit admin_token validates successfully.
@@ -3823,6 +3868,7 @@ jwks_uri = "https://issuer.example.test/keys"
         assert!(err.to_string().contains("requires the 'websocket' feature"));
     }
 
+    #[cfg(feature = "oauth")]
     #[test]
     fn test_parse_bearer_scoped_tokens() {
         let toml = r#"
@@ -3862,6 +3908,7 @@ jwks_uri = "https://issuer.example.test/keys"
         }
     }
 
+    #[cfg(feature = "oauth")]
     #[test]
     fn test_parse_bearer_mixed_tokens() {
         let toml = r#"
@@ -4049,6 +4096,7 @@ jwks_uri = "https://issuer.example.test/keys"
         assert!(!config.proxy.tool_discovery);
     }
 
+    #[cfg(feature = "discovery")]
     #[test]
     fn test_tool_discovery_enabled() {
         let toml = r#"
@@ -4067,6 +4115,7 @@ jwks_uri = "https://issuer.example.test/keys"
         assert!(config.proxy.tool_discovery);
     }
 
+    #[cfg(feature = "oauth")]
     #[test]
     fn test_parse_oauth_config() {
         let toml = r#"
@@ -4104,6 +4153,7 @@ jwks_uri = "https://issuer.example.test/keys"
         }
     }
 
+    #[cfg(feature = "oauth")]
     #[test]
     fn test_parse_oauth_with_introspection() {
         let toml = r#"
@@ -4170,6 +4220,7 @@ jwks_uri = "https://issuer.example.test/keys"
         );
     }
 
+    #[cfg(feature = "oauth")]
     #[test]
     fn test_parse_oauth_with_overrides() {
         let toml = r#"
@@ -4247,7 +4298,7 @@ jwks_uri = "https://issuer.example.test/keys"
         allow_tools = ["svc/echo"]
         "#;
 
-        let config = ProxyConfig::parse(toml).unwrap();
+        let config = ProxyConfig::deserialize_toml(toml).unwrap();
         let warnings = config.check_env_vars();
 
         assert_eq!(warnings.len(), 4, "warnings: {warnings:?}");
@@ -4305,6 +4356,7 @@ jwks_uri = "https://issuer.example.test/keys"
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
     }
 
+    #[cfg(feature = "oauth")]
     #[test]
     fn test_check_env_vars_oauth_client_secret() {
         let toml = r#"
