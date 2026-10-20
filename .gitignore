@@ -3,3 +3,6 @@ CLAUDE.md
 proxy*.toml
 !config.example.toml
 !examples/docker-compose/proxy.toml
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/

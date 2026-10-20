@@ -1,0 +1,8 @@
+proxy:
+  name: fuzz
+  listen: {}
+backends:
+  - name: api
+    transport: stdio
+    command: not-executed
+    default_args: {nullable: null}
