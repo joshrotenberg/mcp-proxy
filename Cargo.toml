@@ -37,12 +37,15 @@ sqlite-cache = ["dep:rusqlite"]
 protocol-2026-07-28 = ["tower-mcp/protocol-2026-07-28"]
 
 [dependencies]
+sha2 = "0.11"
+uuid = { version = "1", features = ["v4"] }
 # Temporary upstream diagnostic fix (tower-mcp#1586). Replace Git pins with a
 # published patched version before releasing; registry 0.24.0 lacks the fix.
 tower-mcp = { version = "0.24.0", git = "https://github.com/joshrotenberg/tower-mcp", rev = "1eb3e4ec5f004dfb884004b2be2b083fafdbe88c", features = ["http", "http-client", "proxy"] }
 tower-mcp-types = { version = "0.24.0", git = "https://github.com/joshrotenberg/tower-mcp", rev = "1eb3e4ec5f004dfb884004b2be2b083fafdbe88c" }
 axum = "0.8"
-hyper = { version = "1", features = ["server", "http1", "http2"] }
+# 1.12 fixes stale HTTP/1 readiness handing a live SSE connection to another request.
+hyper = { version = "1.12", features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 tower-resilience = { version = "0.13.0", default-features = false, features = ["circuitbreaker", "ratelimiter", "hedge", "retry"] }
@@ -89,7 +92,6 @@ tower-resilience-chaos = "0.14"
 tower-mcp = { version = "0.24.0", git = "https://github.com/joshrotenberg/tower-mcp", rev = "1eb3e4ec5f004dfb884004b2be2b083fafdbe88c", features = ["http", "http-client", "proxy", "websocket"] }
 futures-util = "0.3"
 docker-wrapper = { version = "0.11.1", features = ["testing", "templates"] }
-uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 criterion = { version = "0.8", features = ["async_tokio"] }
 proptest = "1.11.0"

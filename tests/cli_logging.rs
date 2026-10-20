@@ -23,6 +23,25 @@ const ARGUMENT: &str = "private-argument-sentinel";
 const RESULT: &str = "private-result-sentinel";
 const ERROR: &str = "private-error-sentinel";
 
+#[path = "support/http.rs"]
+mod http;
+
+fn startup_logs(lines: &Arc<Mutex<Vec<String>>>) -> String {
+    let mut text = lines.lock().unwrap().join("\n");
+    for secret in [
+        DATA_TOKEN,
+        ADMIN_TOKEN,
+        BACKEND_TOKEN,
+        HEADER,
+        ARGUMENT,
+        RESULT,
+        ERROR,
+    ] {
+        text = text.replace(secret, "[redacted]");
+    }
+    text
+}
+
 struct Server(tokio::task::JoinHandle<()>);
 impl Drop for Server {
     fn drop(&mut self) {
@@ -35,7 +54,12 @@ async fn serve(app: axum::Router) -> (String, Server) {
     (
         format!("http://{addr}"),
         Server(tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
         })),
     )
 }
@@ -82,7 +106,8 @@ async fn exercise_cli(json_logs: bool, audit: bool, access: bool, tracing: bool)
                 next.run(request).await
             },
         ));
-    let (backend, _backend) = serve(app).await;
+    let wire = http::WireTrace::new();
+    let (backend, _backend) = serve(wire.layer(app)).await;
     let (collector, _collector) =
         serve(axum::Router::new().fallback(|| async { axum::Json(json!({})) })).await;
     let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -145,7 +170,7 @@ X-API-Key = "{HEADER}"
     let stderr = child.stderr.take().unwrap();
     let collected = Arc::new(Mutex::new(Vec::new()));
     let lines = collected.clone();
-    let reader = tokio::spawn(async move {
+    let mut reader = tokio::spawn(async move {
         let mut stderr = BufReader::new(stderr).lines();
         while let Some(line) = stderr.next_line().await.unwrap() {
             lines.lock().unwrap().push(line);
@@ -156,12 +181,16 @@ X-API-Key = "{HEADER}"
         .build()
         .unwrap();
     let base = format!("http://127.0.0.1:{port}");
-    tokio::time::timeout(Duration::from_secs(15), async {
+    let readiness = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            assert!(
-                child.try_wait().unwrap().is_none(),
-                "CLI exited before readiness"
-            );
+            if let Some(status) = child.try_wait().unwrap() {
+                let _ = tokio::time::timeout(Duration::from_secs(1), &mut reader).await;
+                panic!(
+                    "CLI exited before readiness ({status}): {}\nbackend wire: {:?}",
+                    startup_logs(&collected),
+                    wire.snapshot()
+                );
+            }
             if let Ok(response) = http.get(format!("{base}/livez")).send().await
                 && response.status().is_success()
             {
@@ -170,8 +199,17 @@ X-API-Key = "{HEADER}"
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
-    .await
-    .expect("CLI never became ready");
+    .await;
+    if readiness.is_err() {
+        let _ = child.start_kill();
+        let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), &mut reader).await;
+        panic!(
+            "CLI never became ready: {}\nbackend wire: {:?}",
+            startup_logs(&collected),
+            wire.snapshot()
+        );
+    }
     let client =
         McpClient::connect(HttpClientTransport::new(format!("{base}/")).bearer_token(DATA_TOKEN))
             .await
