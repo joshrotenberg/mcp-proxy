@@ -209,6 +209,15 @@ impl moka::Expiry<String, RouterResponse> for KindExpiry {
             self.tool
         })
     }
+    fn expire_after_update(
+        &self,
+        key: &String,
+        value: &RouterResponse,
+        updated_at: std::time::Instant,
+        _: Option<Duration>,
+    ) -> Option<Duration> {
+        self.expire_after_create(key, value, updated_at)
+    }
 }
 
 /// Per-backend cache with separate resource and tool caches (different TTLs).
@@ -364,14 +373,14 @@ fn build_caches(
             BackendCache {
                 namespace,
                 resource_cache: resource_cache.map(|store| {
-                    if backend_config.backend == "memory" {
+                    if matches!(&store, CacheStore::Memory(_)) {
                         CacheStore::Memory(memory.clone())
                     } else {
                         store
                     }
                 }),
                 tool_cache: tool_cache.map(|store| {
-                    if backend_config.backend == "memory" {
+                    if matches!(&store, CacheStore::Memory(_)) {
                         CacheStore::Memory(memory.clone())
                     } else {
                         store
@@ -599,7 +608,7 @@ mod tests {
         use tower_mcp::protocol::{CallToolResult, RequestId};
         let (base, calls) = service(Ok(McpResponse::CallTool(CallToolResult::text("recovered"))));
         let config = BackendCacheConfig {
-            tool_ttl_seconds: 60,
+            tool_ttl_seconds: 2,
             resource_ttl_seconds: 60,
             max_entries: 10,
         };
@@ -620,7 +629,12 @@ mod tests {
                 },
             )
             .await;
+        // Replacing a still-live failed entry must reset TTL, not retain its deadline.
+        tokio::time::sleep(Duration::from_millis(1200)).await;
         for id in [1, 2] {
+            if id == 2 {
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+            }
             let response = cache
                 .ready()
                 .await
@@ -914,7 +928,7 @@ mod tests {
             max_entries: 1,
         };
         let (mut service, handle) = CacheService::new(
-            backend,
+            backend.clone(),
             vec![("api/".into(), &config)],
             &default_backend_config(),
         );
@@ -953,6 +967,26 @@ mod tests {
         assert!(
             handle.stats().await[0].entry_count <= 1,
             "shared memory cache was double counted"
+        );
+        // A fresh store avoids admission/eviction effects when checking TTL renewal.
+        let config = BackendCacheConfig {
+            max_entries: 100,
+            ..config
+        };
+        let (mut renewed, _) = CacheService::new(
+            backend,
+            vec![("api/".into(), &config)],
+            &default_backend_config(),
+        );
+        call_service(&mut renewed, resource()).await;
+        let before = executions.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        call_service(&mut renewed, resource()).await;
+        call_service(&mut renewed, resource()).await;
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            before + 1,
+            "refilled resource did not receive its full new TTL"
         );
     }
 
