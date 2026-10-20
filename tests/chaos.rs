@@ -459,38 +459,26 @@ async fn retry_gives_up_after_max_retries() {
 }
 
 /// Under sustained total failure, the retry budget caps attempt volume: the
-/// token bucket (budget_percent with min_retries_per_sec = 0, so burst-only)
-/// stops retries once spent, and later requests fail fast with a single
-/// attempt instead of amplifying the outage.
+/// volume budget with zero floor allows retries only as original volume grows,
+/// rather than an unrelated startup burst or success-based token refill.
 #[tokio::test]
 async fn retry_budget_caps_attempts_under_sustained_failure() {
     let hits = Arc::new(AtomicUsize::new(0));
     let failures = Arc::new(AtomicUsize::new(usize::MAX));
-    // budget_percent = 1.0 maps to a 10-token burst with zero refill in the
-    // production mapping (see build_retry_layer).
-    let cfg = retry_config(3, Some(1.0), 0);
+    let cfg = retry_config(3, Some(20.0), 0);
     let mut proxy = build_transient_proxy(&cfg, hits.clone(), failures).await;
 
-    let requests = 30;
+    let requests = 100;
     for _ in 0..requests {
         let resp = call(&mut proxy, tool_call("flaky/ping", serde_json::json!({}))).await;
         assert!(resp.inner.is_err(), "sustained failure surfaces every time");
     }
 
     let total_attempts = hits.load(Ordering::SeqCst);
-    // Unbudgeted this would be requests * (1 + max_retries) = 120 attempts.
-    assert!(
-        total_attempts >= requests,
-        "every request attempts at least once (got {total_attempts})"
-    );
-    assert!(
-        total_attempts > requests,
-        "the budget allows some retries before it is spent (got {total_attempts})"
-    );
-    assert!(
-        total_attempts <= requests + 15,
-        "attempts stay within the ~10-token budget plus slack, no retry storm \
-         (got {total_attempts})"
+    assert_eq!(
+        total_attempts,
+        requests + 20,
+        "100 original requests fund exactly 20 retries"
     );
 }
 

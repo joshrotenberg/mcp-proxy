@@ -103,7 +103,7 @@
 //! max_retries = 3
 //! initial_backoff_ms = 100
 //! max_backoff_ms = 5000
-//! budget_percent = 20.0              # Max 20% of requests can be retries
+//! budget_percent = 20.0              # Retry reservations / original calls per window
 //!
 //! # Request hedging (tail latency)
 //! [backends.hedging]
@@ -558,7 +558,9 @@ pub struct ConcurrencyConfig {
 /// Per-backend retry policy with exponential backoff.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RetryConfig {
-    /// Maximum number of retry attempts (default: 3)
+    /// Maximum retries after the original attempt (default: 3, maximum: 1000).
+    /// Cumulative configured backoff must not exceed 300000 ms; configure a
+    /// backend timeout to bound execution and retry readiness after dispatch.
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
     /// Initial backoff in milliseconds (default: 100)
@@ -567,13 +569,14 @@ pub struct RetryConfig {
     /// Maximum backoff in milliseconds (default: 5000)
     #[serde(default = "default_max_backoff_ms")]
     pub max_backoff_ms: u64,
-    /// Maximum percentage of requests that can be retries (default: none / unlimited).
-    /// When set, prevents retry storms by capping retries as a fraction of total
-    /// request volume. Envoy uses 20% as a default. Evaluated over a 10-second
-    /// rolling window.
+    /// Retry reservations as a percentage of original calls (0..=100, default:
+    /// none / unlimited). Shared across layer clones in non-overlapping
+    /// ten-second windows, with the larger of this allowance and the floor
+    /// below. See [`crate::retry`] for reset/cancellation and migration semantics.
     pub budget_percent: Option<f64>,
-    /// Minimum retries per second allowed regardless of budget (default: 10).
-    /// Ensures low-traffic backends can still retry.
+    /// Low-volume retry floor, expressed per second (default: 10).
+    /// Grants ten times this many reservations per ten-second window, including
+    /// at startup. Zero requires volume-funded credit; this is not an RPS limit.
     #[serde(default = "default_min_retries_per_sec")]
     pub min_retries_per_sec: u32,
 }
@@ -1601,6 +1604,11 @@ impl ProxyConfig {
 
     fn validate(&self) -> Result<()> {
         self.performance.coalesce.validate()?;
+        for backend in &self.backends {
+            if let Some(retry) = &backend.retry {
+                crate::retry::validate_config(retry)?;
+            }
+        }
         if let Some(
             AuthConfig::Jwt {
                 issuer,
@@ -3625,6 +3633,43 @@ jwks_uri = "https://issuer.example.test/keys"
             format!("{err}").contains("duplicate rename target"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn retry_limits_reject_invalid_percentages_attempts_and_planned_wait() {
+        let base = "[proxy]\nname='retry-validation'\n[proxy.listen]\n[[backends]]\nname='api'\ntransport='stdio'\ncommand='echo'\n[backends.retry]\n";
+        for (values, message) in [
+            ("budget_percent=nan", "budget_percent"),
+            ("budget_percent=inf", "budget_percent"),
+            ("budget_percent=-0.1", "budget_percent"),
+            ("budget_percent=100.1", "budget_percent"),
+            ("max_retries=4294967295", "max_retries"),
+            ("max_retries=1001", "max_retries"),
+            (
+                "max_retries=2\ninitial_backoff_ms=300000\nmax_backoff_ms=300000",
+                "planned backoff",
+            ),
+            (
+                "max_retries=1\ninitial_backoff_ms=18446744073709551615\nmax_backoff_ms=18446744073709551615",
+                "planned backoff",
+            ),
+        ] {
+            assert!(
+                ProxyConfig::parse(&format!("{base}{values}"))
+                    .unwrap_err()
+                    .to_string()
+                    .contains(message),
+                "{values}"
+            );
+        }
+        for values in [
+            "max_retries=0\nbudget_percent=0.0",
+            "max_retries=1000\ninitial_backoff_ms=0\nbudget_percent=100.0",
+            "max_retries=1\ninitial_backoff_ms=300000\nmax_backoff_ms=300000",
+            "max_retries=2\ninitial_backoff_ms=999999\nmax_backoff_ms=5",
+        ] {
+            ProxyConfig::parse(&format!("{base}{values}")).unwrap();
+        }
     }
 
     #[test]
