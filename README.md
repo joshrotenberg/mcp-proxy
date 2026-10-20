@@ -332,6 +332,12 @@ and unknown errors are terminal hedge results. Retries and hedges can execute
 a tool more than once; enable them only where duplicate execution is acceptable.
 Failed management backend additions also return `isError=true`.
 
+Outlier admission and recovery now update fleet accounting atomically. Service
+clones and pending calls share one registration; final drop releases it. Recovery
+uses monotonic time and ignores stale completions from earlier ejection cycles.
+See [outlier rustdoc](https://docs.rs/mcp-proxy/latest/mcp_proxy/outlier/) for
+quota, owner lifetime and manual detector accounting semantics.
+
 Retry backoff now honors `max_backoff_ms` from the first delay. The optional
 percentage budget counts original backend invocations in ten-second fixed
 windows; the default low-traffic floor allows 100 reservations per window.

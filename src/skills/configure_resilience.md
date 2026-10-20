@@ -67,9 +67,17 @@ Passively tracks errors and ejects unhealthy backends.
 ```toml
 [backends.outlier_detection]
 consecutive_errors = 5
-interval_seconds = 10
+interval_seconds = 10 # Compatibility setting; no background evaluation timer
 base_ejection_seconds = 30
+max_ejection_percent = 50
 ```
+
+Quota admission and recovery are atomic across the detector's registered
+outlier-enabled backends. Nonzero percentages allow at least one slot; configured
+proxies use the largest backend percentage. Recovery occurs on the next call
+after the monotonic deadline, and stale responses cannot change the new streak.
+Clones and pending calls share one registration; final drop releases it. See
+outlier rustdoc for quota shrink and low-level manual accounting semantics.
 
 ### Response Caching
 Cache responses to reduce backend load.

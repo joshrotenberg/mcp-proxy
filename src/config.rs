@@ -589,13 +589,16 @@ pub struct OutlierDetectionConfig {
     /// Number of consecutive errors before ejecting (default: 5)
     #[serde(default = "default_consecutive_errors")]
     pub consecutive_errors: u32,
-    /// Evaluation interval in seconds (default: 10)
+    /// Compatibility interval in seconds (default: 10). Outlier evaluation is
+    /// completion-driven and recovery occurs on a new call; no timer uses this.
     #[serde(default = "default_interval_seconds")]
     pub interval_seconds: u64,
     /// How long to eject in seconds (default: 30)
     #[serde(default = "default_base_ejection_seconds")]
     pub base_ejection_seconds: u64,
-    /// Maximum percentage of backends that can be ejected (default: 50)
+    /// New-ejection quota as a percentage of outlier-enabled registered backends
+    /// (default: 50; nonzero allows at least one). Configured proxies use the
+    /// largest backend percentage; see [`crate::outlier`] for lifecycle semantics.
     #[serde(default = "default_max_ejection_percent")]
     pub max_ejection_percent: u32,
 }
