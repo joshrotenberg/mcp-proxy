@@ -127,5 +127,10 @@ matrix, and repeat with `--no-default-features` to exercise bearer sessions
 without OAuth/discovery/WebSocket. CI also runs default features. Startup,
 readiness, notification and fixture cleanup failures must fail the test: do not
 skip them, retry sessions internally, or relax timeouts to hide stalls. The
-previous intermittent watched-HTTP initialization stall remains an investigation
-unless evidence identifies its cause; a passing repetition alone is not a fix.
+HTTP/1 startup stalls were traced to stale client readiness pooling a live SSE
+connection (hyperium/hyper#4207, fixed in Hyper 1.12). `http_dispatch.rs` forces
+the stale signal through cooperative-budget exhaustion on a real Hyper driver
+and Tokio I/O; it fails with 1.11 and passes with 1.12, without timing races.
+Retain the Hyper minimum and this regression when updating dependencies. CLI
+startup diagnostics drain stderr, redact fixture secrets and report safe backend
+method/status/header/TCP-peer traces. A passing repetition alone is not a fix.

@@ -44,7 +44,8 @@ uuid = { version = "1", features = ["v4"] }
 tower-mcp = { version = "0.24.0", git = "https://github.com/joshrotenberg/tower-mcp", rev = "1eb3e4ec5f004dfb884004b2be2b083fafdbe88c", features = ["http", "http-client", "proxy"] }
 tower-mcp-types = { version = "0.24.0", git = "https://github.com/joshrotenberg/tower-mcp", rev = "1eb3e4ec5f004dfb884004b2be2b083fafdbe88c" }
 axum = "0.8"
-hyper = { version = "1", features = ["server", "http1", "http2"] }
+# 1.12 fixes stale HTTP/1 readiness handing a live SSE connection to another request.
+hyper = { version = "1.12", features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 tower-resilience = { version = "0.13.0", default-features = false, features = ["circuitbreaker", "ratelimiter", "hedge", "retry"] }
