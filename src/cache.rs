@@ -31,7 +31,9 @@
 //! syntax). Cloned services/layers continue sharing their original cache state.
 //!
 //! SQLite uses `mcp_cache_v2`, indexed expiry cleanup on every operation, and
-//! transactional oldest-write eviction across resource/tool entries. The old
+//! transactional oldest-write eviction across resource/tool entries. WAL/NORMAL
+//! journaling and one schema transaction avoid per-statement full fsync costs;
+//! cache writes may be lost on an OS crash, which is safe for cache data. The old
 //! `cache_entries` table is ignored; retire it manually after stopping old
 //! deployments. Redis uses exact hashes and sorted indexes with atomic expiry,
 //! capacity and clearing scripts, plus TTLs on all index/data keys. Legacy Redis

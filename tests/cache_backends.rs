@@ -68,6 +68,13 @@ where
     S: Service<RouterRequest, Response = RouterResponse, Error = Infallible>,
     S::Future: Send,
 {
+    static DIAGNOSTICS: std::sync::Once = std::sync::Once::new();
+    DIAGNOSTICS.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("mcp_proxy::cache=debug")
+            .with_test_writer()
+            .try_init();
+    });
     let req = RouterRequest {
         id: RequestId::Number(1),
         inner: request,
