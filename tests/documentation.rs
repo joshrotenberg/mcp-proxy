@@ -164,7 +164,16 @@ async fn documented_configs_pass_real_cli_preparation() {
             let value: toml::Value = toml::from_str(&snippet.text).expect(&label);
             if value.get("dependencies").is_some() {
                 assert_eq!(file, root().join("README.md"));
-                assert_eq!(value["dependencies"]["mcp-proxy"].as_str(), Some("0.6"));
+                let minor_version = env!("CARGO_PKG_VERSION")
+                    .split('.')
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(".");
+                assert_eq!(
+                    value["dependencies"]["mcp-proxy"].as_str(),
+                    Some(minor_version.as_str()),
+                    "README dependency must follow the package minor version"
+                );
                 assert!(!snippet.fragment);
                 continue;
             }

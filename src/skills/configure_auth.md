@@ -74,7 +74,7 @@ jwks_uri = "https://auth.example.com/.well-known/jwks.json"
 admin_token = "${ADMIN_TOKEN}"
 ```
 
-Standalone JWT/RBAC example (defaults used for omitted proxy/backends):
+Standalone JWT/RBAC example with a placeholder HTTP backend:
 ```toml
 [proxy]
 name = "example"

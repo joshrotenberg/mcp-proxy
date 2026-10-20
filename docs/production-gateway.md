@@ -95,14 +95,13 @@ If all attempts fail, the original primary result is retained. Only `docs` and
 `search`, whose exposed tools must be verified read-only, are hedged. Never hedge a backend with mutating tools.
 
 **Retries re-execute after ambiguous failures.** A timeout can fire after the
-backend applied the change, so a retry may double-execute. Retries here sit
-on backends whose tools are read-dominant or idempotent (`github`,
-`orders-api`, one cautious retry on `legacy-crm`), with `budget_percent`
-capping retry volume during incidents. `payments` gets no retries: a failed
-refund is investigated, not replayed. The retry blocks are illustrative: verify
-that every exposed operation is idempotent or deduplicated by the backend before
-enabling them. A read-dominant backend can still contain unsafe writes; remove
-its retry block if that contract is unavailable.
+backend applied the change, so a retry may double-execute. The example retry
+blocks on `github`, `orders-api` and `legacy-crm` illustrate backoff/budget
+settings; they do not establish those peers' side-effect contracts. Verify that
+every exposed operation is idempotent or deduplicated by the backend before
+enabling retries. A read-dominant backend can still contain unsafe writes;
+remove its retry block if that contract is unavailable. `payments` gets no
+retries: a failed refund is investigated, not replayed.
 
 Request coalescing collapses identical concurrent calls (same backend, tool,
 and arguments) into one execution and fans the response out. That is the

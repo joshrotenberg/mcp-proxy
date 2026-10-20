@@ -38,8 +38,9 @@ Report those checks as requiring local verification against the original file.
    - max_argument_size is set to prevent abuse
 
 5. **Performance**
-   - Caching is enabled for read-heavy backends
-   - Request coalescing is enabled for concurrent duplicate requests
+   - Cache only verified read-only results with appropriate freshness and sharing
+   - Enable global coalescing only if every affected tool can safely share
+     a result; keep it off for independent writes
    - Explicit cache generation only for intentional response sharing/reuse;
      Redis does not share MCP sessions. Verify session affinity and owner-loss
      recovery separately; do not replay ambiguous writes.
