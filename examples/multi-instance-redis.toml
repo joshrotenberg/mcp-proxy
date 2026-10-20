@@ -1,5 +1,11 @@
 # Multi-instance deployment with Redis cache
-# Run multiple proxy instances behind a load balancer, sharing cache via Redis.
+# Run multiple proxy instances behind a session-affine load balancer.
+# MCP sessions remain process-local: Redis shares responses, not sessions,
+# subscriptions, in-flight calls or management state. Every request in a session
+# must reach its initializer, even on new TCP connections. See the crate's
+# "Multiple replicas and sessions" guide and nginx-session-affinity.conf.
+# Pod loss/rollout/affinity changes require a fresh initialized session; never
+# automatically replay a possibly executed tool call after an ambiguous failure.
 
 [proxy]
 name = "multi-proxy"
@@ -12,6 +18,9 @@ port = 8080
 backend = "redis"
 url = "redis://redis:6379"
 prefix = "mcp-proxy:"
+# Explicit opt-in to response sharing across owners/restarts. Change this value
+# whenever backend or authorization semantics change; keep replicas consistent.
+generation = "multi-proxy-v1"
 
 [[backends]]
 name = "api"

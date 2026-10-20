@@ -46,6 +46,10 @@ service:
   type: ClusterIP
   # Client-facing Service port; traffic targets the named application port.
   port: 8080
+  # MCP sessions belong to one process. Requires a stable source IP as seen by
+  # the Service; ingress controllers may bypass it and need their own affinity.
+  sessionAffinity: ClientIP
+  sessionAffinityTimeoutSeconds: 10800
 
 ingress:
   enabled: false

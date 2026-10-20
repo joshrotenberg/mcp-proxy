@@ -73,6 +73,22 @@ def ports(docs, service, application):
 def render_checks(directory):
     subprocess.run(["helm", "lint", str(CHART), "--strict"], check=True, timeout=20)
     base = helm({}, directory)
+    assert base["Service"]["spec"]["sessionAffinity"] == "ClientIP"
+    assert base["Service"]["spec"]["sessionAffinityConfig"] == {"clientIP": {"timeoutSeconds": 10800}}
+    for values in [{"replicaCount": 2}, {"autoscaling": {"enabled": True, "minReplicas": 2}}]:
+        multiple = helm(values, directory)
+        assert multiple["Service"]["spec"]["sessionAffinity"] == "ClientIP"
+        assert ("replicas" in multiple["Deployment"]["spec"]) != values.get("autoscaling", {}).get("enabled", False)
+    external = helm({"service": {"sessionAffinity": "None"}}, directory)
+    assert external["Service"]["spec"]["sessionAffinity"] == "None"
+    assert "sessionAffinityConfig" not in external["Service"]["spec"]
+    for timeout in [1, 86400]:
+        bounded = helm({"service": {"sessionAffinityTimeoutSeconds": timeout}}, directory)
+        assert bounded["Service"]["spec"]["sessionAffinityConfig"]["clientIP"]["timeoutSeconds"] == timeout
+    for invalid in [0, -1, 86401, "10800", 1.5, None]:
+        helm({"service": {"sessionAffinityTimeoutSeconds": invalid}}, directory, invalid=True)
+    for invalid in ["none", "Cookie", None]:
+        helm({"service": {"sessionAffinity": invalid}}, directory, invalid=True)
     for values, service, application in [
         ({}, 8080, 8080),
         ({"service": {"port": 9090}}, 9090, 8080),

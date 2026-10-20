@@ -63,6 +63,7 @@ tests/
   configured_sessions.rs # Configured embedding/CLI full-session transport and policy matrix
   support/        # Reusable bounded session/application/backend/OAuth fixtures
   health_probes.rs # Configured proxy process probes and auth boundaries
+  replica_sessions.rs # Two real CLIs through NGINX affinity, retirement/loss and reinitialize
   reload_runtime.rs # Watched-file CLI add/replace tests and watcher ownership
   coalesce_runtime.rs # Configured HTTP/MCP capacity, expiry and recovery
   outcome_runtime.rs # Configured cache recovery, breaker state, hedge winners and metrics
@@ -354,8 +355,13 @@ cargo test --doc --all-features          # catches stale doc examples
 ## Compatibility, coverage, and deployment checks
 
 See `CONTRIBUTING.md` for the full Rust 1.90 feature matrix and coverage commands.
-All-feature integration tests require Docker and `redis:7-alpine`; watched-file
-stdio fixtures require Python 3. Startup or readiness failures are test failures.
+All integration feature modes require Docker and `nginx:1.28-alpine` for real
+two-replica session routing. All-feature tests additionally require
+`redis:7-alpine`; watched-file stdio fixtures require Python 3. Startup or
+readiness failures are test failures. NGINX tests use the configured local Docker
+daemon with host-gateway access to local CLI listeners; retain exact session/RPC,
+backend journal, no-replay and fresh-initialization assertions. Service ClientIP
+affinity cannot guarantee routing through ingress controllers that bypass it.
 Run different Cargo feature modes sequentially in a shared target directory;
 otherwise a rebuild can replace the CLI executable during another mode's tests.
 All Rust examples are checked, and the outlier recovery regression runs in the

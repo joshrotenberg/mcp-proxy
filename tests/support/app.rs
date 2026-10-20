@@ -113,6 +113,23 @@ impl App {
                 .join("\n"),
         }
     }
+    /// Abruptly kill and reap a CLI fixture, simulating loss of its session owner.
+    #[allow(dead_code)]
+    pub async fn crash(&mut self) {
+        let Owner::Cli { child, reader, .. } = &mut self.owner else {
+            panic!("crash requires a CLI fixture");
+        };
+        child.start_kill().unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(3), child.wait())
+            .await
+            .expect("crashed CLI reap deadline")
+            .unwrap();
+        assert!(!status.success());
+        tokio::time::timeout(Duration::from_secs(1), reader)
+            .await
+            .expect("crashed CLI stderr deadline")
+            .unwrap();
+    }
     pub async fn shutdown(&mut self) {
         match &mut self.owner {
             Owner::Embedded { shutdown, server } => {

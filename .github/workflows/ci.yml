@@ -63,10 +63,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.features }}
+      - name: Prepare required balancer integration runtime
+        run: |
+          docker info
+          docker pull nginx:1.28-alpine
       - name: Prepare required Redis integration runtime
         if: matrix.features == 'all'
         run: |
-          docker info
           docker pull redis:7-alpine
       - run: cargo test ${{ matrix.flags }}
 
@@ -139,6 +142,7 @@ jobs:
         run: |
           docker info
           docker pull redis:7-alpine
+          docker pull nginx:1.28-alpine
       - name: Measure all-feature unit and integration coverage
         run: |
           mkdir -p target/coverage
