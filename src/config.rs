@@ -1,28 +1,55 @@
 //! Proxy configuration types and parsing.
 //!
 //! All proxy behavior is driven by [`ProxyConfig`], typically loaded from a TOML
-//! file via [`ProxyConfig::load()`]. TOML fences below are reference fragments
-//! unless explicitly shown as complete examples; merge one alternative into a
-//! configuration with required proxy/listen/backend fields. For complete checked
+//! file via [`ProxyConfig::load()`]. Each TOML fence below declares whether it is
+//! complete or a fragment, its checked composition context and required features.
+//! Append fragments to their context in the stated order; do not combine alternatives.
+//! The [fragment inventory](https://github.com/joshrotenberg/mcp-proxy/blob/main/docs/configuration-fragments.md)
+//! explains the offline checks and their runtime limits. For complete operator
 //! recipes, see [the documentation map](https://github.com/joshrotenberg/mcp-proxy/blob/main/docs/README.md).
 //! YAML is also supported when the `yaml` feature
 //! is enabled. The config can also be built programmatically via [`crate::ProxyBuilder`].
 //!
 //! # Config Structure
 //!
+//! Complete configuration (no optional features required).
+//!
+//! <!-- doc-config: complete features=none -->
 //! ```toml
-//! [proxy]                    # Core settings (name, listen, separator)
-//! [[backends]]               # Backend MCP servers (stdio, http, websocket)
-//! [auth]                     # Authentication (bearer, jwt, oauth)
-//! [performance]              # Request coalescing
-//! [security]                 # Argument size limits, admin token
-//! [cache]                    # Cache backend (memory, redis, sqlite)
-//! [observability]            # Logging, metrics, tracing
-//! [[composite_tools]]        # Fan-out tools
+//! [proxy]                    # Core settings
+//! name = "my-proxy"
+//! [proxy.listen]
+//! host = "127.0.0.1"
+//! port = 8080
+//! [[backends]]               # Backend MCP server
+//! name = "api"
+//! transport = "http"
+//! url = "http://127.0.0.1:9000/mcp"
+//! [auth]                     # Caller authentication
+//! type = "bearer"
+//! tokens = ["${TOKEN}"]
+//! [performance]              # Request coalescing is opt-in for safe workloads
+//! coalesce_requests = false
+//! [security]                 # Dedicated management authority
+//! admin_token = "${ADMIN_TOKEN}"
+//! [cache]                    # Store used by configured backend caches
+//! backend = "memory"
+//! [observability]            # Logging, metrics, tracing defaults
+//! [[composite_tools]]        # Fan-out, with an explicit backend namespace
+//! name = "search_all"
+//! description = "Search the API"
+//! tools = ["api/search"]
+//! strategy = "parallel"
 //! ```
 //!
 //! # Proxy Settings
 //!
+//! Configuration fragment: append this block after [backend.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/backend.toml).
+//! Required features: `discovery`.
+//! The import also needs an adjacent `.mcp.json`; the check uses
+//! [this import fixture](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/import.mcp.json).
+//!
+//! <!-- doc-config: fragment=tests/fixtures/documentation/backend.toml features=discovery import=tests/fixtures/documentation/import.mcp.json -->
 //! ```toml
 //! [proxy]
 //! name = "my-proxy"              # Proxy name in MCP server info
@@ -50,6 +77,10 @@
 //!
 //! ## Transports
 //!
+//! Configuration fragment: append this block after [proxy.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/proxy.toml).
+//! Required features: `websocket`.
+//!
+//! <!-- doc-config: fragment=tests/fixtures/documentation/proxy.toml features=websocket -->
 //! ```toml
 //! # Subprocess (stdin/stdout)
 //! [[backends]]
@@ -107,6 +138,10 @@
 //!
 //! All middleware is optional and configured per-backend:
 //!
+//! Configuration fragment: append this block after [proxy.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/proxy.toml).
+//! No optional features required.
+//!
+//! <!-- doc-config: fragment=tests/fixtures/documentation/proxy.toml features=none -->
 //! ```toml
 //! [[backends]]
 //! name = "api"
@@ -162,18 +197,41 @@
 //!
 //! Control which tools, resources, and prompts are exposed:
 //!
+//! Configuration fragment: append this block after [proxy.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/proxy.toml).
+//! No optional features required.
+//!
+//! <!-- doc-config: fragment=tests/fixtures/documentation/proxy.toml features=none -->
 //! ```toml
-//! # Allowlist (mutually exclusive with hide_*)
+//! [[backends]]
+//! name = "files"
+//! transport = "stdio"
+//! command = "file-server"
+//! # Allowlist (mutually exclusive with hide_tools)
 //! expose_tools = ["read_file", "list_*", "re:^search_.*$"]
-//! # Or denylist
+//! ```
+//!
+//! Alternatively, use a denylist and annotation filters:
+//!
+//! Configuration fragment: append this block after [proxy.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/proxy.toml).
+//! No optional features required.
+//!
+//! <!-- doc-config: fragment=tests/fixtures/documentation/proxy.toml features=none -->
+//! ```toml
+//! [[backends]]
+//! name = "files"
+//! transport = "stdio"
+//! command = "file-server"
 //! hide_tools = ["delete_*", "re:^admin_"]
-//! # Annotation-based
 //! hide_destructive = true    # Hide tools with destructive_hint
 //! read_only_only = true      # Only expose read_only_hint tools
 //! ```
 //!
 //! ## Traffic Routing
 //!
+//! Configuration fragment: append this block after [proxy.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/proxy.toml), then [backend.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/backend.toml).
+//! No optional features required.
+//!
+//! <!-- doc-config: fragment=tests/fixtures/documentation/proxy.toml,tests/fixtures/documentation/backend.toml features=none -->
 //! ```toml
 //! # Failover (priority-ordered chain)
 //! [[backends]]
@@ -189,7 +247,7 @@
 //! transport = "http"
 //! url = "http://api-v2:8080"
 //! canary_of = "api"
-//! weight = 10                    # 10% of traffic
+//! weight = 10                    # Relative weight; context primary defaults to 100
 //!
 //! # Traffic mirroring (shadow, fire-and-forget)
 //! [[backends]]
@@ -202,6 +260,10 @@
 //!
 //! # Authentication
 //!
+//! Configuration fragment: append this block after [proxy.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/proxy.toml), then [backend.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/backend.toml).
+//! Required features: `oauth`.
+//!
+//! <!-- doc-config: fragment=tests/fixtures/documentation/proxy.toml,tests/fixtures/documentation/backend.toml features=oauth -->
 //! ```toml
 //! # Bearer tokens (simple)
 //! [auth]
@@ -217,6 +279,10 @@
 //!
 //! Alternatively, JWT/JWKS (requires `[security].admin_token` below):
 //!
+//! Configuration fragment: append this block after [gateway.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/examples/gateway.toml), then [admin.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/admin.toml).
+//! Required features: `oauth`.
+//!
+//! <!-- doc-config: fragment=examples/gateway.toml,tests/fixtures/documentation/admin.toml features=oauth -->
 //! ```toml
 //! [auth]
 //! type = "jwt"
@@ -228,6 +294,10 @@
 //!
 //! Alternatively, OAuth auto-discovery (also requires the dedicated admin token):
 //!
+//! Configuration fragment: append this block after [gateway.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/examples/gateway.toml), then [admin.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/admin.toml).
+//! Required features: `oauth`.
+//!
+//! <!-- doc-config: fragment=examples/gateway.toml,tests/fixtures/documentation/admin.toml features=oauth -->
 //! ```toml
 //! [auth]
 //! type = "oauth"
@@ -240,6 +310,10 @@
 //!
 //! # Security
 //!
+//! Configuration fragment: append this block after [gateway.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/examples/gateway.toml).
+//! No optional features required.
+//!
+//! <!-- doc-config: fragment=examples/gateway.toml features=none -->
 //! ```toml
 //! [security]
 //! max_argument_size = 1048576    # 1MB limit on tool call arguments
@@ -248,6 +322,10 @@
 //!
 //! # Cache Backend
 //!
+//! Configuration fragment: append this block after [gateway.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/examples/gateway.toml).
+//! Required features: `redis-cache`.
+//!
+//! <!-- doc-config: fragment=examples/gateway.toml features=redis-cache -->
 //! ```toml
 //! [cache]
 //! backend = "redis"              # "memory" (default), "redis", "sqlite"
@@ -374,13 +452,7 @@ pub enum CompositeStrategy {
 ///
 /// # Example
 ///
-/// ```toml
-/// [[composite_tools]]
-/// name = "search_all"
-/// description = "Search across all knowledge sources"
-/// tools = ["github/search", "jira/search", "docs/search"]
-/// strategy = "parallel"
-/// ```
+/// See the checked configuration fragment in [`crate::composite`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompositeToolConfig {
@@ -730,13 +802,7 @@ pub struct InjectArgsConfig {
 ///
 /// # Configuration
 ///
-/// ```toml
-/// [[backends.param_overrides]]
-/// tool = "list_directory"
-/// hide = ["path"]
-/// defaults = { path = "/home/docs" }
-/// rename = { recursive = "deep_search" }
-/// ```
+/// See the checked configuration fragment in [`crate::param_override`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParamOverrideConfig {

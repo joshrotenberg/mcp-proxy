@@ -1,0 +1,4 @@
+# Prefix for fragments that declare their own backends.
+[proxy]
+name = "rustdoc"
+[proxy.listen]
