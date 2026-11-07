@@ -1,0 +1,3 @@
+# Additional prefix for JWT/OAuth fragments; this token grants management.
+[security]
+admin_token = "${ADMIN_TOKEN}"

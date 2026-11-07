@@ -6,6 +6,10 @@
 //!
 //! # Configuration
 //!
+//! Configuration fragment: append this block after [gateway.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/examples/gateway.toml).
+//! No optional features required.
+//!
+//! <!-- doc-config: fragment=examples/gateway.toml features=none -->
 //! ```toml
 //! [[backends.param_overrides]]
 //! tool = "list_directory"

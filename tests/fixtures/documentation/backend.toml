@@ -1,0 +1,5 @@
+# Prefix for fragments that declare their own [proxy] and [proxy.listen].
+[[backends]]
+name = "api"
+transport = "http"
+url = "http://127.0.0.1:9000/mcp"

@@ -49,6 +49,10 @@
 //!
 //! # Configuration example
 //!
+//! Configuration fragment: append this block after [gateway.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/examples/gateway.toml), then [admin.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/admin.toml).
+//! Required features: `oauth`.
+//!
+//! <!-- doc-config: fragment=examples/gateway.toml,tests/fixtures/documentation/admin.toml features=oauth -->
 //! ```toml
 //! [auth]
 //! type = "jwt"

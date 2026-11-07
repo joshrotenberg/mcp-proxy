@@ -34,6 +34,10 @@
 //! Composite tools are defined at the top level in TOML, referencing
 //! namespaced tool names from any backend:
 //!
+//! Configuration fragment: append this block after [proxy.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/proxy.toml), then [search-backends.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/search-backends.toml).
+//! No optional features required.
+//!
+//! <!-- doc-config: fragment=tests/fixtures/documentation/proxy.toml,tests/fixtures/documentation/search-backends.toml features=none -->
 //! ```toml
 //! [[composite_tools]]
 //! name = "search_all"

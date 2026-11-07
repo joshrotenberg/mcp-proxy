@@ -330,9 +330,12 @@ The library enables `missing_docs`; CI treats its warnings as errors.
 - Module-level docs explain purpose and usage patterns
 - Doc examples should be runnable (`cargo test --doc`)
 - Keep examples up to date -- stale Rust doc examples break `cargo test --doc`
-- Keep `tests/documentation.rs` CLI preparation/workflow/link checks passing;
-  explicitly mark README fragments and preserve required configuration context.
-  Module TOML reference fragments are not validated by Rust doctests.
+- Keep `tests/documentation.rs` CLI preparation/workflow checks and
+  `tests/rustdoc_configs.rs` declared module TOML contexts passing; explicitly
+  label fragments and preserve required configuration context and feature gates.
+  Rust doctests alone do not validate TOML. Run `python3 scripts/check-doc-links.py`
+  for local paths, anchors and references; external availability is a separate,
+  bounded report (see CONTRIBUTING.md).
 
 **Pre-push checks** (MUST pass before every push):
 ```bash

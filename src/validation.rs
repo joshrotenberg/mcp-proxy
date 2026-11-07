@@ -23,6 +23,10 @@
 //! Argument size limits are configured in the `[security]` section of the
 //! TOML config:
 //!
+//! Configuration fragment: append this block after [gateway.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/examples/gateway.toml).
+//! No optional features required.
+//!
+//! <!-- doc-config: fragment=examples/gateway.toml features=none -->
 //! ```toml
 //! [security]
 //! max_argument_size = 1048576  # 1 MiB

@@ -46,6 +46,10 @@
 //! Filters are configured per-backend in TOML. Use `expose_tools` (allowlist)
 //! or `hide_tools` (denylist) -- not both:
 //!
+//! Configuration fragment: append this block after [proxy.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/proxy.toml).
+//! No optional features required.
+//!
+//! <!-- doc-config: fragment=tests/fixtures/documentation/proxy.toml features=none -->
 //! ```toml
 //! [[backends]]
 //! name = "files"

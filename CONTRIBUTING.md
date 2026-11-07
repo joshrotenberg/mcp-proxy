@@ -268,19 +268,35 @@ Keep the request-order diagram in crate rustdoc rather than duplicating it.
 
 `cargo test --test documentation --all-features` extracts TOML fences from the
 README, repository guides and bundled management skills, validates the Cargo
-manifest snippet separately, and checks complete configuration blocks/declared README fragments plus all example
-TOML with the real CLI and disposable child-process environment values. This
+manifest snippet separately, and checks complete configuration blocks, declared
+README fragments and all example TOML with the real CLI and disposable
+child-process environment values. This
 covers defaults as well as strict fields and required-secret preparation; feature
-absence must return the explicit feature requirement. Annotated reference blocks
-in module rustdoc can be partial schemas, not standalone configs: label them as
-fragments, keep API examples compiled, and add configured tests for runnable claims.
+absence must return the explicit feature requirement.
 
-The same suite executes README quickstart/JWT configuration through actual local
-CLI MCP sessions, substituting local stdio peers and a test IdP for third-party
+`cargo test --locked --test rustdoc_configs --all-features` inventories TOML
+fences in Rust doc comments and runs their declared complete configurations or
+fragment compositions through the real CLI. Each fence declares its checked
+context and required features. Repeat with `--no-default-features` to verify
+explicit feature rejection. These tests run in CI's feature matrix; do not
+silently skip newly added fences or accept an unsupported configuration. Keep
+API examples compiled and add configured runtime tests for behavior claims. The
+[fragment inventory](docs/configuration-fragments.md) defines composition and
+source ownership.
+
+The `documentation` suite also executes README quickstart/JWT configuration through
+actual local CLI MCP sessions, substituting local stdio peers and a test IdP for third-party
 packages/services. It checks initialization, discovery, exact tool output and
 management boundaries. This does not test npm package installation, an actual
-corporate IdP, remote documentation links or Kubernetes. Local Markdown link
-paths are checked; external links and fragments still need review.
+corporate IdP, remote documentation links or Kubernetes.
+
+Run `python3 scripts/check-doc-links.py` to check local Markdown paths, heading
+anchors and reference-style destinations. The CI documentation-link job runs
+this deterministic check and its parser/network regression tests, then uploads
+a bounded external-link report. External checks record unavailable, rate-limited
+and unattempted URLs separately; they do not turn an offline check into evidence
+of remote availability or released-version correctness. See the
+[link verification guide](docs/doc-links.md) for commands, limits and maintenance.
 
 A behavior/config PR must update its owning rustdoc, affected recipes/help/skills
 and configured regression together. Label snippets as complete configs,
