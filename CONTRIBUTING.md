@@ -49,24 +49,17 @@ MCP session. CI runs both render/rollout/schema checks and this application
 smoke test. See the [chart guide](charts/mcp-proxy/README.md) for port and
 credential-rotation contracts and the limits of these cluster-free checks.
 
-## Temporary upstream fix and release prerequisite
+## tower-mcp dependency
 
-The current development tree pins `tower-mcp` and `tower-mcp-types` to an exact
-Git revision for the credential-safe HTTP and JWKS diagnostic fixes in
-[tower-mcp#1586](https://github.com/joshrotenberg/tower-mcp/pull/1586).
-Published version 0.24.0 does not contain that fix.
-
+`tower-mcp` and `tower-mcp-types` are published crates.io dependencies (0.26).
 Embedding applications that pass `tower-mcp` types across the proxy API must
-use the same Git revision for their `tower-mcp`/`tower-mcp-types` dependencies.
-A registry dependency has a different Rust crate identity, even at version
-0.24.0. The upgrade from the previously exposed 0.23 types requires a minor
-release of this pre-1.0 library.
+depend on the same minor version. Moving to a new `tower-mcp` minor version
+changes exposed types and requires a minor release of this pre-1.0 library.
 
-Before any release, replace these Git pins with published crate versions that
-contain the fix and rerun every required check. Cargo resolves versioned Git
-dependencies against the registry when publishing, so retaining `version =
-"0.24.0"` with a Git pin would lose the fix in the published crate. Release
-publication is on hold until this prerequisite and release approval are met.
+If an unreleased upstream fix is needed, a Git pin is acceptable during
+development only. Cargo resolves a versioned Git dependency against the
+registry when publishing, so replace any Git pin with a published version that
+contains the fix, and rerun every required check, before releasing.
 
 ## Coverage and minimum Rust version
 
