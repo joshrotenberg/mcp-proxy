@@ -835,7 +835,11 @@ async fn hedge_respects_max_hedges() {
 /// Hedge outside retry (the production zone order): fast failures exercise
 /// only the retry chain; slowness activates hedging on top, and attempts
 /// stay within (1 + max_hedges) * (1 + max_retries).
-#[tokio::test]
+///
+/// Runs on a paused clock: the backend is in-process, so virtual time only
+/// advances while every task is idle, and the outcome does not depend on how
+/// long a loaded CI runner takes to schedule the retry chain.
+#[tokio::test(start_paused = true)]
 async fn hedge_composes_with_retry_without_amplification() {
     // Case 1: fast persistent failures. Hedging is latency-triggered, so
     // only retry runs: exactly 1 + max_retries attempts.

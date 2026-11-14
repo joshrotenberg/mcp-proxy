@@ -148,7 +148,8 @@ async fn fixed_identity_contract(transport: &str, auth: &str, callers: [&str; 2]
             .header("mcp-session-id",&first.id).header("mcp-protocol-version",http::VERSION)
             .json(&json!({"jsonrpc":"2.0","id":90,"method":"tools/call","params":{"name":"api/identity","arguments":{}}}))
             .send().await.unwrap();
-        assert_eq!(denied.status(), StatusCode::OK);
+        // tower-mcp 0.25+ answers another principal's session with HTTP 404.
+        assert_eq!(denied.status(), StatusCode::NOT_FOUND);
         let denied = http::payload(denied).await;
         // Session ownership is checked before decoding the JSON-RPC body.
         assert_eq!(denied["id"], Value::Null);

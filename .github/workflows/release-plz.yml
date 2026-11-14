@@ -21,7 +21,44 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Run release-plz
+        id: release-plz
         uses: release-plz/action@v0.5
         env:
           GITHUB_TOKEN: ${{ secrets.COMMITTER_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      # release-plz bumps Cargo.toml, Cargo.lock and CHANGELOG.md only. CI also
+      # checks the README dependency example, the chart appVersion and
+      # fuzz/Cargo.lock against the package version; align them on the release
+      # PR branch. COMMITTER_TOKEN is used so the push triggers CI.
+      - name: Read release PR branch
+        id: release-pr
+        env:
+          PR_JSON: ${{ steps.release-plz.outputs.pr }}
+        run: |
+          branch=$(printf '%s' "${PR_JSON:-}" | jq -r '.head_branch // empty' 2>/dev/null || true)
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+      - name: Check out release PR branch
+        if: steps.release-pr.outputs.branch != ''
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release-pr.outputs.branch }}
+          token: ${{ secrets.COMMITTER_TOKEN }}
+      - name: Sync versioned files on release PR
+        if: steps.release-pr.outputs.branch != ''
+        env:
+          GH_TOKEN: ${{ secrets.COMMITTER_TOKEN }}
+          BRANCH: ${{ steps.release-pr.outputs.branch }}
+        run: |
+          scripts/sync-release-versions.sh
+          if git diff --quiet; then
+            echo "versioned files already match"
+            exit 0
+          fi
+          user=$(gh api user)
+          login=$(printf '%s' "$user" | jq -r .login)
+          id=$(printf '%s' "$user" | jq -r .id)
+          name=$(printf '%s' "$user" | jq -r '.name // .login')
+          git config user.name "$name"
+          git config user.email "${id}+${login}@users.noreply.github.com"
+          git commit -am "chore: sync README, chart and fuzz lockfile versions"
+          git push origin "HEAD:${BRANCH}"

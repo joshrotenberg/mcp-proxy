@@ -134,7 +134,8 @@ impl Session {
         let response = self
             .request(json!({"jsonrpc":"2.0","id":999,"method":"tools/list","params":{}}))
             .await;
-        assert_eq!(response.status(), StatusCode::OK);
+        // tower-mcp 0.25+ answers a terminated session with HTTP 404.
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let reply = payload(response).await;
         assert_eq!(
             reply["error"]["code"],
