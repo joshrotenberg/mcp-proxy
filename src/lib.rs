@@ -281,8 +281,9 @@
 //! period above `proxy.shutdown_timeout_seconds` plus cleanup time. A surviving
 //! replica does not inherit the retired process's sessions. A call to an
 //! unreachable owner can fail at the transport/balancer (for example HTTP 502);
-//! a stale ID delivered to another proxy currently returns HTTP 200 with JSON-RPC
-//! `-32005`. Check the MCP result as well as HTTP status. Removal of unhealthy
+//! a stale ID delivered to another proxy returns HTTP 404 with JSON-RPC
+//! `-32005`, and a request missing a required session ID returns HTTP 400.
+//! Spec clients reinitialize on 404. Removal of unhealthy
 //! endpoints restores reachability, not the lost session. Changing the affinity
 //! timeout or restarting a balancer may also require reinitialization.
 //!

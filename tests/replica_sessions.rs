@@ -176,7 +176,9 @@ async fn assert_session_missing(session: &Session, marker: &str) {
         .request(json!({"jsonrpc":"2.0","id":89,"method":"tools/call",
         "params":{"name":"api/echo","arguments":{"marker":marker}}}))
         .await;
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    // tower-mcp 0.25+ answers an unknown session with HTTP 404 and keeps the
+    // JSON-RPC -32005 body.
+    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
     let reply = http::payload(response).await;
     // Upstream rejects the session before decoding the RPC envelope, so this
     // transport-level error has a null id rather than echoing the request id.
