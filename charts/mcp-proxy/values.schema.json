@@ -14,6 +14,26 @@
       }
     },
     "config": { "type": "string" },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "automount": { "type": "boolean" }
+      }
+    },
+    "podSecurityContext": { "type": "object" },
+    "securityContext": { "type": "object" },
+    "writableVolumes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "mountPath"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 54 },
+          "mountPath": { "type": "string", "pattern": "^/" }
+        }
+      }
+    },
     "podAnnotations": {
       "type": "object",
       "propertyNames": {

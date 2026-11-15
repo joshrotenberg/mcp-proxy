@@ -1,4 +1,4 @@
-"""Structured Helm regressions; optionally run the rendered config with the real CLI.
+"""Structured Helm regressions; optionally run the rendered config with the real CLI or image.
 
 Requires Helm 3, Python 3.11+ and PyYAML (CI pins 6.0.3). No Kubernetes cluster
 is needed: the runtime check verifies the application listener, not cluster DNS,
@@ -6,12 +6,14 @@ kube-proxy, a rolling upgrade, or the Kubernetes Secret controller.
 """
 
 import argparse
+import http.server
 import json
 import pathlib
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import urllib.error
@@ -151,10 +153,152 @@ def render_checks(directory):
             helm(values, directory, invalid=True)
     for reserved in ["checksum/config", "checksum/secret"]:
         helm({"podAnnotations": {reserved: "override"}}, directory, invalid=True)
-    print("Helm ports, authenticated probes, schema and config/Secret rollout regressions passed")
+    restricted_checks(base, directory)
+    print("Helm ports, authenticated probes, schema, restricted profile and config/Secret rollout regressions passed")
 
 
-def runtime_check(binary, directory):
+RESTRICTED_POD = {
+    "runAsNonRoot": True, "runAsUser": 65532, "runAsGroup": 65532, "fsGroup": 65532,
+    "seccompProfile": {"type": "RuntimeDefault"},
+}
+RESTRICTED_CONTAINER = {
+    "allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
+    "capabilities": {"drop": ["ALL"]},
+}
+WRITABLE = {"writable-tmp": "/tmp", "writable-state": "/var/lib/mcp-proxy"}
+
+
+def restricted_checks(base, directory):
+    """Default values meet Pod Security Standards "restricted" and stay overridable."""
+    pod = pod_template(base)["spec"]
+    container = pod["containers"][0]
+    assert pod["securityContext"] == RESTRICTED_POD, pod["securityContext"]
+    assert container["securityContext"] == RESTRICTED_CONTAINER, container["securityContext"]
+    assert pod["automountServiceAccountToken"] is False
+    assert base["ServiceAccount"]["automountServiceAccountToken"] is False
+    mounts = {m["name"]: m for m in container["volumeMounts"]}
+    assert mounts["config"]["readOnly"] is True
+    assert {name: mounts[name]["mountPath"] for name in WRITABLE} == WRITABLE
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert all(volumes[name] == {"name": name, "emptyDir": {}} for name in WRITABLE)
+    test = base["Pod"]["spec"]
+    assert test["automountServiceAccountToken"] is False
+    assert test["securityContext"] == RESTRICTED_POD
+    assert test["containers"][0]["securityContext"] == RESTRICTED_CONTAINER
+
+    # Helm deep-merges maps, so `{}` keeps the defaults; `null` removes them.
+    kept = helm({"podSecurityContext": {}, "securityContext": {}}, directory)
+    assert pod_template(kept)["spec"]["securityContext"] == RESTRICTED_POD
+    opened = helm({"serviceAccount": {"automount": True}, "writableVolumes": [],
+                   "podSecurityContext": None, "securityContext": None}, directory)
+    pod = pod_template(opened)["spec"]
+    assert pod["automountServiceAccountToken"] is True
+    assert opened["ServiceAccount"]["automountServiceAccountToken"] is True
+    assert "securityContext" not in pod and "securityContext" not in pod["containers"][0]
+    assert [v["name"] for v in pod["volumes"]] == ["config"]
+    assert [m["name"] for m in pod["containers"][0]["volumeMounts"]] == ["config"]
+    custom = helm({"writableVolumes": [{"name": "cache", "mountPath": "/cache"}]}, directory)
+    assert [m for m in pod_template(custom)["spec"]["containers"][0]["volumeMounts"]
+            if m["name"] == "writable-cache"] == [{"name": "writable-cache", "mountPath": "/cache"}]
+    for invalid in [[{"name": "Cache", "mountPath": "/cache"}], [{"name": "cache", "mountPath": "cache"}],
+                    [{"name": "cache"}], [{"name": "cache", "mountPath": "/c", "readOnly": True}]]:
+        helm({"writableVolumes": invalid}, directory, invalid=True)
+    helm({"serviceAccount": {"automount": "false"}}, directory, invalid=True)
+
+
+def docker_restrictions(docs):
+    """Translate the rendered pod security settings into equivalent docker run flags."""
+    pod = pod_template(docs)["spec"]
+    container = pod["containers"][0]
+    pod_ctx, ctx = pod["securityContext"], container["securityContext"]
+    flags = ["--user", f'{pod_ctx["runAsUser"]}:{pod_ctx["runAsGroup"]}']
+    assert pod_ctx["runAsNonRoot"] and pod_ctx["runAsUser"] != 0
+    if ctx.get("readOnlyRootFilesystem"):
+        flags.append("--read-only")
+    for capability in ctx.get("capabilities", {}).get("drop", []):
+        flags += ["--cap-drop", capability]
+    if ctx.get("allowPrivilegeEscalation") is False:
+        flags += ["--security-opt", "no-new-privileges"]
+    # seccompProfile RuntimeDefault needs no flag: Docker applies its default profile.
+    for mount in container["volumeMounts"]:
+        if mount["name"].startswith("writable-"):
+            flags += ["--tmpfs", mount["mountPath"]]
+    return flags
+
+
+class HttpFixture(http.server.ThreadingHTTPServer):
+    """Streamable HTTP MCP peer equivalent to tests/fixtures/session_backend.py.
+
+    Used where the proxy cannot spawn the stdio fixture, such as inside the
+    image, which contains no backend executables. Same tools, same call journal.
+    """
+
+    def __init__(self, host, journal):
+        self.journal = journal
+        self.initialized = False
+        super().__init__((host, 0), HttpFixtureHandler)
+
+
+class HttpFixtureHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def reply(self, status, body=None, headers=()):
+        data = b"" if body is None else json.dumps(body).encode()
+        self.send_response(status)
+        for name, value in headers:
+            self.send_header(name, value)
+        if body is not None:
+            self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):  # No server-initiated stream.
+        self.reply(405)
+
+    def do_DELETE(self):
+        self.reply(200)
+
+    def do_POST(self):
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        method = request["method"]
+        if method == "notifications/initialized":
+            self.server.initialized = True
+        if "id" not in request:
+            return self.reply(202)
+        error, headers = None, []
+        if method == "initialize":
+            result = {"protocolVersion": request["params"]["protocolVersion"],
+                      "capabilities": {"tools": {}},
+                      "serverInfo": {"name": "session-fixture", "version": "1"}}
+            headers.append(("Mcp-Session-Id", "fixture-session"))
+        elif not self.server.initialized:
+            error = {"code": -32600, "message": "initialized notification required"}
+        elif method == "tools/list":
+            result = {"tools": [{"name": name, "inputSchema": {"type": "object"}}
+                                for name in ["echo", "blocked"]]}
+        elif method == "tools/call":
+            with open(self.server.journal, "a", encoding="utf-8") as journal:
+                journal.write(json.dumps(request["params"]) + "\n")
+            result = {"content": [{"type": "text", "text": json.dumps(request["params"]["arguments"])}],
+                      "isError": False}
+        else:
+            result = {}
+        reply = {"jsonrpc": "2.0", "id": request["id"]}
+        reply.update({"error": error} if error else {"result": result})
+        self.reply(200, reply, headers)
+
+
+def runtime_check(directory, *, binary=None, image=None, backend="stdio"):
+    """Run the rendered config and drive probes, an MCP session and SIGTERM shutdown.
+
+    `backend` selects the fixture peer: the stdio script, or the HTTP peer. An
+    image always uses the HTTP peer, reached through host.docker.internal.
+    """
+    assert (binary is None) != (image is None)
+    if image:
+        backend = "http"
     # Select an available nondefault application port; a bind race is a failure,
     # never an excuse to retry MCP initialization or silently skip the smoke test.
     with socket.socket() as listener:
@@ -164,27 +308,51 @@ def runtime_check(binary, directory):
     docs = helm({"containerPort": port, "service": {"port": 9090}}, directory)
     ports(docs, 9090, port)
     journal = directory / "calls.jsonl"
-    source = config(docs) + (
-        '\n[[backends]]\nname = "fixture"\ntransport = "stdio"\n'
-        f"command = {json.dumps(sys.executable)}\n"
-        f"args = {json.dumps([str(REPO / 'tests/fixtures/session_backend.py'), str(journal)])}\n"
-    )
     config_path = directory / "proxy.toml"
+    container = f"mcp-chart-smoke-{port}"
+    fixture = None
+    if backend == "stdio":
+        source = config(docs) + (
+            '\n[[backends]]\nname = "fixture"\ntransport = "stdio"\n'
+            f"command = {json.dumps(sys.executable)}\n"
+            f"args = {json.dumps([str(REPO / 'tests/fixtures/session_backend.py'), str(journal)])}\n"
+        )
+    else:
+        # A container reaches the host through the Docker bridge, not loopback.
+        fixture = HttpFixture("0.0.0.0" if image else "127.0.0.1", journal)
+        threading.Thread(target=fixture.serve_forever, daemon=True).start()
+        host = "host.docker.internal" if image else "127.0.0.1"
+        source = config(docs) + (
+            '\n[[backends]]\nname = "fixture"\ntransport = "http"\n'
+            f'url = "http://{host}:{fixture.server_address[1]}/"\n'
+        )
+    if binary:
+        command = [str(binary), "--config", str(config_path)]
+        startup = 15
+    else:
+        command = ["docker", "run", "--rm", "--name", container, *docker_restrictions(docs),
+                   "--add-host", "host.docker.internal:host-gateway",
+                   "-v", f"{config_path}:/etc/mcp-proxy/proxy.toml:ro",
+                   "-p", f"127.0.0.1:{port}:{port}", image]
+        startup = 60
     config_path.write_text(source)
+    config_path.chmod(0o644)
     # Local test peers must not use a corporate/managed HTTP proxy.
     client = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     url = f"http://127.0.0.1:{port}"
     with (directory / "proxy.log").open("w+") as log:
-        process = subprocess.Popen([str(binary), "--config", str(config_path)], stdout=log, stderr=log)
+        process = subprocess.Popen(command, stdout=log, stderr=log)
         try:
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + startup
             while True:
                 assert process.poll() is None, "rendered-config CLI exited during startup"
                 try:
                     with client.open(url + "/readyz", timeout=1) as response:
                         assert response.status == 200 and response.read() == b"ok"
                     break
-                except urllib.error.URLError:
+                # Docker's port proxy accepts and then resets connections until
+                # the container listens, so a reset here also means "not yet".
+                except (urllib.error.URLError, ConnectionError):
                     assert time.monotonic() < deadline, "nondefault listener never became ready"
                     time.sleep(0.05)
             with client.open(url + "/livez", timeout=2) as response:
@@ -231,6 +399,7 @@ def runtime_check(binary, directory):
             print(log.read(), file=sys.stderr)
             raise
         finally:
+            # SIGTERM; `docker run` forwards it to the container, where mcp-proxy is PID 1.
             if process.poll() is None:
                 process.terminate()
             try:
@@ -239,16 +408,30 @@ def runtime_check(binary, directory):
                 process.kill()
                 process.wait(timeout=5)
                 raise AssertionError("rendered-config CLI did not shut down")
+            finally:
+                if image:
+                    subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
+                if fixture:
+                    fixture.shutdown()
+                    fixture.server_close()
         assert process.returncode == 0, f"CLI exit code: {process.returncode}"
-    print(f"Rendered nondefault application port {port}: probes and full MCP session passed (Service port 9090)")
+    where = f"image {image} with restricted profile" if image else f"binary, {backend} backend"
+    print(f"Rendered nondefault application port {port} ({where}): probes and MCP session passed, "
+          "clean SIGTERM shutdown (Service port 9090)")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=pathlib.Path, help="also run rendered config with this mcp-proxy executable")
+    parser.add_argument("--backend", choices=["stdio", "http"], default="stdio",
+                        help="fixture peer for --binary (--image always uses http)")
+    parser.add_argument("--image", help="also run rendered default config in this container image (requires Docker) "
+                        "with docker run restrictions derived from the rendered pod security context")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="mcp-chart-") as temporary:
         directory = pathlib.Path(temporary)
         render_checks(directory)
         if args.binary:
-            runtime_check(args.binary.resolve(), directory)
+            runtime_check(directory, binary=args.binary.resolve(), backend=args.backend)
+        if args.image:
+            runtime_check(directory, image=args.image)

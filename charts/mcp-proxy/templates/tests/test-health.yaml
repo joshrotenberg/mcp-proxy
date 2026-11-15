@@ -7,9 +7,18 @@ metadata:
   annotations:
     "helm.sh/hook": test
 spec:
+  automountServiceAccountToken: false
+  {{- with .Values.podSecurityContext }}
+  securityContext:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   containers:
     - name: wget
       image: busybox
       command: ['wget']
       args: ['--spider', '--timeout=5', 'http://{{ include "mcp-proxy.fullname" . }}:{{ .Values.service.port }}/readyz']
+      {{- with .Values.securityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
   restartPolicy: Never
