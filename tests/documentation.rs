@@ -215,33 +215,6 @@ async fn documented_configs_pass_real_cli_preparation() {
     eprintln!("checked {count} documented configurations/fragments through the CLI");
 }
 
-#[test]
-fn local_markdown_link_paths_exist() {
-    // Inline destinations only, excluding images/HTML, external URLs and anchor verification.
-    let links = regex::Regex::new(r"\]\(([^\s)]+)(?:\s+[^)]*)?\)").unwrap();
-    let mut checked = 0;
-    for file in markdowns() {
-        let source = std::fs::read_to_string(&file).unwrap();
-        for found in links.captures_iter(&source) {
-            let target = found[1].trim_matches(['<', '>']);
-            if target.starts_with('#') || target.contains("://") || target.starts_with("mailto:") {
-                continue;
-            }
-            let path = target.split('#').next().unwrap();
-            assert!(
-                file.parent().unwrap().join(path).exists(),
-                "{}: {target}",
-                file.display()
-            );
-            checked += 1;
-        }
-    }
-    assert!(
-        checked > 50,
-        "local link inventory unexpectedly shrank: {checked}"
-    );
-}
-
 fn readme_config(auth_type: Option<&str>) -> mcp_proxy::ProxyConfig {
     let source = std::fs::read_to_string(root().join("README.md")).unwrap();
     let snippet = snippets(&source)

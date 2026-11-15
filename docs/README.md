@@ -10,8 +10,8 @@ commands fetch published artifacts, and `docs.rs/latest` describes the latest
 published crate, which may differ. For this checkout run
 `cargo doc --no-deps --all-features --open`; the crate entry point is
 [`src/lib.rs`](../src/lib.rs), with typed configuration in
-[`src/config.rs`](../src/config.rs). Do not mix registry and development Git
-crate identities; see the [dependency/release prerequisite](../CONTRIBUTING.md#temporary-upstream-fix-and-release-prerequisite).
+[`src/config.rs`](../src/config.rs). Embedding applications must use the same
+tower-mcp minor version; see the [tower-mcp dependency](../CONTRIBUTING.md#tower-mcp-dependency) policy.
 
 | Audience / task | Start here | Contract / verification |
 | --- | --- | --- |

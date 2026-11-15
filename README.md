@@ -515,11 +515,10 @@ Version 0.6 uses tower-mcp 0.23. Library applications that exchange
 `SessionHandle`, `McpProxy`, router requests/responses, or protocol types with
 mcp-proxy should update their direct tower-mcp dependencies to 0.23 as well.
 
-Development builds now use tower-mcp 0.24 from an exact Git revision for
-credential-safe diagnostics. Embedding applications must use the matching Git
-sources for both `tower-mcp` and `tower-mcp-types`; see the
-[dependency and release prerequisite](CONTRIBUTING.md#temporary-upstream-fix-and-release-prerequisite).
-This dependency change requires a new minor release before publication.
+The next minor release uses published tower-mcp 0.26. Embedding applications
+that pass tower-mcp types across the proxy API must depend on 0.26 for both
+`tower-mcp` and `tower-mcp-types`; see the
+[tower-mcp dependency](CONTRIBUTING.md#tower-mcp-dependency) policy.
 
 HTTP backends follow same-origin redirects only. A redirect to another scheme,
 host, or port fails instead of forwarding custom headers or session identifiers;

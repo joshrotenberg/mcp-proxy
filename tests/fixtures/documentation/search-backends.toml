@@ -1,0 +1,16 @@
+# Prefix declaring the backend namespaces used by the composite fragment.
+[[backends]]
+name = "github"
+transport = "http"
+url = "http://127.0.0.1:9001/mcp"
+
+[[backends]]
+name = "jira"
+transport = "http"
+url = "http://127.0.0.1:9002/mcp"
+
+[[backends]]
+name = "docs"
+transport = "http"
+url = "http://127.0.0.1:9003/mcp"
+

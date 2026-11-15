@@ -160,6 +160,27 @@ jobs:
         env:
           RUSTDOCFLAGS: -Dwarnings
 
+  doc-links:
+    name: Documentation links
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest discover -s scripts -p 'test_doc_links.py'
+      - run: python3 scripts/check-doc-links.py
+      - name: Report bounded external observations
+        if: always()
+        run: python3 scripts/check-doc-links.py --external --report target/doc-links.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: documentation-links
+          path: target/doc-links.json
+          if-no-files-found: error
+
   helm:
     name: Helm chart
     runs-on: ubuntu-latest

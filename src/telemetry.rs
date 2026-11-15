@@ -15,6 +15,10 @@
 //!
 //! Enable tracing in configuration:
 //!
+//! Configuration fragment: append this block after [gateway.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/examples/gateway.toml).
+//! Required features: `otel`.
+//!
+//! <!-- doc-config: fragment=examples/gateway.toml features=otel -->
 //! ```toml
 //! [observability.tracing]
 //! enabled = true

@@ -17,13 +17,17 @@
 //!
 //! Set `tool_discovery = true` in the `[proxy]` section:
 //!
+//! Configuration fragment: append this block after [backend.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/backend.toml).
+//! Required features: `discovery`.
+//!
+//! <!-- doc-config: fragment=tests/fixtures/documentation/backend.toml features=discovery -->
 //! ```toml
 //! [proxy]
 //! name = "my-proxy"
 //! tool_discovery = true
 //!
 //! [proxy.listen]
-//! # ...
+//! # Uses the default loopback host and port.
 //! ```
 //!
 //! The four `proxy/` discovery tools are added to the proxy's tool list
@@ -39,11 +43,16 @@
 //! backend tools by name. Use `proxy/get_tool` with a search result ID to inspect
 //! its input schema before calling it.
 //!
+//! Configuration fragment: append this block after [backend.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/backend.toml).
+//! Required features: `discovery`.
+//!
+//! <!-- doc-config: fragment=tests/fixtures/documentation/backend.toml features=discovery -->
 //! ```toml
 //! [proxy]
 //! name = "my-proxy"
 //! tool_exposure = "search"
 //! # tool_discovery is implied when tool_exposure = "search"
+//! [proxy.listen]
 //! ```
 //!
 //! # Indexing architecture
