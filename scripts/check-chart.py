@@ -6,12 +6,14 @@ kube-proxy, a rolling upgrade, or the Kubernetes Secret controller.
 """
 
 import argparse
+import http.server
 import json
 import pathlib
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import urllib.error
@@ -224,8 +226,79 @@ def docker_restrictions(docs):
     return flags
 
 
-def runtime_check(directory, *, binary=None, image=None):
+class HttpFixture(http.server.ThreadingHTTPServer):
+    """Streamable HTTP MCP peer equivalent to tests/fixtures/session_backend.py.
+
+    Used where the proxy cannot spawn the stdio fixture, such as inside the
+    image, which contains no backend executables. Same tools, same call journal.
+    """
+
+    def __init__(self, host, journal):
+        self.journal = journal
+        self.initialized = False
+        super().__init__((host, 0), HttpFixtureHandler)
+
+
+class HttpFixtureHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def reply(self, status, body=None, headers=()):
+        data = b"" if body is None else json.dumps(body).encode()
+        self.send_response(status)
+        for name, value in headers:
+            self.send_header(name, value)
+        if body is not None:
+            self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):  # No server-initiated stream.
+        self.reply(405)
+
+    def do_DELETE(self):
+        self.reply(200)
+
+    def do_POST(self):
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        method = request["method"]
+        if method == "notifications/initialized":
+            self.server.initialized = True
+        if "id" not in request:
+            return self.reply(202)
+        error, headers = None, []
+        if method == "initialize":
+            result = {"protocolVersion": request["params"]["protocolVersion"],
+                      "capabilities": {"tools": {}},
+                      "serverInfo": {"name": "session-fixture", "version": "1"}}
+            headers.append(("Mcp-Session-Id", "fixture-session"))
+        elif not self.server.initialized:
+            error = {"code": -32600, "message": "initialized notification required"}
+        elif method == "tools/list":
+            result = {"tools": [{"name": name, "inputSchema": {"type": "object"}}
+                                for name in ["echo", "blocked"]]}
+        elif method == "tools/call":
+            with open(self.server.journal, "a", encoding="utf-8") as journal:
+                journal.write(json.dumps(request["params"]) + "\n")
+            result = {"content": [{"type": "text", "text": json.dumps(request["params"]["arguments"])}],
+                      "isError": False}
+        else:
+            result = {}
+        reply = {"jsonrpc": "2.0", "id": request["id"]}
+        reply.update({"error": error} if error else {"result": result})
+        self.reply(200, reply, headers)
+
+
+def runtime_check(directory, *, binary=None, image=None, backend="stdio"):
+    """Run the rendered config and drive probes, an MCP session and SIGTERM shutdown.
+
+    `backend` selects the fixture peer: the stdio script, or the HTTP peer. An
+    image always uses the HTTP peer, reached through host.docker.internal.
+    """
     assert (binary is None) != (image is None)
+    if image:
+        backend = "http"
     # Select an available nondefault application port; a bind race is a failure,
     # never an excuse to retry MCP initialization or silently skip the smoke test.
     with socket.socket() as listener:
@@ -237,18 +310,28 @@ def runtime_check(directory, *, binary=None, image=None):
     journal = directory / "calls.jsonl"
     config_path = directory / "proxy.toml"
     container = f"mcp-chart-smoke-{port}"
-    if binary:
+    fixture = None
+    if backend == "stdio":
         source = config(docs) + (
             '\n[[backends]]\nname = "fixture"\ntransport = "stdio"\n'
             f"command = {json.dumps(sys.executable)}\n"
             f"args = {json.dumps([str(REPO / 'tests/fixtures/session_backend.py'), str(journal)])}\n"
         )
+    else:
+        # A container reaches the host through the Docker bridge, not loopback.
+        fixture = HttpFixture("0.0.0.0" if image else "127.0.0.1", journal)
+        threading.Thread(target=fixture.serve_forever, daemon=True).start()
+        host = "host.docker.internal" if image else "127.0.0.1"
+        source = config(docs) + (
+            '\n[[backends]]\nname = "fixture"\ntransport = "http"\n'
+            f'url = "http://{host}:{fixture.server_address[1]}/"\n'
+        )
+    if binary:
         command = [str(binary), "--config", str(config_path)]
         startup = 15
     else:
-        # The image has no backend executables; the default config has no backends.
-        source = config(docs)
         command = ["docker", "run", "--rm", "--name", container, *docker_restrictions(docs),
+                   "--add-host", "host.docker.internal:host-gateway",
                    "-v", f"{config_path}:/etc/mcp-proxy/proxy.toml:ro",
                    "-p", f"127.0.0.1:{port}:{port}", image]
         startup = 60
@@ -301,18 +384,15 @@ def runtime_check(directory, *, binary=None, image=None):
             assert headers["Mcp-Session-Id"]
             request({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}, 202)
             result, _ = request({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
-            if image:
-                assert result["tools"] == [], result
-            else:
-                assert sorted(tool["name"] for tool in result["tools"]) == ["fixture/blocked", "fixture/echo"]
-                result, _ = request({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
-                    "name": "fixture/echo", "arguments": {"port": port}
-                }})
-                assert result.get("isError") is not True
-                assert json.loads(result["content"][0]["text"]) == {"port": port}
-                assert [json.loads(line) for line in journal.read_text().splitlines()] == [
-                    {"name": "echo", "arguments": {"port": port}}
-                ]
+            assert sorted(tool["name"] for tool in result["tools"]) == ["fixture/blocked", "fixture/echo"]
+            result, _ = request({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                "name": "fixture/echo", "arguments": {"port": port}
+            }})
+            assert result.get("isError") is not True
+            assert json.loads(result["content"][0]["text"]) == {"port": port}
+            assert [json.loads(line) for line in journal.read_text().splitlines()] == [
+                {"name": "echo", "arguments": {"port": port}}
+            ]
         except BaseException:
             log.flush()
             log.seek(0)
@@ -331,8 +411,11 @@ def runtime_check(directory, *, binary=None, image=None):
             finally:
                 if image:
                     subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
+                if fixture:
+                    fixture.shutdown()
+                    fixture.server_close()
         assert process.returncode == 0, f"CLI exit code: {process.returncode}"
-    where = f"image {image} with restricted profile" if image else "binary"
+    where = f"image {image} with restricted profile" if image else f"binary, {backend} backend"
     print(f"Rendered nondefault application port {port} ({where}): probes and MCP session passed, "
           "clean SIGTERM shutdown (Service port 9090)")
 
@@ -340,6 +423,8 @@ def runtime_check(directory, *, binary=None, image=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=pathlib.Path, help="also run rendered config with this mcp-proxy executable")
+    parser.add_argument("--backend", choices=["stdio", "http"], default="stdio",
+                        help="fixture peer for --binary (--image always uses http)")
     parser.add_argument("--image", help="also run rendered default config in this container image (requires Docker) "
                         "with docker run restrictions derived from the rendered pod security context")
     args = parser.parse_args()
@@ -347,6 +432,6 @@ if __name__ == "__main__":
         directory = pathlib.Path(temporary)
         render_checks(directory)
         if args.binary:
-            runtime_check(directory, binary=args.binary.resolve())
+            runtime_check(directory, binary=args.binary.resolve(), backend=args.backend)
         if args.image:
             runtime_check(directory, image=args.image)

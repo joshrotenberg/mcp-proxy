@@ -116,7 +116,10 @@ to; add a writable volume for any other path they use.
 `--image <ref>` it also runs the rendered default config inside that image under
 the equivalent `docker run` restrictions (user, read-only root, dropped
 capabilities, `no-new-privileges`, tmpfs for each writable volume) and checks the
-probes, an MCP session and a clean SIGTERM shutdown with mcp-proxy as PID 1.
+probes, an MCP session with a forwarded tool call and a clean SIGTERM shutdown
+with mcp-proxy as PID 1. The image has no backend executables, so that session
+uses an HTTP fixture peer on the host, reached through `host.docker.internal`;
+`--binary ... --backend http` runs the same peer without Docker.
 CI runs it for every pull request that changes the image inputs or the chart,
 and against the published image for each release tag.
 
