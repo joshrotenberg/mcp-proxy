@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.1] - 2026-11-15
+
+### Features
+
+- Run the image and chart non-root with a restricted profile ([#355](https://github.com/joshrotenberg/mcp-proxy/pull/355))
+
+### Testing
+
+- Correct criterion benchmark composition and verify responses ([#354](https://github.com/joshrotenberg/mcp-proxy/pull/354))
+
+
+
 ## [0.7.0] - 2026-11-15
 
 ### Bug Fixes
