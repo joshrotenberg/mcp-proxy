@@ -88,6 +88,38 @@ and omitting the management credential disables all admin endpoints.
 The chart probes, Helm smoke test, and Docker healthcheck use process probes, so
 admin tokens need not be placed in probe headers.
 
+## Security profile
+
+Since chart 0.3.0 the defaults meet the Kubernetes Pod Security Standards
+"restricted" profile:
+
+| Setting | Default |
+|---|---|
+| `podSecurityContext` | `runAsNonRoot: true`, UID/GID/`fsGroup` 65532, `seccompProfile: RuntimeDefault` |
+| `securityContext` | `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, drop `ALL` capabilities |
+| `serviceAccount.automount` | `false`: no service-account token is mounted; mcp-proxy does not call the Kubernetes API |
+| `writableVolumes` | `emptyDir` at `/tmp` and `/var/lib/mcp-proxy` |
+
+The `helm test` pod uses the same contexts. UID 65532 matches the image's
+`USER`. Images up to 0.7.0 run as root by default but work unchanged under these
+settings, because the binary is world-executable and needs no writable location
+outside the mounted volumes.
+
+Helm merges maps with these defaults, so `podSecurityContext: {}` keeps them.
+Override individual keys, or set a whole context to `null` to remove it.
+`writableVolumes` is a list and replaces the default: set `[]` to mount none, or
+list your own `name`/`mountPath` pairs (each becomes an `emptyDir` named
+`writable-<name>`). Stdio backends write only where their own executables need
+to; add a writable volume for any other path they use.
+
+`./scripts/check-chart.sh` asserts these defaults and their overrides. With
+`--image <ref>` it also runs the rendered default config inside that image under
+the equivalent `docker run` restrictions (user, read-only root, dropped
+capabilities, `no-new-privileges`, tmpfs for each writable volume) and checks the
+probes, an MCP session and a clean SIGTERM shutdown with mcp-proxy as PID 1.
+CI runs it for every pull request that changes the image inputs or the chart,
+and against the published image for each release tag.
+
 ## Multiple replicas
 
 MCP sessions live in one process. The chart keeps `replicaCount: 1` by default;

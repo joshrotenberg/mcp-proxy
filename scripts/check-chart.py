@@ -1,4 +1,4 @@
-"""Structured Helm regressions; optionally run the rendered config with the real CLI.
+"""Structured Helm regressions; optionally run the rendered config with the real CLI or image.
 
 Requires Helm 3, Python 3.11+ and PyYAML (CI pins 6.0.3). No Kubernetes cluster
 is needed: the runtime check verifies the application listener, not cluster DNS,
@@ -151,10 +151,81 @@ def render_checks(directory):
             helm(values, directory, invalid=True)
     for reserved in ["checksum/config", "checksum/secret"]:
         helm({"podAnnotations": {reserved: "override"}}, directory, invalid=True)
-    print("Helm ports, authenticated probes, schema and config/Secret rollout regressions passed")
+    restricted_checks(base, directory)
+    print("Helm ports, authenticated probes, schema, restricted profile and config/Secret rollout regressions passed")
 
 
-def runtime_check(binary, directory):
+RESTRICTED_POD = {
+    "runAsNonRoot": True, "runAsUser": 65532, "runAsGroup": 65532, "fsGroup": 65532,
+    "seccompProfile": {"type": "RuntimeDefault"},
+}
+RESTRICTED_CONTAINER = {
+    "allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
+    "capabilities": {"drop": ["ALL"]},
+}
+WRITABLE = {"writable-tmp": "/tmp", "writable-state": "/var/lib/mcp-proxy"}
+
+
+def restricted_checks(base, directory):
+    """Default values meet Pod Security Standards "restricted" and stay overridable."""
+    pod = pod_template(base)["spec"]
+    container = pod["containers"][0]
+    assert pod["securityContext"] == RESTRICTED_POD, pod["securityContext"]
+    assert container["securityContext"] == RESTRICTED_CONTAINER, container["securityContext"]
+    assert pod["automountServiceAccountToken"] is False
+    assert base["ServiceAccount"]["automountServiceAccountToken"] is False
+    mounts = {m["name"]: m for m in container["volumeMounts"]}
+    assert mounts["config"]["readOnly"] is True
+    assert {name: mounts[name]["mountPath"] for name in WRITABLE} == WRITABLE
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert all(volumes[name] == {"name": name, "emptyDir": {}} for name in WRITABLE)
+    test = base["Pod"]["spec"]
+    assert test["automountServiceAccountToken"] is False
+    assert test["securityContext"] == RESTRICTED_POD
+    assert test["containers"][0]["securityContext"] == RESTRICTED_CONTAINER
+
+    # Helm deep-merges maps, so `{}` keeps the defaults; `null` removes them.
+    kept = helm({"podSecurityContext": {}, "securityContext": {}}, directory)
+    assert pod_template(kept)["spec"]["securityContext"] == RESTRICTED_POD
+    opened = helm({"serviceAccount": {"automount": True}, "writableVolumes": [],
+                   "podSecurityContext": None, "securityContext": None}, directory)
+    pod = pod_template(opened)["spec"]
+    assert pod["automountServiceAccountToken"] is True
+    assert opened["ServiceAccount"]["automountServiceAccountToken"] is True
+    assert "securityContext" not in pod and "securityContext" not in pod["containers"][0]
+    assert [v["name"] for v in pod["volumes"]] == ["config"]
+    assert [m["name"] for m in pod["containers"][0]["volumeMounts"]] == ["config"]
+    custom = helm({"writableVolumes": [{"name": "cache", "mountPath": "/cache"}]}, directory)
+    assert [m for m in pod_template(custom)["spec"]["containers"][0]["volumeMounts"]
+            if m["name"] == "writable-cache"] == [{"name": "writable-cache", "mountPath": "/cache"}]
+    for invalid in [[{"name": "Cache", "mountPath": "/cache"}], [{"name": "cache", "mountPath": "cache"}],
+                    [{"name": "cache"}], [{"name": "cache", "mountPath": "/c", "readOnly": True}]]:
+        helm({"writableVolumes": invalid}, directory, invalid=True)
+    helm({"serviceAccount": {"automount": "false"}}, directory, invalid=True)
+
+
+def docker_restrictions(docs):
+    """Translate the rendered pod security settings into equivalent docker run flags."""
+    pod = pod_template(docs)["spec"]
+    container = pod["containers"][0]
+    pod_ctx, ctx = pod["securityContext"], container["securityContext"]
+    flags = ["--user", f'{pod_ctx["runAsUser"]}:{pod_ctx["runAsGroup"]}']
+    assert pod_ctx["runAsNonRoot"] and pod_ctx["runAsUser"] != 0
+    if ctx.get("readOnlyRootFilesystem"):
+        flags.append("--read-only")
+    for capability in ctx.get("capabilities", {}).get("drop", []):
+        flags += ["--cap-drop", capability]
+    if ctx.get("allowPrivilegeEscalation") is False:
+        flags += ["--security-opt", "no-new-privileges"]
+    # seccompProfile RuntimeDefault needs no flag: Docker applies its default profile.
+    for mount in container["volumeMounts"]:
+        if mount["name"].startswith("writable-"):
+            flags += ["--tmpfs", mount["mountPath"]]
+    return flags
+
+
+def runtime_check(directory, *, binary=None, image=None):
+    assert (binary is None) != (image is None)
     # Select an available nondefault application port; a bind race is a failure,
     # never an excuse to retry MCP initialization or silently skip the smoke test.
     with socket.socket() as listener:
@@ -164,20 +235,32 @@ def runtime_check(binary, directory):
     docs = helm({"containerPort": port, "service": {"port": 9090}}, directory)
     ports(docs, 9090, port)
     journal = directory / "calls.jsonl"
-    source = config(docs) + (
-        '\n[[backends]]\nname = "fixture"\ntransport = "stdio"\n'
-        f"command = {json.dumps(sys.executable)}\n"
-        f"args = {json.dumps([str(REPO / 'tests/fixtures/session_backend.py'), str(journal)])}\n"
-    )
     config_path = directory / "proxy.toml"
+    container = f"mcp-chart-smoke-{port}"
+    if binary:
+        source = config(docs) + (
+            '\n[[backends]]\nname = "fixture"\ntransport = "stdio"\n'
+            f"command = {json.dumps(sys.executable)}\n"
+            f"args = {json.dumps([str(REPO / 'tests/fixtures/session_backend.py'), str(journal)])}\n"
+        )
+        command = [str(binary), "--config", str(config_path)]
+        startup = 15
+    else:
+        # The image has no backend executables; the default config has no backends.
+        source = config(docs)
+        command = ["docker", "run", "--rm", "--name", container, *docker_restrictions(docs),
+                   "-v", f"{config_path}:/etc/mcp-proxy/proxy.toml:ro",
+                   "-p", f"127.0.0.1:{port}:{port}", image]
+        startup = 60
     config_path.write_text(source)
+    config_path.chmod(0o644)
     # Local test peers must not use a corporate/managed HTTP proxy.
     client = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     url = f"http://127.0.0.1:{port}"
     with (directory / "proxy.log").open("w+") as log:
-        process = subprocess.Popen([str(binary), "--config", str(config_path)], stdout=log, stderr=log)
+        process = subprocess.Popen(command, stdout=log, stderr=log)
         try:
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + startup
             while True:
                 assert process.poll() is None, "rendered-config CLI exited during startup"
                 try:
@@ -216,21 +299,25 @@ def runtime_check(binary, directory):
             assert headers["Mcp-Session-Id"]
             request({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}, 202)
             result, _ = request({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
-            assert sorted(tool["name"] for tool in result["tools"]) == ["fixture/blocked", "fixture/echo"]
-            result, _ = request({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
-                "name": "fixture/echo", "arguments": {"port": port}
-            }})
-            assert result.get("isError") is not True
-            assert json.loads(result["content"][0]["text"]) == {"port": port}
-            assert [json.loads(line) for line in journal.read_text().splitlines()] == [
-                {"name": "echo", "arguments": {"port": port}}
-            ]
+            if image:
+                assert result["tools"] == [], result
+            else:
+                assert sorted(tool["name"] for tool in result["tools"]) == ["fixture/blocked", "fixture/echo"]
+                result, _ = request({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                    "name": "fixture/echo", "arguments": {"port": port}
+                }})
+                assert result.get("isError") is not True
+                assert json.loads(result["content"][0]["text"]) == {"port": port}
+                assert [json.loads(line) for line in journal.read_text().splitlines()] == [
+                    {"name": "echo", "arguments": {"port": port}}
+                ]
         except BaseException:
             log.flush()
             log.seek(0)
             print(log.read(), file=sys.stderr)
             raise
         finally:
+            # SIGTERM; `docker run` forwards it to the container, where mcp-proxy is PID 1.
             if process.poll() is None:
                 process.terminate()
             try:
@@ -239,16 +326,25 @@ def runtime_check(binary, directory):
                 process.kill()
                 process.wait(timeout=5)
                 raise AssertionError("rendered-config CLI did not shut down")
+            finally:
+                if image:
+                    subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
         assert process.returncode == 0, f"CLI exit code: {process.returncode}"
-    print(f"Rendered nondefault application port {port}: probes and full MCP session passed (Service port 9090)")
+    where = f"image {image} with restricted profile" if image else "binary"
+    print(f"Rendered nondefault application port {port} ({where}): probes and MCP session passed, "
+          "clean SIGTERM shutdown (Service port 9090)")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=pathlib.Path, help="also run rendered config with this mcp-proxy executable")
+    parser.add_argument("--image", help="also run rendered default config in this container image (requires Docker) "
+                        "with docker run restrictions derived from the rendered pod security context")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="mcp-chart-") as temporary:
         directory = pathlib.Path(temporary)
         render_checks(directory)
         if args.binary:
-            runtime_check(args.binary.resolve(), directory)
+            runtime_check(directory, binary=args.binary.resolve())
+        if args.image:
+            runtime_check(directory, image=args.image)

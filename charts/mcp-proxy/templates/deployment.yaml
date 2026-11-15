@@ -27,6 +27,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "mcp-proxy.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -74,10 +75,18 @@ spec:
             - name: config
               mountPath: /etc/mcp-proxy
               readOnly: true
+            {{- range .Values.writableVolumes }}
+            - name: writable-{{ .name }}
+              mountPath: {{ .mountPath }}
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "mcp-proxy.fullname" . }}-config
+        {{- range .Values.writableVolumes }}
+        - name: writable-{{ .name }}
+          emptyDir: {}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

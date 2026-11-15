@@ -61,6 +61,20 @@ docker pull ghcr.io/joshrotenberg/mcp-proxy:latest
 docker run -v ./proxy.toml:/etc/mcp-proxy/proxy.toml:ro -p 8080:8080 ghcr.io/joshrotenberg/mcp-proxy:latest
 ```
 
+The image runs as the non-root user `65532:65532`, so the mounted config must be
+readable by that user. It works with a read-only root filesystem; give it
+writable space at `/tmp` and, for file-backed state, `/var/lib/mcp-proxy`:
+
+```bash
+docker run --read-only --tmpfs /tmp --tmpfs /var/lib/mcp-proxy --cap-drop ALL \
+  --security-opt no-new-privileges \
+  -v ./proxy.toml:/etc/mcp-proxy/proxy.toml:ro -p 8080:8080 \
+  ghcr.io/joshrotenberg/mcp-proxy:latest
+```
+
+The image contains only the `mcp-proxy` binary. Stdio backends need their
+executables added in a derived image.
+
 ### Pre-built binaries
 
 Download from [GitHub Releases](https://github.com/joshrotenberg/mcp-proxy/releases).

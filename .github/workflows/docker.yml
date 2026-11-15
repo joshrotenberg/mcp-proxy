@@ -5,18 +5,62 @@ on:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
   pull_request:
+    # Anything that changes the image contents, or the chart profile the smoke
+    # test derives its runtime restrictions from.
     paths:
       - "Dockerfile"
       - ".dockerignore"
       - ".github/workflows/docker.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "benches/**"
+      - "charts/**"
+      - "scripts/check-chart.py"
+      - "scripts/check-chart.sh"
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  smoke:
+    name: Image smoke test
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Single platform: the multi-arch build only runs for release tags.
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: mcp-proxy:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v3.19.0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install PyYAML==6.0.3
+
+      - name: Run MCP session in the image with the chart's restricted profile
+        run: ./scripts/check-chart.sh --image mcp-proxy:smoke
+
   build:
     name: Build and Push
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -29,7 +73,6 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Log in to Container Registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -51,9 +94,24 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
+
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v3.19.0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install PyYAML==6.0.3
+
+      - name: Run MCP session in the published image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+        run: |
+          docker pull "$IMAGE"
+          ./scripts/check-chart.sh --image "$IMAGE"

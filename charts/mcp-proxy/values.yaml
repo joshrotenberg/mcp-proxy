@@ -104,7 +104,36 @@ serviceAccount:
   create: true
   annotations: {}
   name: ""
+  # mcp-proxy does not call the Kubernetes API. Set true only if an extension
+  # or sidecar in this pod needs the service-account token.
+  automount: false
 
 podAnnotations: {}
-podSecurityContext: {}
-securityContext: {}
+
+# Restricted profile (Pod Security Standards "restricted"). The image runs as
+# UID/GID 65532; the root filesystem is read-only, with writable emptyDir
+# volumes at /tmp and /var/lib/mcp-proxy (see writableVolumes).
+# Helm merges maps with these defaults: override individual keys, or set a
+# whole context to null to remove it.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# emptyDir volumes mounted writable so a read-only root filesystem keeps scratch
+# space for stdio backends (/tmp) and file-backed state (/var/lib/mcp-proxy).
+# Set to [] to mount none.
+writableVolumes:
+  - name: tmp
+    mountPath: /tmp
+  - name: state
+    mountPath: /var/lib/mcp-proxy
