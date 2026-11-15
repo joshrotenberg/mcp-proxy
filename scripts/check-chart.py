@@ -267,7 +267,9 @@ def runtime_check(directory, *, binary=None, image=None):
                     with client.open(url + "/readyz", timeout=1) as response:
                         assert response.status == 200 and response.read() == b"ok"
                     break
-                except urllib.error.URLError:
+                # Docker's port proxy accepts and then resets connections until
+                # the container listens, so a reset here also means "not yet".
+                except (urllib.error.URLError, ConnectionError):
                     assert time.monotonic() < deadline, "nondefault listener never became ready"
                     time.sleep(0.05)
             with client.open(url + "/livez", timeout=2) as response:
