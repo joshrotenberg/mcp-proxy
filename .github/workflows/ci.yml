@@ -86,6 +86,9 @@ jobs:
         run: |
           docker pull redis:7-alpine
       - run: cargo test ${{ matrix.flags }}
+      - name: Run benchmarks once in test mode
+        if: matrix.features == 'all'
+        run: cargo test --all-features --bench proxy_overhead
 
   feature-contracts:
     name: Feature contracts (${{ matrix.features }})
