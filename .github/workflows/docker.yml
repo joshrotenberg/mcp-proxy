@@ -47,7 +47,7 @@ jobs:
           cache-to: type=gha,mode=max
           platforms: linux/amd64
 
-      - uses: azure/setup-helm@v5.0.1
+      - uses: azure/setup-helm@v5.1.0
         with:
           version: v3.19.0
       - uses: actions/setup-python@v7
@@ -101,7 +101,7 @@ jobs:
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
 
-      - uses: azure/setup-helm@v5.0.1
+      - uses: azure/setup-helm@v5.1.0
         with:
           version: v3.19.0
       - uses: actions/setup-python@v7
