@@ -3,7 +3,8 @@ use anyhow::{Result, ensure};
 use std::collections::HashSet;
 
 use crate::config::{
-    AuthConfig, BackendCacheConfig, CacheBackendConfig, NameFilter, ProxyConfig, TransportType,
+    AuthConfig, BackendCacheConfig, BackendConfig, CacheBackendConfig, LockedArgsConfig,
+    NameFilter, ProxyConfig, TransportType,
 };
 
 // Finite operational limits avoid timer/expiry overflow and eager allocations
@@ -104,6 +105,100 @@ pub(crate) fn cache_policy(config: &BackendCacheConfig) -> Result<()> {
         (1..=MAX_COUNT as u64).contains(&config.max_entries),
         "backend cache.max_entries must be > 0 and <= {MAX_COUNT}"
     );
+    Ok(())
+}
+
+/// Whether a lock rule applies to the backend-local tool `tool`.
+fn lock_covers(lock: &LockedArgsConfig, tool: &str) -> bool {
+    lock.tools
+        .as_ref()
+        .is_none_or(|tools| tools.iter().any(|t| t == tool))
+}
+
+/// Whether two lock rules can apply to the same tool.
+fn locks_overlap(a: &LockedArgsConfig, b: &LockedArgsConfig) -> bool {
+    match (&a.tools, &b.tools) {
+        (Some(a), Some(b)) => a.iter().any(|tool| b.contains(tool)),
+        _ => true,
+    }
+}
+
+/// Validate a backend's own lock rules and the effective set it inherits from
+/// `canary_of`, `failover_for`, and `mirror_of`. Messages name keys and tools,
+/// never values.
+fn locked_args(config: &ProxyConfig, backend: &BackendConfig) -> Result<()> {
+    for lock in &backend.locked_args {
+        ensure!(
+            !lock.args.is_empty(),
+            "backend.locked_args.args must not be empty"
+        );
+        for key in lock.args.keys() {
+            nonempty(key, "backend.locked_args.args key")?;
+        }
+        if let Some(tools) = &lock.tools {
+            ensure!(
+                !tools.is_empty(),
+                "backend.locked_args.tools must not be empty; omit it to lock every tool"
+            );
+            let mut seen = HashSet::new();
+            for tool in tools {
+                local(tool, &config.proxy.separator, "backend.locked_args.tools")?;
+                ensure!(
+                    seen.insert(tool),
+                    "backend.locked_args.tools must not repeat a tool"
+                );
+            }
+        }
+    }
+
+    let locks = crate::locked_args::effective_configs(config, backend);
+    for (i, a) in locks.iter().enumerate() {
+        for b in &locks[i + 1..] {
+            if !locks_overlap(a, b) {
+                continue;
+            }
+            for (key, value) in &a.args {
+                ensure!(
+                    b.args.get(key).is_none_or(|other| other == value),
+                    "backend.locked_args locks '{key}' to different values for the same tool \
+                     (including locks inherited from canary_of, failover_for, or mirror_of)"
+                );
+            }
+        }
+    }
+    for lock in &locks {
+        for key in lock.args.keys() {
+            // default_args applies to every tool, so it is dead only when the
+            // lock also covers every tool.
+            ensure!(
+                lock.tools.is_some() || !backend.default_args.contains_key(key),
+                "backend.default_args sets '{key}', which is locked for every tool"
+            );
+            for rule in &backend.inject_args {
+                ensure!(
+                    !(lock_covers(lock, &rule.tool) && rule.args.contains_key(key)),
+                    "backend.inject_args sets '{key}' for tool '{}', which is locked",
+                    rule.tool
+                );
+            }
+            for rule in &backend.param_overrides {
+                if !lock_covers(lock, &rule.tool) {
+                    continue;
+                }
+                ensure!(
+                    !rule.defaults.contains_key(key),
+                    "backend.param_overrides.defaults sets '{key}' for tool '{}', which is locked",
+                    rule.tool
+                );
+                ensure!(
+                    !rule.rename.values().any(|target| target == key),
+                    "backend.locked_args key '{key}' is a param_overrides.rename target for \
+                     tool '{}'; lock the backend parameter name instead",
+                    rule.tool
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -314,6 +409,7 @@ pub(crate) fn validate(config: &ProxyConfig) -> Result<()> {
                 );
             }
         }
+        locked_args(config, backend)?;
     }
 
     // Multi-character separators can overlap across a name/separator boundary

@@ -630,6 +630,11 @@ pub struct BackendConfig {
     /// Per-tool parameter overrides: hide, rename, and inject defaults.
     #[serde(default)]
     pub param_overrides: Vec<ParamOverrideConfig>,
+    /// Argument values the proxy enforces on tool calls. Unlike
+    /// `default_args` and `inject_args`, a client cannot override them.
+    /// See [`crate::locked_args`].
+    #[serde(default)]
+    pub locked_args: Vec<LockedArgsConfig>,
     /// Capability filtering: only expose these tools (allowlist)
     #[serde(default)]
     pub expose_tools: Vec<String>,
@@ -793,6 +798,41 @@ pub struct InjectArgsConfig {
     /// Whether injected args should overwrite existing values (default: false).
     #[serde(default)]
     pub overwrite: bool,
+}
+
+/// What to do when a client sends a value for a locked argument that differs
+/// from the configured value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnConflict {
+    /// Fail the call with a JSON-RPC `-32602 Invalid params` error (default).
+    #[default]
+    Reject,
+    /// Replace the client value with the locked value.
+    Replace,
+}
+
+/// Locked argument values for a backend's tools.
+///
+/// Locked keys are always present in the arguments the backend receives,
+/// with the configured value. Keys use the backend's own parameter names,
+/// after alias resolution and `param_overrides.rename`.
+///
+/// # Configuration
+///
+/// See the checked configuration fragment in [`crate::locked_args`].
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LockedArgsConfig {
+    /// Backend-local tool names the rule applies to. Omitted means every
+    /// tool on the backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+    /// Top-level argument keys and the values they are locked to.
+    pub args: serde_json::Map<String, serde_json::Value>,
+    /// Behavior when the client sends a different value (default: `reject`).
+    #[serde(default)]
+    pub on_conflict: OnConflict,
 }
 
 /// Per-tool parameter override configuration.
@@ -3700,6 +3740,181 @@ jwks_uri = "https://issuer.example.test/keys"
         assert_eq!(po.hide, vec!["path"]);
         assert_eq!(po.defaults.get("path").unwrap(), "/home/docs");
         assert_eq!(po.rename.get("recursive").unwrap(), "deep_search");
+    }
+
+    fn locked_config(extra: &str) -> anyhow::Result<ProxyConfig> {
+        ProxyConfig::parse(&format!(
+            r#"
+            [proxy]
+            name = "locks"
+            [proxy.listen]
+
+            [[backends]]
+            name = "db"
+            transport = "http"
+            url = "http://localhost:8080"
+            {extra}
+            "#
+        ))
+    }
+
+    fn assert_locked_rejects(extra: &str, expected: &str) {
+        let err = locked_config(extra).unwrap_err();
+        assert!(
+            format!("{err:#}").contains(expected),
+            "expected {expected:?}, got: {err:#}"
+        );
+        assert!(
+            !format!("{err:#}").contains("acme"),
+            "value leaked: {err:#}"
+        );
+    }
+
+    #[test]
+    fn test_parse_locked_args() {
+        let config = locked_config(
+            r#"
+            [[backends.locked_args]]
+            args = { tenant = "acme" }
+
+            [[backends.locked_args]]
+            tools = ["query"]
+            args = { read_only = true }
+            on_conflict = "replace"
+            "#,
+        )
+        .unwrap();
+        let locks = &config.backends[0].locked_args;
+        assert_eq!(locks.len(), 2);
+        assert!(locks[0].tools.is_none());
+        assert_eq!(locks[0].on_conflict, OnConflict::Reject);
+        assert_eq!(locks[1].tools.as_deref(), Some(&["query".to_string()][..]));
+        assert_eq!(locks[1].on_conflict, OnConflict::Replace);
+        assert!(
+            locked_config("").unwrap().backends[0]
+                .locked_args
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_reject_locked_args_unknown_fields_and_modes() {
+        assert!(locked_config("[[backends.locked_args]]\nargs = { a = 1 }\ntool = \"q\"").is_err());
+        assert!(
+            locked_config("[[backends.locked_args]]\nargs = { a = 1 }\non_conflict = \"ignore\"")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_reject_locked_args_shapes() {
+        assert_locked_rejects(
+            "[[backends.locked_args]]\nargs = {}",
+            "locked_args.args must not be empty",
+        );
+        assert_locked_rejects(
+            "[[backends.locked_args]]\ntools = []\nargs = { tenant = \"acme\" }",
+            "locked_args.tools must not be empty",
+        );
+        assert_locked_rejects(
+            "[[backends.locked_args]]\ntools = [\"q\", \"q\"]\nargs = { tenant = \"acme\" }",
+            "must not repeat a tool",
+        );
+        assert_locked_rejects(
+            "[[backends.locked_args]]\ntools = [\"db/q\"]\nargs = { tenant = \"acme\" }",
+            "locked_args.tools must not contain the namespace separator",
+        );
+    }
+
+    #[test]
+    fn test_reject_locked_args_conflicting_values() {
+        assert_locked_rejects(
+            r#"
+            [[backends.locked_args]]
+            args = { tenant = "acme" }
+            [[backends.locked_args]]
+            tools = ["q"]
+            args = { tenant = "other" }
+            "#,
+            "locks 'tenant' to different values",
+        );
+        // Disjoint tool lists and equal values are fine.
+        locked_config(
+            r#"
+            [[backends.locked_args]]
+            tools = ["a"]
+            args = { tenant = "acme" }
+            [[backends.locked_args]]
+            tools = ["b"]
+            args = { tenant = "other" }
+            [[backends.locked_args]]
+            args = { region = "eu" }
+            [[backends.locked_args]]
+            tools = ["a"]
+            args = { region = "eu" }
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_reject_locked_args_dead_injection() {
+        assert_locked_rejects(
+            "[backends.default_args]\ntenant = \"x\"\n[[backends.locked_args]]\nargs = { tenant = \"acme\" }",
+            "default_args sets 'tenant'",
+        );
+        // A default for tools the lock does not cover is still meaningful.
+        locked_config(
+            "[backends.default_args]\ntenant = \"x\"\n[[backends.locked_args]]\ntools = [\"q\"]\nargs = { tenant = \"acme\" }",
+        )
+        .unwrap();
+        assert_locked_rejects(
+            "[[backends.inject_args]]\ntool = \"q\"\nargs = { tenant = \"x\" }\n[[backends.locked_args]]\nargs = { tenant = \"acme\" }",
+            "inject_args sets 'tenant' for tool 'q'",
+        );
+        assert_locked_rejects(
+            "[[backends.param_overrides]]\ntool = \"q\"\nhide = [\"tenant\"]\ndefaults = { tenant = \"x\" }\n[[backends.locked_args]]\nargs = { tenant = \"acme\" }",
+            "param_overrides.defaults sets 'tenant' for tool 'q'",
+        );
+        assert_locked_rejects(
+            "[[backends.param_overrides]]\ntool = \"q\"\nrename = { org = \"tenant\" }\n[[backends.locked_args]]\ntools = [\"q\"]\nargs = { tenant = \"acme\" }",
+            "is a param_overrides.rename target",
+        );
+    }
+
+    #[test]
+    fn test_reject_locked_args_inherited_conflict() {
+        assert_locked_rejects(
+            r#"
+            [[backends.locked_args]]
+            args = { tenant = "acme" }
+
+            [[backends]]
+            name = "db-canary"
+            transport = "http"
+            url = "http://localhost:8081"
+            canary_of = "db"
+            [[backends.locked_args]]
+            args = { tenant = "other" }
+            "#,
+            "including locks inherited",
+        );
+        assert_locked_rejects(
+            r#"
+            [[backends.locked_args]]
+            args = { tenant = "acme" }
+
+            [[backends]]
+            name = "db-backup"
+            transport = "http"
+            url = "http://localhost:8081"
+            failover_for = "db"
+            [[backends.inject_args]]
+            tool = "q"
+            args = { tenant = "x" }
+            "#,
+            "inject_args sets 'tenant'",
+        );
     }
 
     #[test]

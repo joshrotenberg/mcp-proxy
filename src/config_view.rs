@@ -80,6 +80,8 @@ const PUBLIC_PATHS: &[&str] = &[
     "backends[].inject_args[].overwrite",
     "backends[].param_overrides[].tool",
     "backends[].param_overrides[].hide",
+    "backends[].locked_args[].tools",
+    "backends[].locked_args[].on_conflict",
     "backends[].expose_tools",
     "backends[].hide_tools",
     "backends[].expose_prompts",

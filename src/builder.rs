@@ -508,6 +508,7 @@ fn default_backend() -> BackendConfig {
         default_args: serde_json::Map::new(),
         inject_args: Vec::new(),
         param_overrides: Vec::new(),
+        locked_args: Vec::new(),
         expose_tools: Vec::new(),
         hide_tools: Vec::new(),
         expose_resources: Vec::new(),
