@@ -4,6 +4,10 @@
 //! reach the backend. Useful for injecting timeouts, safety caps, or
 //! read-only flags without requiring clients to set them.
 //!
+//! A call that omits `arguments`, or sends `null`, is treated as an empty
+//! object when the tool has anything to inject. Other non-object arguments
+//! are forwarded unchanged.
+//!
 //! # Configuration
 //!
 //! Configuration fragment: append this block after [proxy.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/proxy.toml).
@@ -132,7 +136,8 @@ impl<S> InjectArgsService<S> {
 }
 
 /// Merge source args into target. If `overwrite` is false, existing keys
-/// in target are preserved.
+/// in target are preserved. A non-object target is left unchanged; callers
+/// convert null arguments to an empty object first.
 fn merge_args(
     target: &mut serde_json::Value,
     source: &serde_json::Map<String, serde_json::Value>,
@@ -170,13 +175,23 @@ where
                     continue;
                 }
 
+                let tool_rule = rules.tool_rules.get(&params.name);
+
+                // A call with no `arguments` deserializes to null; treat it
+                // as an empty object so configured values are still injected.
+                if params.arguments.is_null()
+                    && (!rules.default_args.is_empty() || tool_rule.is_some())
+                {
+                    params.arguments = serde_json::Value::Object(serde_json::Map::new());
+                }
+
                 // Apply default args (never overwrite)
                 if !rules.default_args.is_empty() {
                     merge_args(&mut params.arguments, &rules.default_args, false);
                 }
 
                 // Apply per-tool rules
-                if let Some(tool_rule) = rules.tool_rules.get(&params.name) {
+                if let Some(tool_rule) = tool_rule {
                     merge_args(&mut params.arguments, &tool_rule.args, tool_rule.overwrite);
                 }
 
@@ -193,7 +208,7 @@ where
 mod tests {
     use super::*;
     use crate::config::InjectArgsConfig;
-    use crate::test_util::{MockService, call_service};
+    use crate::test_util::{ArgsEchoService, MockService, call_service, forwarded_args};
     use tower_mcp_types::protocol::{CallToolParams, McpRequest};
 
     fn make_rules(
@@ -374,5 +389,55 @@ mod tests {
         merge_args(&mut args, &inject, false);
         assert_eq!(args["existing"], 1);
         assert_eq!(args["new_key"], 42);
+    }
+
+    #[tokio::test]
+    async fn null_arguments_receive_default_args() {
+        let mut defaults = serde_json::Map::new();
+        defaults.insert("timeout".to_string(), serde_json::json!(30));
+        let mut svc = InjectArgsService::new(ArgsEchoService, make_rules("db/", defaults, vec![]));
+
+        let args = forwarded_args(&mut svc, "db/query", serde_json::Value::Null).await;
+        assert_eq!(args, serde_json::json!({"timeout": 30}));
+    }
+
+    #[tokio::test]
+    async fn null_arguments_receive_per_tool_args() {
+        let rule = InjectArgsConfig {
+            tool: "query".to_string(),
+            args: serde_json::json!({"read_only": true})
+                .as_object()
+                .cloned()
+                .unwrap(),
+            overwrite: false,
+        };
+        let mut svc = InjectArgsService::new(
+            ArgsEchoService,
+            make_rules("db/", serde_json::Map::new(), vec![rule]),
+        );
+
+        let args = forwarded_args(&mut svc, "db/query", serde_json::Value::Null).await;
+        assert_eq!(args, serde_json::json!({"read_only": true}));
+
+        // A tool with no rule in a namespace with no defaults keeps null.
+        let args = forwarded_args(&mut svc, "db/other", serde_json::Value::Null).await;
+        assert_eq!(args, serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn non_object_arguments_are_left_unchanged() {
+        let mut defaults = serde_json::Map::new();
+        defaults.insert("timeout".to_string(), serde_json::json!(30));
+        let mut svc = InjectArgsService::new(ArgsEchoService, make_rules("db/", defaults, vec![]));
+
+        let args = forwarded_args(&mut svc, "db/query", serde_json::json!("text")).await;
+        assert_eq!(args, serde_json::json!("text"));
+    }
+
+    #[test]
+    fn omitted_arguments_deserialize_to_null() {
+        let params: CallToolParams =
+            serde_json::from_value(serde_json::json!({"name": "db/query"})).unwrap();
+        assert!(params.arguments.is_null());
     }
 }

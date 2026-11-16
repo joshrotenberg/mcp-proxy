@@ -67,6 +67,11 @@ pub fn transformation(data: &[u8]) -> bool {
         params.name.as_str()
     };
     expected["name"] = json!(name);
+    // Missing or null arguments become an empty object when the tool has
+    // anything to inject. Every `api/` tool has the `region` default.
+    if expected["arguments"].is_null() && name.starts_with("api/") {
+        expected["arguments"] = json!({});
+    }
     if let Some(args) = expected["arguments"].as_object_mut() {
         if name == "api/echo" {
             args.entry("internal").or_insert(json!(42));

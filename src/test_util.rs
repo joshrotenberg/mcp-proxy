@@ -70,6 +70,65 @@ impl Service<RouterRequest> for MockService {
     }
 }
 
+/// A mock service whose `CallTool` result text is the JSON serialization of
+/// the arguments it received, so tests can assert what middleware forwarded.
+#[derive(Clone)]
+pub struct ArgsEchoService;
+
+impl Service<RouterRequest> for ArgsEchoService {
+    type Response = RouterResponse;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<RouterResponse, Infallible>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: RouterRequest) -> Self::Future {
+        let id = req.id.clone();
+        Box::pin(async move {
+            let inner = match req.inner {
+                McpRequest::CallTool(params) => Ok(McpResponse::CallTool(CallToolResult::text(
+                    params.arguments.to_string(),
+                ))),
+                _ => Ok(McpResponse::Pong(Default::default())),
+            };
+            Ok(RouterResponse { id, inner })
+        })
+    }
+}
+
+/// Send a `CallTool` with the given arguments through `svc` (typically wrapping
+/// [`ArgsEchoService`]) and return the arguments the inner service received.
+pub async fn forwarded_args<S>(
+    svc: &mut S,
+    name: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value
+where
+    S: Service<RouterRequest, Response = RouterResponse, Error = Infallible>,
+    S::Future: Send,
+{
+    let resp = call_service(
+        svc,
+        McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+            name: name.to_string(),
+            arguments,
+            input_responses: None,
+            request_state: None,
+            meta: None,
+            task: None,
+        }),
+    )
+    .await;
+    match resp.inner {
+        Ok(McpResponse::CallTool(result)) => {
+            serde_json::from_str(&result.all_text()).expect("echoed arguments are JSON")
+        }
+        other => panic!("expected CallTool response, got {other:?}"),
+    }
+}
+
 /// A mock service that always returns a JSON-RPC error response.
 #[derive(Clone)]
 pub struct ErrorMockService;

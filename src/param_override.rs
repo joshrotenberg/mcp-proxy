@@ -23,6 +23,8 @@
 //!
 //! On `CallTool`: hidden parameter defaults are injected, and renamed
 //! parameters are mapped back to their original names before forwarding.
+//! A call that omits `arguments`, or sends `null`, is treated as an empty
+//! object when the tool has hidden defaults.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -190,6 +192,12 @@ where
                     continue;
                 }
 
+                // A call with no `arguments` deserializes to null; treat it
+                // as an empty object so hidden defaults are still injected.
+                if params.arguments.is_null() && !tool_override.defaults.is_empty() {
+                    params.arguments = serde_json::Value::Object(serde_json::Map::new());
+                }
+
                 // Inject defaults for hidden parameters
                 if let serde_json::Value::Object(ref mut args) = params.arguments {
                     for (key, value) in &tool_override.defaults {
@@ -250,7 +258,7 @@ where
 mod tests {
     use super::*;
     use crate::config::ParamOverrideConfig;
-    use crate::test_util::{MockService, call_service};
+    use crate::test_util::{ArgsEchoService, MockService, call_service, forwarded_args};
     use tower_mcp_types::protocol::{CallToolParams, McpRequest, McpResponse};
 
     /// Create a MockService with a tool that has a rich input_schema.
@@ -641,5 +649,42 @@ mod tests {
             // path should still be /custom
             assert_eq!(args.get("path").unwrap(), "/custom");
         }
+    }
+
+    #[tokio::test]
+    async fn null_arguments_receive_hidden_defaults() {
+        let overrides = make_overrides(
+            "fs/",
+            vec![ParamOverrideConfig {
+                tool: "list_directory".to_string(),
+                hide: vec!["path".to_string()],
+                defaults: serde_json::json!({"path": "/home/docs"})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+                rename: HashMap::new(),
+            }],
+        );
+        let mut svc = ParamOverrideService::new(ArgsEchoService, overrides);
+
+        let args = forwarded_args(&mut svc, "fs/list_directory", serde_json::Value::Null).await;
+        assert_eq!(args, serde_json::json!({"path": "/home/docs"}));
+    }
+
+    #[tokio::test]
+    async fn null_arguments_without_defaults_stay_null() {
+        let overrides = make_overrides(
+            "fs/",
+            vec![ParamOverrideConfig {
+                tool: "list_directory".to_string(),
+                hide: vec![],
+                defaults: serde_json::Map::new(),
+                rename: HashMap::from([("recursive".to_string(), "deep".to_string())]),
+            }],
+        );
+        let mut svc = ParamOverrideService::new(ArgsEchoService, overrides);
+
+        let args = forwarded_args(&mut svc, "fs/list_directory", serde_json::Value::Null).await;
+        assert_eq!(args, serde_json::Value::Null);
     }
 }

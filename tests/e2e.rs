@@ -24,6 +24,7 @@ use mcp_proxy::config::{
 };
 use mcp_proxy::filter::CapabilityFilterService;
 use mcp_proxy::inject::{InjectArgsService, InjectionRules};
+use mcp_proxy::param_override::{ParamOverrideService, ToolOverride};
 use mcp_proxy::validation::{ValidationConfig, ValidationService};
 
 // ---------------------------------------------------------------------------
@@ -464,6 +465,47 @@ async fn e2e_inject_per_tool_with_overwrite() {
     let args: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(args["forced"], true);
     assert_eq!(args["data"], "hi");
+}
+
+#[tokio::test]
+async fn e2e_inject_applies_when_arguments_are_null() {
+    let proxy = build_proxy().await;
+    let mut defaults = serde_json::Map::new();
+    defaults.insert("timeout".to_string(), serde_json::json!(30));
+
+    let rules = vec![InjectionRules::new("math/".to_string(), defaults, vec![])];
+    let mut svc = InjectArgsService::new(proxy, rules);
+
+    let resp = call(
+        &mut svc,
+        tool_call("math/echo_args", serde_json::Value::Null),
+    )
+    .await;
+
+    let args: serde_json::Value = serde_json::from_str(&get_tool_result_text(&resp)).unwrap();
+    assert_eq!(args, serde_json::json!({"timeout": 30}));
+}
+
+#[tokio::test]
+async fn e2e_hidden_defaults_apply_when_arguments_are_null() {
+    let proxy = build_proxy().await;
+    let config: mcp_proxy::config::ParamOverrideConfig =
+        serde_json::from_value(serde_json::json!({
+            "tool": "echo_args",
+            "hide": ["scope"],
+            "defaults": {"scope": "tenant-a"}
+        }))
+        .unwrap();
+    let mut svc = ParamOverrideService::new(proxy, vec![ToolOverride::new("math/", &config)]);
+
+    let resp = call(
+        &mut svc,
+        tool_call("math/echo_args", serde_json::Value::Null),
+    )
+    .await;
+
+    let args: serde_json::Value = serde_json::from_str(&get_tool_result_text(&resp)).unwrap();
+    assert_eq!(args, serde_json::json!({"scope": "tenant-a"}));
 }
 
 #[tokio::test]
