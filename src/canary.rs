@@ -31,10 +31,20 @@
 //!
 //! 1. Both `api` and `api-canary` are registered as separate backends
 //! 2. `api-canary`'s tools are auto-hidden via capability filtering
-//! 3. When `CallTool("api/search")` arrives, this middleware rolls a weighted
-//!    random selection: 90% chance it passes through to `api`, 10% chance it
-//!    rewrites to `CallTool("api-canary/search")`
+//! 3. When `CallTool("api/search")` arrives, a rotating counter assigns it a
+//!    slot: of every 100 calls, the first 90 pass through to `api` and the
+//!    remaining 10 are rewritten to `CallTool("api-canary/search")`
 //! 4. `ListTools` always returns only the primary's tools
+//!
+//! # Arguments and request context
+//!
+//! In the configured stack, `default_args`, `inject_args`, and `param_overrides`
+//! of the backend the client called (`api`) are applied before this layer, so
+//! the canary receives the same arguments `api` would. Its own rules apply only to calls
+//! addressed to its own namespace. `locked_args` of `api` are inherited and
+//! enforced after rerouting.
+//! The rewritten request keeps the original extensions, including the caller's
+//! identity and cancellation.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -45,7 +55,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 
 use tower::{Layer, Service};
-use tower_mcp::router::{Extensions, RouterRequest, RouterResponse};
+use tower_mcp::router::{RouterRequest, RouterResponse};
 use tower_mcp_types::protocol::{CallToolParams, GetPromptParams, McpRequest, ReadResourceParams};
 
 /// Tower layer that produces a [`CanaryService`].
@@ -180,10 +190,12 @@ fn rewrite_to_canary(req: RouterRequest, mapping: &CanaryMapping) -> RouterReque
         other => other,
     };
 
+    // The canary serves the client's own request: keep its caller identity,
+    // forwarded credentials, and cancellation.
     RouterRequest {
         id: req.id,
         inner: new_inner,
-        extensions: Extensions::new(),
+        extensions: req.extensions,
     }
 }
 
@@ -241,6 +253,7 @@ mod tests {
     use super::*;
     use crate::test_util::{MockService, call_service};
     use tower_mcp::protocol::RequestId;
+    use tower_mcp::router::Extensions;
 
     fn make_canaries(
         primary: &str,
@@ -465,5 +478,24 @@ mod tests {
 
         let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
         assert!(resp.inner.is_ok());
+    }
+
+    #[tokio::test]
+    async fn canary_keeps_request_extensions() {
+        use crate::test_util::{ExtensionProbe, marked_call};
+        let probe = ExtensionProbe::default();
+        let mut svc = CanaryService::new(probe.clone(), make_canaries("api", "canary", 1, 99), "/");
+        // Slot 0 goes to the primary; slot 1 to the canary.
+        for _ in 0..2 {
+            svc.call(marked_call("api/tool")).await.unwrap();
+        }
+        let seen = probe.seen.lock().unwrap().clone();
+        assert_eq!(seen[1].0, "canary/tool");
+        assert_eq!(seen[1].1.as_deref(), Some("caller"));
+        assert_eq!(
+            seen[1].2,
+            Some(true),
+            "client cancellation must reach the canary"
+        );
     }
 }

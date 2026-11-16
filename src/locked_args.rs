@@ -49,7 +49,7 @@
 //!   the same values.
 //!
 //! The service runs innermost in the configured middleware stack, after alias,
-//! parameter override, argument injection, canary, failover, and mirror
+//! parameter override, argument injection, mirror, failover, and canary
 //! routing, so no other layer can change a locked value afterwards. Rejections
 //! are logged at `warn` and replacements at `debug`; with the `metrics` feature
 //! both are counted in `mcp_proxy_locked_args_total{backend, tool, outcome}`.

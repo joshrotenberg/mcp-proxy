@@ -96,8 +96,9 @@
 //!   -> Audit -> Access Log -> Management Dispatch -> Ordinary Guard
 //!   -> Search Invocation -> Token Validation -> RBAC -> Bearer Scoping
 //!   -> Composite -> Alias -> Search Mode Filter -> Capability Filter
-//!   -> Validation -> Coalesce -> Cache -> Mirror -> Failover -> Canary
-//!   -> Parameter Overrides -> Inject Args -> Backend Management Guard -> McpProxy
+//!   -> Validation -> Coalesce -> Cache -> Parameter Overrides -> Inject Args
+//!   -> Mirror -> Failover -> Canary -> Locked Args -> Backend Management Guard
+//!   -> McpProxy
 //!
 //! Per backend:
 //! Outlier Detection -> CatchError -> Circuit Breaker -> Timeout -> Rate Limit
@@ -116,6 +117,13 @@
 //! capabilities before aliases rename the surviving entries for callers. Caller
 //! policy uses public names. Validation checks arguments after caller policy and
 //! name translation, before coalescing/caching and backend argument injection.
+//! Parameter overrides and argument injection run before mirror, failover, and
+//! canary routing, so their rules are chosen by the namespace the client called
+//! and apply to whichever backend serves the call. Rerouted requests keep the
+//! original extensions; the mirrored copy gets its own request context so client
+//! cancellation does not reach it. Locked arguments run last and use the
+//! namespace the request is sent to, with derived backends inheriting the
+//! primary's locks.
 //! Raw [`Proxy::mcp_proxy`] access bypasses this configured stack and HTTP auth;
 //! embedders serving it must supply their own complete policy boundary.
 //!
