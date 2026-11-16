@@ -129,6 +129,79 @@ where
     }
 }
 
+/// What [`ExtensionProbe`] saw for one `CallTool`: the tool name, the `String`
+/// extension marker, and whether a `RequestContext` was present and cancelled.
+pub type ProbeRecord = (String, Option<String>, Option<bool>);
+
+/// A mock service that records request extensions for each `CallTool`, and
+/// fails calls whose name starts with `fail_prefix`.
+#[derive(Clone, Default)]
+pub struct ExtensionProbe {
+    pub seen: std::sync::Arc<std::sync::Mutex<Vec<ProbeRecord>>>,
+    pub fail_prefix: Option<&'static str>,
+}
+
+impl Service<RouterRequest> for ExtensionProbe {
+    type Response = RouterResponse;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<RouterResponse, Infallible>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: RouterRequest) -> Self::Future {
+        let id = req.id.clone();
+        let inner = match &req.inner {
+            McpRequest::CallTool(params) => {
+                self.seen.lock().unwrap().push((
+                    params.name.clone(),
+                    req.extensions.get::<String>().cloned(),
+                    req.extensions
+                        .get::<tower_mcp::RequestContext>()
+                        .map(|context| context.is_cancelled()),
+                ));
+                if self
+                    .fail_prefix
+                    .is_some_and(|prefix| params.name.starts_with(prefix))
+                {
+                    Err(tower_mcp_types::JsonRpcError {
+                        code: -32603,
+                        message: "probe failure".to_string(),
+                        data: None,
+                    })
+                } else {
+                    Ok(McpResponse::CallTool(CallToolResult::text("ok")))
+                }
+            }
+            _ => Ok(McpResponse::Pong(Default::default())),
+        };
+        Box::pin(async move { Ok(RouterResponse { id, inner }) })
+    }
+}
+
+/// A `CallTool` request carrying a `String("caller")` marker and a cancelled
+/// `RequestContext`, for checking what routing layers forward.
+pub fn marked_call(name: &str) -> RouterRequest {
+    let mut extensions = Extensions::new();
+    extensions.insert(String::from("caller"));
+    let context = tower_mcp::RequestContext::new(RequestId::Number(1));
+    context.cancellation_token().cancel();
+    extensions.insert(context);
+    RouterRequest {
+        id: RequestId::Number(1),
+        inner: McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+            name: name.to_string(),
+            arguments: serde_json::json!({}),
+            input_responses: None,
+            request_state: None,
+            meta: None,
+            task: None,
+        }),
+        extensions,
+    }
+}
+
 /// A mock service that always returns a JSON-RPC error response.
 #[derive(Clone)]
 pub struct ErrorMockService;

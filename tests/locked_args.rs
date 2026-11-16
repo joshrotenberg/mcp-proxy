@@ -1,4 +1,4 @@
-//! Locked arguments through the configured middleware stack.
+//! Locked arguments and argument rules through the configured middleware stack.
 //!
 //! Every path that can reach a backend (direct, aliased, renamed parameter,
 //! composite, search-mode wrapper, canary, failover, mirror) must deliver the
@@ -166,7 +166,6 @@ impl Fixture {
     async fn new(exposure: &str) -> Self {
         let journal: Journal = Arc::new(Mutex::new(vec![]));
         let api = backend("api", &journal).await;
-        let db = backend("db", &journal).await;
         let canary = backend("api-canary", &journal).await;
         let shadow = backend("api-shadow", &journal).await;
         let pay = {
@@ -210,18 +209,10 @@ name = "api"
 transport = "http"
 url = "{api}/"
 weight = 1
+default_args = {{ region = "eu" }}
 [[backends.aliases]]
 from = "echo"
 to = "public"
-[[backends.locked_args]]
-args = {{ tenant = "acme" }}
-
-# No canary: param_overrides are keyed by the namespace the client called, so
-# a rename on a canaried backend would not apply to canary traffic.
-[[backends]]
-name = "db"
-transport = "http"
-url = "{db}/"
 [[backends.param_overrides]]
 tool = "echo"
 rename = {{ tenant = "org" }}
@@ -246,6 +237,9 @@ mirror_percent = 100
 name = "pay"
 transport = "http"
 url = "{pay}/"
+[[backends.inject_args]]
+tool = "charge"
+args = {{ source = "proxy" }}
 [[backends.locked_args]]
 tools = ["charge"]
 args = {{ currency = "EUR" }}
@@ -263,7 +257,6 @@ description = "Delegates to the aliased tool"
 tools = ["api/public"]
 "#,
             api = api.url,
-            db = db.url,
             canary = canary.url,
             shadow = shadow.url,
             pay = pay.url,
@@ -274,7 +267,7 @@ tools = ["api/public"]
         Self {
             proxy: serve(proxy.into_router().0).await,
             journal,
-            _backends: vec![api, db, canary, shadow, pay, pay_backup],
+            _backends: vec![api, canary, shadow, pay, pay_backup],
         }
     }
 
@@ -321,7 +314,7 @@ async fn assert_locked_paths(fixture: &Fixture, search: bool) {
     let mut calls = vec![
         ("api/echo", json!({"q": 1})),
         ("api/public", json!({"q": 2})),
-        ("db/echo", json!({"org": "acme", "q": 3})),
+        ("api/echo", json!({"org": "acme", "q": 3})),
         ("fan", json!({"q": 4})),
         ("api/query", serde_json::Value::Null),
     ];
@@ -342,18 +335,26 @@ async fn assert_locked_paths(fixture: &Fixture, search: bool) {
     let served = fixture.served();
     assert_eq!(served.len(), calls.len() + usize::from(search));
     assert!(served.iter().any(|(label, _)| label == "api"), "{served:?}");
-    assert!(served.iter().any(|(label, _)| label == "db"), "{served:?}");
     assert!(
         served.iter().any(|(label, _)| label == "api-canary"),
         "{served:?}"
     );
+    // Primary-side rules (default_args, rename) apply whichever backend serves
+    // the call (#364); the client-supplied `org` never reaches a backend.
     for (label, arguments) in &served {
         assert_eq!(arguments["tenant"], "acme", "{label}: {arguments}");
+        if arguments.get("q").is_some() {
+            assert_eq!(arguments["region"], "eu", "{label}: {arguments}");
+            assert!(arguments.get("org").is_none(), "{label}: {arguments}");
+        }
     }
     // The mirror copies every call addressed to `api`, wherever it is served.
-    let api_calls = served.iter().filter(|(label, _)| label != "db").count();
-    for arguments in fixture.wait_for_mirror(api_calls).await {
+    for arguments in fixture.wait_for_mirror(served.len()).await {
         assert_eq!(arguments["tenant"], "acme", "mirror: {arguments}");
+        if arguments.get("q").is_some() {
+            assert_eq!(arguments["region"], "eu", "mirror: {arguments}");
+            assert!(arguments.get("org").is_none(), "mirror: {arguments}");
+        }
     }
     fixture.take();
 
@@ -361,8 +362,8 @@ async fn assert_locked_paths(fixture: &Fixture, search: bool) {
     // rejected before any backend (or mirror) sees it.
     for (name, arguments) in [
         ("api/public", json!({"tenant": "other"})),
-        ("db/echo", json!({"tenant": "other"})),
-        ("db/echo", json!({"org": "other"})),
+        ("api/echo", json!({"org": "other"})),
+        ("api/public", json!({"org": "other"})),
     ] {
         let response = session.call(name, arguments).await;
         assert_eq!(response["error"]["code"], -32602, "{response}");
@@ -387,7 +388,7 @@ async fn assert_locked_paths(fixture: &Fixture, search: bool) {
         fixture.take(),
         vec![(
             "pay-backup".to_string(),
-            json!({"amount": 5, "currency": "EUR"})
+            json!({"amount": 5, "currency": "EUR", "source": "proxy"})
         )]
     );
 

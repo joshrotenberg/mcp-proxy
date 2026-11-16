@@ -914,59 +914,6 @@ fn build_middleware_stack(
         ));
     }
 
-    // Argument injection (merges default/per-tool args into CallTool requests)
-    let injection_rules: Vec<_> = config
-        .backends
-        .iter()
-        .filter(|b| !b.default_args.is_empty() || !b.inject_args.is_empty())
-        .map(|b| {
-            let namespace = format!("{}{}", b.name, config.proxy.separator);
-            tracing::info!(
-                backend = %b.name,
-                default_args = b.default_args.len(),
-                tool_rules = b.inject_args.len(),
-                "Applying argument injection"
-            );
-            crate::inject::InjectionRules::new(
-                namespace,
-                b.default_args.clone(),
-                b.inject_args.clone(),
-            )
-        })
-        .collect();
-
-    if !injection_rules.is_empty() {
-        service = BoxCloneService::new(crate::inject::InjectArgsService::new(
-            service,
-            injection_rules,
-        ));
-    }
-
-    // Parameter overrides (after inject, before filter -- hides/renames tool params)
-    let param_overrides: Vec<_> = config
-        .backends
-        .iter()
-        .filter(|b| !b.param_overrides.is_empty())
-        .flat_map(|b| {
-            let namespace = format!("{}{}", b.name, config.proxy.separator);
-            tracing::info!(
-                backend = %b.name,
-                overrides = b.param_overrides.len(),
-                "Applying parameter overrides"
-            );
-            b.param_overrides
-                .iter()
-                .map(move |c| crate::param_override::ToolOverride::new(&namespace, c))
-        })
-        .collect();
-
-    if !param_overrides.is_empty() {
-        service = BoxCloneService::new(crate::param_override::ParamOverrideService::new(
-            service,
-            param_overrides,
-        ));
-    }
-
     // Canary routing (rewrites requests from primary to canary namespace based on weight)
     let canary_mappings: std::collections::HashMap<String, (String, u32, u32)> = config
         .backends
@@ -1066,6 +1013,62 @@ fn build_middleware_stack(
             service,
             mirror_mappings,
             &config.proxy.separator,
+        ));
+    }
+
+    // Argument injection and parameter overrides run outside canary, failover,
+    // and mirror routing, so rules are chosen by the namespace the client
+    // called and reach whichever backend serves the call (#364).
+    // Argument injection (merges default/per-tool args into CallTool requests)
+    let injection_rules: Vec<_> = config
+        .backends
+        .iter()
+        .filter(|b| !b.default_args.is_empty() || !b.inject_args.is_empty())
+        .map(|b| {
+            let namespace = format!("{}{}", b.name, config.proxy.separator);
+            tracing::info!(
+                backend = %b.name,
+                default_args = b.default_args.len(),
+                tool_rules = b.inject_args.len(),
+                "Applying argument injection"
+            );
+            crate::inject::InjectionRules::new(
+                namespace,
+                b.default_args.clone(),
+                b.inject_args.clone(),
+            )
+        })
+        .collect();
+
+    if !injection_rules.is_empty() {
+        service = BoxCloneService::new(crate::inject::InjectArgsService::new(
+            service,
+            injection_rules,
+        ));
+    }
+
+    // Parameter overrides (outside inject -- hides/renames tool params)
+    let param_overrides: Vec<_> = config
+        .backends
+        .iter()
+        .filter(|b| !b.param_overrides.is_empty())
+        .flat_map(|b| {
+            let namespace = format!("{}{}", b.name, config.proxy.separator);
+            tracing::info!(
+                backend = %b.name,
+                overrides = b.param_overrides.len(),
+                "Applying parameter overrides"
+            );
+            b.param_overrides
+                .iter()
+                .map(move |c| crate::param_override::ToolOverride::new(&namespace, c))
+        })
+        .collect();
+
+    if !param_overrides.is_empty() {
+        service = BoxCloneService::new(crate::param_override::ParamOverrideService::new(
+            service,
+            param_overrides,
         ));
     }
 
