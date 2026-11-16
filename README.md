@@ -493,9 +493,17 @@ asynchronous reload, or report restart required if no watcher is active.
 Authenticated `GET /admin/config/status` reports `watcher_active`, `last_result`,
 `applied`, and `restart_required` for the last attempt. Results include `startup`,
 `pending`, `applied`, `invalid`, `restart_required`, `failed`, and `stopped`.
-A failed connection revision can still be partial; transactional replacement is
-separate work. GET `/admin/config` remains a redacted startup snapshot. Direct
-REST/MCP backend mutations also reject policy-bearing or referenced names.
+It also reports `desired_revision` (a counter of admitted file revisions, 0 at
+startup), `applied_revision` (the newest one fully applied), and
+`failed_backends`. A changed backend is connected and initialized before it takes
+over its name, so a failed connection keeps the previous backend serving. Failed
+backends are retried with backoff doubling from 1s to a 60s cap until they apply
+or leave the file; a new file event restarts the backoff. GET `/admin/config`
+remains a redacted startup snapshot. Direct REST/MCP backend mutations also reject
+policy-bearing or referenced names. While the watcher is active, the config file
+owns the backend names it declares: REST/MCP add, update and remove of those
+names return 409, and backends added under other names are left alone by reload.
+If the file later declares a name added through management, reload takes it over.
 
 `Proxy` owns the watcher. `into_router()` transfers ownership to the router and
 its clones; final-owner drop cancels watching and its runtime. Standalone serving

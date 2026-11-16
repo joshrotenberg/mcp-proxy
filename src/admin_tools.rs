@@ -238,6 +238,10 @@ fn build_admin_router(
                 if let Err(error) = s.reload_policy.check_backend_change(&input.name) {
                     return Ok(CallToolResult::error(error.to_string()));
                 }
+                let _mutation = s.reload_policy.lock_mutations().await;
+                if let Err(error) = s.reload_policy.check_management_owner(&input.name) {
+                    return Ok(CallToolResult::error(error.to_string()));
+                }
                 let transport = tower_mcp::client::HttpClientTransport::new(&input.url);
                 match s
                     .proxy

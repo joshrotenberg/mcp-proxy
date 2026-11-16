@@ -3,9 +3,12 @@
 //! Supports adding, removing, and reconnecting plain, unreferenced backends.
 //! Startup policy is frozen: unsupported whole revisions are rejected before
 //! mutation, preserving startup middleware and its shared state. Fingerprints
-//! detect supported connection changes; management exposes last-attempt status.
+//! detect supported connection changes. A replacement is initialized before it
+//! takes over its name, and a backend counts as applied only once it serves, so
+//! failures keep the previous backend and are retried with capped backoff.
+//! While the watcher runs, the file owns the backend names it declares.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -202,109 +205,171 @@ async fn watch_loop(
     }
 
     policy.started();
-    let mut backend_fingerprints = policy.fingerprints();
+    // Fingerprints of what is actually serving. A backend enters this map
+    // only once it is applied, so a failed step is retried on the next pass.
+    let mut applied = policy.fingerprints();
+    let mut desired = applied.clone();
+    let mut desired_backends: Vec<BackendConfig> = Vec::new();
+    let mut desired_revision = 0u64;
+    let mut applied_revision = 0u64;
+    let mut retry: Option<(tokio::time::Instant, u32)> = None;
     // Reconcile any edit between construction and watcher registration as well.
     let _ = initial.try_send(());
     drop(initial);
     tracing::info!(path = %config_path.display(), "Hot reload watching config file");
 
     // Waiting yields this runtime to HTTP, WebSocket and stdio client drivers.
-    while rx.recv().await.is_some() {
-        tracing::info!("Config file changed, reloading backends");
-
-        let new_config = match load_runtime_config(&config_path) {
-            Ok(c) => c,
-            Err(e) => {
-                policy.record("invalid", false, false);
-                tracing::warn!(error = %e, "Failed to parse updated config, skipping reload");
-                continue;
-            }
+    loop {
+        let retry_deadline = retry.map(|(deadline, _)| deadline);
+        let retrying = tokio::select! {
+            event = rx.recv() => match event {
+                Some(()) => false,
+                None => break,
+            },
+            () = sleep_until(retry_deadline) => true,
         };
 
-        if let Err(error) = policy.check(&new_config) {
-            policy.record("restart_required", false, true);
-            tracing::warn!(%error, "Unsupported live config change, skipping reload");
-            continue;
-        }
-        policy.record("pending", false, false);
-        let mut failed = false;
-        let new_fingerprints: HashMap<String, String> = new_config
-            .backends
-            .iter()
-            .map(|b| (b.name.clone(), config_fingerprint(b)))
-            .collect();
-
-        let old_names: HashSet<&String> = backend_fingerprints.keys().collect();
-        let new_names: HashSet<&String> = new_fingerprints.keys().collect();
-
-        // Remove backends that are no longer in config
-        for removed in old_names.difference(&new_names) {
-            tracing::info!(backend = %removed, "Removing backend via hot reload");
-            if proxy.remove_backend(removed).await {
-                tracing::info!(backend = %removed, "Backend removed");
-            } else {
-                tracing::warn!(backend = %removed, "Backend not found for removal");
-            }
-        }
-
-        // Add new backends
-        for backend in &new_config.backends {
-            if backend_fingerprints.contains_key(&backend.name) {
-                // Existing backend -- check for modification
-                let old_fp = &backend_fingerprints[&backend.name];
-                let new_fp = &new_fingerprints[&backend.name];
-
-                if old_fp != new_fp {
-                    tracing::info!(
-                        backend = %backend.name,
-                        "Backend config changed, replacing via hot reload"
-                    );
-
-                    // Remove old, add new
-                    proxy.remove_backend(&backend.name).await;
-                    if let Err(e) = add_backend(&proxy, backend, &connections).await {
-                        failed = true;
-                        tracing::error!(
-                            backend = %backend.name,
-                            error = %e,
-                            "Failed to replace backend via hot reload"
-                        );
-                    } else {
-                        tracing::info!(backend = %backend.name, "Backend replaced");
-                    }
+        let attempt = if retrying {
+            tracing::info!("Retrying backends that failed to apply");
+            retry.map_or(0, |(_, attempt)| attempt)
+        } else {
+            tracing::info!("Config file changed, reloading backends");
+            let new_config = match load_runtime_config(&config_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    policy.record("invalid", false, false);
+                    tracing::warn!(error = %e, "Failed to parse updated config, skipping reload");
+                    continue;
                 }
+            };
+
+            if let Err(error) = policy.check(&new_config) {
+                policy.record("restart_required", false, true);
+                tracing::warn!(%error, "Unsupported live config change, skipping reload");
                 continue;
             }
+            let fingerprints: HashMap<String, String> = new_config
+                .backends
+                .iter()
+                .map(|b| (b.name.clone(), config_fingerprint(b)))
+                .collect();
+            if fingerprints != desired {
+                desired_revision += 1;
+                desired = fingerprints;
+            }
+            desired_backends = new_config.backends;
+            // A file event starts a fresh retry schedule.
+            0
+        };
+        policy.record("pending", false, false);
 
-            tracing::info!(
-                name = %backend.name,
-                transport = ?backend.transport,
-                "Adding new backend via hot reload"
-            );
+        let guard = policy.lock_mutations().await;
+        policy.set_file_names(desired.keys().cloned());
+        let mut changed = false;
+        let mut failed = Vec::new();
 
-            if let Err(e) = add_backend(&proxy, backend, &connections).await {
-                failed = true;
-                tracing::error!(
-                    backend = %backend.name,
-                    error = %e,
-                    "Failed to add backend via hot reload"
-                );
+        // Remove backends that are no longer in config
+        let removed: Vec<String> = applied
+            .keys()
+            .filter(|name| !desired.contains_key(*name))
+            .cloned()
+            .collect();
+        for name in removed {
+            tracing::info!(backend = %name, "Removing backend via hot reload");
+            if proxy.remove_backend(&name).await {
+                tracing::info!(backend = %name, "Backend removed");
             } else {
-                tracing::info!(backend = %backend.name, "Backend added via hot reload");
+                tracing::warn!(backend = %name, "Backend not found for removal");
+            }
+            applied.remove(&name);
+            changed = true;
+        }
+
+        // Add new backends and replace changed ones. A replacement is
+        // connected and initialized before it takes over, so a failure leaves
+        // the previous backend serving.
+        for backend in &desired_backends {
+            let fingerprint = &desired[&backend.name];
+            let previous = applied.get(&backend.name);
+            if previous == Some(fingerprint) {
+                continue;
+            }
+            let replacing = previous.is_some();
+            tracing::info!(
+                backend = %backend.name,
+                transport = ?backend.transport,
+                replacing,
+                "Applying backend via hot reload"
+            );
+            match apply_backend(&proxy, backend, &connections).await {
+                Ok(()) => {
+                    applied.insert(backend.name.clone(), fingerprint.clone());
+                    changed = true;
+                    if replacing {
+                        tracing::info!(backend = %backend.name, "Backend replaced");
+                    } else {
+                        tracing::info!(backend = %backend.name, "Backend added via hot reload");
+                    }
+                }
+                Err(e) => {
+                    failed.push(backend.name.clone());
+                    tracing::error!(
+                        backend = %backend.name,
+                        error = %e,
+                        replacing,
+                        "Failed to apply backend via hot reload; previous state retained"
+                    );
+                }
             }
         }
+        drop(guard);
 
         // Re-index discovery if enabled
         #[cfg(feature = "discovery")]
-        if let Some((ref index, ref schemas, ref separator)) = discovery_index {
+        if changed && let Some((ref index, ref schemas, ref separator)) = discovery_index {
             let mut proxy_clone = proxy.clone();
             crate::discovery::reindex_with_schemas(index, schemas, &mut proxy_clone, separator)
                 .await;
         }
+        #[cfg(not(feature = "discovery"))]
+        let _ = changed;
 
-        policy.record(if failed { "failed" } else { "applied" }, !failed, false);
-        // Transactional replacement/failure retry is tracked separately in #277.
-        backend_fingerprints = new_fingerprints;
+        if failed.is_empty() {
+            applied_revision = desired_revision;
+            retry = None;
+            policy.record("applied", true, false);
+        } else {
+            let delay = retry_delay(attempt);
+            tracing::warn!(
+                failed = ?failed,
+                retry_in_ms = delay.as_millis() as u64,
+                "Some backends failed to apply; retrying"
+            );
+            retry = Some((
+                tokio::time::Instant::now() + delay,
+                attempt.saturating_add(1),
+            ));
+            policy.record("failed", false, false);
+        }
+        policy.record_revisions(desired_revision, applied_revision, failed);
+    }
+}
+
+const RETRY_INITIAL: Duration = Duration::from_secs(1);
+const RETRY_MAX: Duration = Duration::from_secs(60);
+
+/// Delay before retry number `attempt` (from 0): doubling from one second,
+/// capped at one minute.
+fn retry_delay(attempt: u32) -> Duration {
+    RETRY_INITIAL
+        .saturating_mul(1u32 << attempt.min(6))
+        .min(RETRY_MAX)
+}
+
+async fn sleep_until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -323,8 +388,12 @@ fn config_fingerprint(backend: &BackendConfig) -> String {
     serde_json::to_string(&value).expect("backend fingerprint")
 }
 
-/// Connect and add an admitted policy-free backend using startup transport builders.
-async fn add_backend(
+/// Connect, initialize and publish an admitted policy-free backend using
+/// startup transport builders.
+///
+/// The backend takes over its name only once it is initialized: an existing
+/// backend under that name keeps serving if any step fails.
+async fn apply_backend(
     proxy: &McpProxy,
     backend: &BackendConfig,
     connections: &crate::lifecycle::Connections,
@@ -349,7 +418,7 @@ async fn add_backend(
                 .close_timeout(Duration::from_millis(100));
 
             proxy
-                .add_backend(&backend.name, connections.wrap(transport))
+                .replace_backend(&backend.name, connections.wrap(transport))
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
@@ -361,7 +430,7 @@ async fn add_backend(
             let transport = crate::proxy::build_http_transport(url, backend);
 
             proxy
-                .add_backend(&backend.name, connections.wrap(transport))
+                .replace_backend(&backend.name, connections.wrap(transport))
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
@@ -379,7 +448,7 @@ async fn add_backend(
             .await?;
 
             proxy
-                .add_backend(&backend.name, connections.wrap(transport))
+                .replace_backend(&backend.name, connections.wrap(transport))
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
@@ -398,6 +467,7 @@ async fn add_backend(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     fn http_backend(name: &str, url: &str) -> BackendConfig {
         // Parse from TOML to get all default values automatically
@@ -409,6 +479,49 @@ mod tests {
             "#,
         );
         toml::from_str(&toml).unwrap()
+    }
+
+    #[test]
+    fn retry_delay_doubles_from_one_second_and_caps_at_one_minute() {
+        let delays: Vec<u64> = (0..9).map(|n| retry_delay(n).as_secs()).collect();
+        assert_eq!(delays, [1, 2, 4, 8, 16, 32, 60, 60, 60]);
+        assert_eq!(retry_delay(u32::MAX), RETRY_MAX);
+    }
+
+    #[test]
+    fn startup_fingerprints_match_reload_fingerprints_for_the_same_config() {
+        // A mismatch would replace every unchanged backend on the first edit.
+        let mut config = ProxyConfig::parse(
+            r#"
+            [proxy]
+            name = "fingerprints"
+            [proxy.listen]
+            [[backends]]
+            name = "api"
+            transport = "http"
+            url = "http://localhost:1"
+            [backends.headers]
+            X-Second = "2"
+            X-First = "1"
+            [[backends]]
+            name = "tool"
+            transport = "stdio"
+            command = "echo"
+            args = ["a", "b"]
+            [backends.env]
+            B = "2"
+            A = "1"
+            "#,
+        )
+        .unwrap();
+        config.prepare().unwrap();
+        let policy = ReloadPolicy::new(&config);
+        let reload: HashMap<String, String> = config
+            .backends
+            .iter()
+            .map(|b| (b.name.clone(), config_fingerprint(b)))
+            .collect();
+        assert_eq!(policy.fingerprints(), reload);
     }
 
     #[test]

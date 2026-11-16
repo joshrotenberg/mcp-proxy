@@ -134,9 +134,10 @@ effects may already have happened. See the [coalescing contract](https://docs.rs
   [management trust contract](../README.md#admin-api).
 - Follow the [reload/restart contract](https://docs.rs/mcp-proxy/latest/mcp_proxy/#hot-reload).
   This policy-bearing recipe cannot replace backends or edit policy live.
-  Even admitted plain replacement is remove-then-add; failure may lose the old
-  backend (#277). Independent startup/health budgets remain #283; list-change
-  refresh after removing an earlier backend remains #289.
+  An admitted plain replacement is initialized before it takes over, so a
+  failure keeps the old backend serving and is retried. Independent startup/health
+  budgets remain #283; list-change refresh after removing an earlier backend
+  remains #289.
 - For multiple replicas, follow the [session routing and owner-loss guide](https://docs.rs/mcp-proxy/latest/mcp_proxy/#multiple-replicas-and-sessions)
   and [Helm guidance](../charts/mcp-proxy/README.md). Redis shares responses, not
   sessions. Cache reuse requires an explicit generation changed with backend or
