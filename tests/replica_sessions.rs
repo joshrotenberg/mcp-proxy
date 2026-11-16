@@ -180,9 +180,8 @@ async fn assert_session_missing(session: &Session, marker: &str) {
     // JSON-RPC -32005 body.
     assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
     let reply = http::payload(response).await;
-    // Upstream rejects the session before decoding the RPC envelope, so this
-    // transport-level error has a null id rather than echoing the request id.
-    assert_eq!(reply["id"], serde_json::Value::Null);
+    // tower-mcp 0.26.1+ echoes the request id on session-not-found errors.
+    assert_eq!(reply["id"], 89);
     assert_eq!(reply["error"]["code"], -32005);
     assert!(reply.get("result").is_none());
 }

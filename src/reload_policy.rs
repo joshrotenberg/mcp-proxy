@@ -1,5 +1,5 @@
 //! Admission and last-attempt status for the supported live-reload contract.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -26,6 +26,12 @@ pub(crate) struct ReloadStatus {
     pub last_result: &'static str,
     pub applied: bool,
     pub restart_required: bool,
+    /// Counter of admitted config file revisions; startup is 0.
+    pub desired_revision: u64,
+    /// The newest desired revision whose backends were all applied.
+    pub applied_revision: u64,
+    /// Backends of the desired revision that failed to apply and are retried.
+    pub failed_backends: Vec<String>,
 }
 
 struct Inner {
@@ -34,6 +40,12 @@ struct Inner {
     connections: crate::lifecycle::Connections,
     plain_policy: Value,
     status: Mutex<ReloadStatus>,
+    // Backend names declared by the newest admitted file revision. While the
+    // watcher is active, only the file may change them.
+    file_names: Mutex<HashSet<String>>,
+    // Serializes reload passes and management mutations so an ownership check
+    // and the backend commit that follows it cannot interleave with another.
+    mutations: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -64,6 +76,7 @@ impl ReloadPolicy {
                 .expect("backend defaults");
         let mut startup = serde_json::to_value(config).expect("serializable config");
         startup.sort_all_objects();
+        let file_names = config.backends.iter().map(|b| b.name.clone()).collect();
         Self(Arc::new(Inner {
             startup,
             connections: crate::lifecycle::Connections::new(),
@@ -75,7 +88,12 @@ impl ReloadPolicy {
                 last_result: "startup",
                 applied: true,
                 restart_required: false,
+                desired_revision: 0,
+                applied_revision: 0,
+                failed_backends: Vec::new(),
             }),
+            file_names: Mutex::new(file_names),
+            mutations: tokio::sync::Mutex::new(()),
         }))
     }
     pub fn connections(&self) -> &crate::lifecycle::Connections {
@@ -118,6 +136,37 @@ impl ReloadPolicy {
         status.last_result = result;
         status.applied = applied;
         status.restart_required = restart_required;
+    }
+    /// Record which revision the watcher wants and which it has fully applied.
+    pub fn record_revisions(&self, desired: u64, applied: u64, failed: Vec<String>) {
+        let mut status = self.0.status.lock().expect("reload status");
+        status.desired_revision = desired;
+        status.applied_revision = applied;
+        status.failed_backends = failed;
+    }
+    /// Wait for exclusive access to backend membership changes.
+    ///
+    /// Hold the guard across the ownership check and the mutation it permits.
+    pub async fn lock_mutations(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.0.mutations.lock().await
+    }
+    /// Replace the set of backend names the watched file owns.
+    pub fn set_file_names(&self, names: impl IntoIterator<Item = String>) {
+        *self.0.file_names.lock().expect("file names") = names.into_iter().collect();
+    }
+    /// Reject a management change to a backend the watched config file owns.
+    ///
+    /// Without an active watcher the file is not reapplied, so management may
+    /// change any plain backend.
+    pub fn check_management_owner(&self, name: &str) -> anyhow::Result<()> {
+        if self.status().watcher_active
+            && self.0.file_names.lock().expect("file names").contains(name)
+        {
+            anyhow::bail!(
+                "Backend '{name}' is declared in the watched config file; change it there"
+            );
+        }
+        Ok(())
     }
     pub fn fingerprints(&self) -> HashMap<String, String> {
         backends(&self.0.startup)
@@ -203,6 +252,35 @@ mod tests {
     }
     fn typed(value: Value) -> ProxyConfig {
         serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn active_watcher_owns_the_names_its_file_declares() {
+        let policy = ReloadPolicy::new(&config());
+        // Without a watcher the file is never reapplied, so nothing is owned.
+        assert!(policy.check_management_owner("api").is_ok());
+        policy.started();
+        assert!(policy.check_management_owner("api").is_err());
+        assert!(policy.check_management_owner("managed").is_ok());
+        policy.set_file_names(["managed".to_string()]);
+        assert!(policy.check_management_owner("api").is_ok());
+        assert!(policy.check_management_owner("managed").is_err());
+        policy.stopped();
+        assert!(policy.check_management_owner("managed").is_ok());
+    }
+
+    #[test]
+    fn status_reports_desired_and_applied_revisions() {
+        let policy = ReloadPolicy::new(&config());
+        let status = serde_json::to_value(policy.status()).unwrap();
+        assert_eq!(status["desired_revision"], 0);
+        assert_eq!(status["applied_revision"], 0);
+        assert_eq!(status["failed_backends"], json!([]));
+        policy.record_revisions(3, 2, vec!["api".into()]);
+        let status = serde_json::to_value(policy.status()).unwrap();
+        assert_eq!(status["desired_revision"], 3);
+        assert_eq!(status["applied_revision"], 2);
+        assert_eq!(status["failed_backends"], json!(["api"]));
     }
 
     #[test]

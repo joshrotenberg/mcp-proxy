@@ -234,28 +234,63 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogWriter {
         self.clone()
     }
 }
-async fn wait_log(logs: &mut tokio::sync::mpsc::UnboundedReceiver<String>, pattern: &str) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while let Some(line) = logs.recv().await {
-            if line.contains(pattern) {
-                return;
-            }
-        }
-        panic!("watcher log ended before {pattern}");
-    })
-    .await
-    .unwrap_or_else(|_| panic!("watcher never reached {pattern}"));
+
+/// Keeps a test's log capture installed; drop it to uninstall.
+struct LogCapture {
+    _default: tracing::subscriber::DefaultGuard,
+    _second: tracing::Dispatch,
 }
 
-#[tokio::test]
-async fn embedded_router_owns_one_watcher_until_its_last_clone_drops() {
-    let (tx, mut logs) = tokio::sync::mpsc::unbounded_channel();
+/// Capture this thread's logs, and those of watcher threads it spawns.
+///
+/// While exactly one dispatcher is registered in the process, tracing-core
+/// computes callsite interest from whichever thread registers or rebuilds
+/// it. A concurrent test thread with no subscriber can then cache the
+/// watcher's callsites as disabled, and this capture misses them. Keeping a
+/// second, inert dispatcher registered for the capture's lifetime makes
+/// tracing-core consult every registered dispatcher instead.
+fn capture_logs() -> (LogCapture, tokio::sync::mpsc::UnboundedReceiver<String>) {
+    let (tx, logs) = tokio::sync::mpsc::unbounded_channel();
     let subscriber = tracing_subscriber::fmt()
         .without_time()
         .with_ansi(false)
         .with_writer(LogWriter(tx))
         .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let capture = LogCapture {
+        _default: tracing::subscriber::set_default(subscriber),
+        _second: tracing::Dispatch::new(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        ),
+    };
+    (capture, logs)
+}
+async fn wait_log(logs: &mut tokio::sync::mpsc::UnboundedReceiver<String>, pattern: &str) {
+    let mut seen = Vec::new();
+    let found = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(line) = logs.recv().await {
+            if line.contains(pattern) {
+                return true;
+            }
+            seen.push(line);
+        }
+        false
+    })
+    .await;
+    match found {
+        Ok(true) => {}
+        Ok(false) => panic!(
+            "watcher log ended before {pattern}; saw:\n{}",
+            seen.concat()
+        ),
+        Err(_) => panic!("watcher never reached {pattern}; saw:\n{}", seen.concat()),
+    }
+}
+
+#[tokio::test]
+async fn embedded_router_owns_one_watcher_until_its_last_clone_drops() {
+    let (_capture, mut logs) = capture_logs();
     let (original, _original_server) = backend("http", "original").await;
     let (added, _added_server) = backend("http", "added").await;
     let temp = tempfile::tempdir().unwrap();
@@ -293,13 +328,7 @@ async fn embedded_router_owns_one_watcher_until_its_last_clone_drops() {
 
 #[tokio::test]
 async fn owned_watcher_shutdown_joins_idle_worker_and_proxy_drop_cancels() {
-    let (tx, mut logs) = tokio::sync::mpsc::unbounded_channel();
-    let subscriber = tracing_subscriber::fmt()
-        .without_time()
-        .with_ansi(false)
-        .with_writer(LogWriter(tx))
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let (_capture, mut logs) = capture_logs();
     let (original, _original_server) = backend("http", "original").await;
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("proxy.toml");
@@ -781,5 +810,229 @@ async fn reload_preserves_shared_fleet_ejection_limits() {
     }
     assert_eq!(one_calls.load(Ordering::SeqCst), 1);
     assert_eq!(two_calls.load(Ordering::SeqCst), 3);
+    client.shutdown().await.unwrap();
+}
+
+/// Serve a `ping` tool answering `revision` over HTTP on `listener`.
+fn serve_revision(listener: tokio::net::TcpListener, revision: &'static str) -> Server {
+    let router = McpRouter::new().tool(
+        ToolBuilder::new("ping")
+            .handler(move |_: serde_json::Value| async move { Ok(CallToolResult::text(revision)) })
+            .build(),
+    );
+    Server::new(tokio::spawn(async move {
+        axum::serve(listener, HttpTransport::new(router).into_router())
+            .await
+            .unwrap();
+    }))
+}
+
+/// A loopback address with nothing listening on it, so connecting fails fast.
+fn unreachable_addr() -> std::net::SocketAddr {
+    let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    reservation.local_addr().unwrap()
+}
+
+impl PolicyFixture {
+    async fn json(
+        &self,
+        method: reqwest::Method,
+        route: &str,
+        body: serde_json::Value,
+    ) -> (reqwest::StatusCode, serde_json::Value) {
+        let response = reqwest::Client::new()
+            .request(method, format!("{}/admin/{route}", self.base))
+            .bearer_auth("sentinel-manager")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        (status, response.json().await.unwrap())
+    }
+    /// Wait until revision `revision` of the file is fully applied.
+    async fn wait_applied_revision(&self, revision: u64) -> serde_json::Value {
+        tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let value = self.status().await;
+                if value["last_result"] == "applied" && value["applied_revision"] == revision {
+                    break value;
+                }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("revision {revision} was never applied"))
+    }
+    fn write_backends(&self, backends: &[(&str, String)]) {
+        let mut desired = ProxyConfig::parse(&self.original).unwrap();
+        let template = desired.backends.remove(0);
+        let template = toml::to_string(&template).unwrap();
+        for (name, url) in backends {
+            let mut backend: mcp_proxy::config::BackendConfig = toml::from_str(&template).unwrap();
+            backend.name = (*name).into();
+            backend.url = Some(url.clone());
+            desired.backends.push(backend);
+        }
+        std::fs::write(&self.path, serialize(&desired)).unwrap();
+    }
+}
+
+async fn retried_until_reachable(failing: &str) {
+    let (original, _original_server) = backend("http", "original").await;
+    let fixture = PolicyFixture::new(config("http", &original, None, 0), true).await;
+    let original_url = ProxyConfig::parse(&fixture.original).unwrap().backends[0]
+        .url
+        .clone()
+        .unwrap();
+    let client = fixture.client().await;
+    let dead = unreachable_addr();
+    let dead_url = format!("http://{dead}/");
+    let backends = if failing == "original" {
+        vec![("original", dead_url)]
+    } else {
+        vec![("original", original_url), (failing, dead_url)]
+    };
+    fixture.write_backends(&backends);
+    let status = fixture.wait_status("failed").await;
+    assert_eq!(status["applied"], false);
+    assert_eq!(status["desired_revision"], 1);
+    assert_eq!(status["applied_revision"], 0);
+    assert_eq!(status["failed_backends"], serde_json::json!([failing]));
+    // A failed replacement keeps the previous backend serving.
+    call(&client, "original/ping", "original").await;
+
+    // Bring the backend up without touching the file: the retry applies it.
+    let listener = tokio::net::TcpListener::bind(dead).await.unwrap();
+    let _recovered = serve_revision(listener, "recovered");
+    let status = fixture.wait_applied_revision(1).await;
+    assert_eq!(status["desired_revision"], 1);
+    assert_eq!(status["failed_backends"], serde_json::json!([]));
+    call(&client, &format!("{failing}/ping"), "recovered").await;
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_replacement_keeps_previous_backend_and_is_retried() {
+    retried_until_reachable("original").await;
+}
+
+#[tokio::test]
+async fn failed_addition_is_retried_without_a_file_change() {
+    retried_until_reachable("dynamic").await;
+}
+
+#[tokio::test]
+async fn watched_file_owns_the_backend_names_it_declares() {
+    use reqwest::Method;
+    use serde_json::json;
+    let (original, _original_server) = backend("http", "original").await;
+    let fixture = PolicyFixture::new(config("http", &original, None, 0), true).await;
+    let original_url = ProxyConfig::parse(&fixture.original).unwrap().backends[0]
+        .url
+        .clone()
+        .unwrap();
+    let managed_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let managed_url = format!("http://{}/", managed_listener.local_addr().unwrap());
+    let _managed = serve_revision(managed_listener, "managed");
+    let file_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let file_url = format!("http://{}/", file_listener.local_addr().unwrap());
+    let _file = serve_revision(file_listener, "file");
+    let client = fixture.client().await;
+
+    // Management cannot change a name the file declares.
+    let (status, body) = fixture
+        .json(
+            Method::PUT,
+            "backends/original",
+            json!({"url": managed_url}),
+        )
+        .await;
+    assert_eq!(status, reqwest::StatusCode::CONFLICT);
+    assert!(body["message"].as_str().unwrap().contains("config file"));
+    let response = fixture
+        .request(Method::DELETE, "backends/original", String::new())
+        .await;
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    let (status, _) = fixture
+        .json(
+            Method::POST,
+            "backends/add",
+            json!({"name": "original", "url": managed_url}),
+        )
+        .await;
+    assert_eq!(status, reqwest::StatusCode::CONFLICT);
+    call(&client, "original/ping", "original").await;
+
+    // Other names stay manageable, and reload leaves them alone.
+    let (status, _) = fixture
+        .json(
+            Method::POST,
+            "backends/add",
+            json!({"name": "managed", "url": managed_url}),
+        )
+        .await;
+    assert_eq!(status, reqwest::StatusCode::CREATED);
+    fixture.write_backends(&[
+        ("original", original_url.clone()),
+        ("dynamic", file_url.clone()),
+    ]);
+    fixture.wait_applied_revision(1).await;
+    call(&client, "dynamic/ping", "file").await;
+    call(&client, "managed/ping", "managed").await;
+    let (status, _) = fixture
+        .json(Method::PUT, "backends/managed", json!({"url": file_url}))
+        .await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    call(&client, "managed/ping", "file").await;
+    let (status, _) = fixture
+        .json(Method::PUT, "backends/managed", json!({"url": managed_url}))
+        .await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+
+    // Once the file declares the name, the file takes it over.
+    fixture.write_backends(&[("original", original_url), ("managed", file_url.clone())]);
+    let status = fixture.wait_applied_revision(2).await;
+    assert_eq!(status["desired_revision"], 2);
+    call(&client, "managed/ping", "file").await;
+    let (status, _) = fixture
+        .json(Method::PUT, "backends/managed", json!({"url": managed_url}))
+        .await;
+    assert_eq!(status, reqwest::StatusCode::CONFLICT);
+    // Removing it from the file removes the backend.
+    let response = fixture
+        .request(Method::DELETE, "backends/dynamic", String::new())
+        .await;
+    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn management_update_keeps_existing_backend_when_replacement_fails() {
+    use reqwest::Method;
+    use serde_json::json;
+    let (original, _original_server) = backend("http", "original").await;
+    let fixture = PolicyFixture::new(config("http", &original, None, 0), false).await;
+    let client = fixture.client().await;
+    let dead_url = format!("http://{}/", unreachable_addr());
+    let (status, body) = fixture
+        .json(Method::PUT, "backends/original", json!({"url": dead_url}))
+        .await;
+    assert_eq!(status, reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body["message"].as_str().unwrap().contains("kept"));
+    call(&client, "original/ping", "original").await;
+    let (status, _) = fixture
+        .json(Method::PUT, "backends/missing", json!({"url": dead_url}))
+        .await;
+    assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
+    // Without a watcher, management may change names the file declares.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let _replacement = serve_revision(listener, "replacement");
+    let (status, _) = fixture
+        .json(Method::PUT, "backends/original", json!({"url": url}))
+        .await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    call(&client, "original/ping", "replacement").await;
     client.shutdown().await.unwrap();
 }

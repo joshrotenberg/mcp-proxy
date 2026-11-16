@@ -57,8 +57,10 @@
 //! JSON extractor errors use text responses (400/413/415/422), unlike structured
 //! handler errors. Missing cached health returns an empty 404. Authentication
 //! failures use a JSON-RPC-shaped HTTP 401 with null ID; a stopped configured
-//! proxy returns an empty HTTP 503 before auth. Backend replacement still uses
-//! remove-then-add and can leave a backend absent on reconnect failure.
+//! proxy returns an empty HTTP 503 before auth. Backend replacement initializes
+//! the new connection before it takes over and keeps the existing backend on
+//! failure. While hot reload is active, backends declared in the watched config
+//! file are changed only through the file (409 otherwise).
 //!
 //! # Health checking
 //!
@@ -510,12 +512,12 @@ struct BackendOpResponse {
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
     path = "/admin/backends/add",
-    description = "Connect and initialize a new plain HTTP backend; admission failures retain existing backends.",
+    description = "Connect and initialize a new plain HTTP backend; admission failures retain existing backends. While hot reload is active, names declared in the watched config file are rejected.",
     operation_id = "add_backend",
     request_body(content = AddBackendRequest, content_type = "application/json"),
     responses((status = 201, description = "Backend initialized", body = BackendOpResponse, content_type = "application/json"),
         (status = 400, description = "Invalid backend configuration or malformed JSON", content((BackendOpResponse = "application/json"), (String = "text/plain"))),
-        (status = 409, description = "Duplicate name, restart-required policy or connection/initialization failure", body = BackendOpResponse, content_type = "application/json"),
+        (status = 409, description = "Duplicate name, name owned by the watched config file, restart-required policy or connection/initialization failure", body = BackendOpResponse, content_type = "application/json"),
         (status = 413, description = "Body exceeds the configured HTTP body limit", body = String, content_type = "text/plain"),
         (status = 415, description = "Content-Type must be application/json", body = String, content_type = "text/plain"),
         (status = 422, description = "JSON does not match the request schema", body = String, content_type = "text/plain"))
@@ -539,6 +541,17 @@ async fn handle_add_backend(
             }
         };
     if let Err(error) = policy.check_backend_change(&req.name) {
+        return (
+            StatusCode::CONFLICT,
+            Json(BackendOpResponse {
+                ok: false,
+                message: error.to_string(),
+            }),
+        );
+    }
+
+    let _mutation = policy.lock_mutations().await;
+    if let Err(error) = policy.check_management_owner(&req.name) {
         return (
             StatusCode::CONFLICT,
             Json(BackendOpResponse {
@@ -578,12 +591,12 @@ async fn handle_add_backend(
 #[cfg_attr(feature = "openapi", utoipa::path(
     delete,
     path = "/admin/backends/{name}",
-    description = "Remove an unreferenced plain backend; policy-bearing backends require restart.",
+    description = "Remove an unreferenced plain backend; policy-bearing backends require restart. While hot reload is active, backends declared in the watched config file are removed only through the file.",
     operation_id = "remove_backend",
     params(("name" = String, Path, description = "Backend name")),
     responses((status = 200, description = "Backend removed", body = BackendOpResponse, content_type = "application/json"),
         (status = 404, description = "Backend not found", body = BackendOpResponse, content_type = "application/json"),
-        (status = 409, description = "Restart required; active backend retained", body = BackendOpResponse, content_type = "application/json"),
+        (status = 409, description = "Restart required, or the backend is owned by the watched config file; active backend retained", body = BackendOpResponse, content_type = "application/json"),
         (status = 400, description = "Invalid path encoding", body = String, content_type = "text/plain"))
 ))]
 async fn handle_remove_backend(
@@ -592,6 +605,17 @@ async fn handle_remove_backend(
     Extension(policy): Extension<crate::reload_policy::ReloadPolicy>,
 ) -> (StatusCode, Json<BackendOpResponse>) {
     if let Err(error) = policy.check_backend_change(&name) {
+        return (
+            StatusCode::CONFLICT,
+            Json(BackendOpResponse {
+                ok: false,
+                message: error.to_string(),
+            }),
+        );
+    }
+
+    let _mutation = policy.lock_mutations().await;
+    if let Err(error) = policy.check_management_owner(&name) {
         return (
             StatusCode::CONFLICT,
             Json(BackendOpResponse {
@@ -762,15 +786,15 @@ async fn handle_backend_health_history(
 #[cfg_attr(feature = "openapi", utoipa::path(
     put,
     path = "/admin/backends/{name}",
-    description = "Replace a plain HTTP backend using the existing remove-then-add operation. A reconnect failure can leave it absent; transactional replacement remains separate work.",
+    description = "Replace a plain HTTP backend. The replacement is connected and initialized before it takes over, so a failure keeps the existing backend serving. While hot reload is active, backends declared in the watched config file are changed only through the file.",
     operation_id = "update_backend",
     params(("name" = String, Path, description = "Backend name")),
     request_body(content = UpdateBackendRequest, content_type = "application/json"),
     responses((status = 200, description = "Backend replaced", body = BackendOpResponse, content_type = "application/json"),
         (status = 400, description = "Invalid backend configuration or malformed JSON", content((BackendOpResponse = "application/json"), (String = "text/plain"))),
         (status = 404, description = "Backend not found", body = BackendOpResponse, content_type = "application/json"),
-        (status = 409, description = "Restart required; active backend retained", body = BackendOpResponse, content_type = "application/json"),
-        (status = 500, description = "Reconnect failed after removal", body = BackendOpResponse, content_type = "application/json"),
+        (status = 409, description = "Restart required, or the backend is owned by the watched config file; active backend retained", body = BackendOpResponse, content_type = "application/json"),
+        (status = 500, description = "Replacement failed to connect or initialize; existing backend retained", body = BackendOpResponse, content_type = "application/json"),
         (status = 413, description = "Body exceeds the configured HTTP body limit", body = String, content_type = "text/plain"),
         (status = 415, description = "Content-Type must be application/json", body = String, content_type = "text/plain"),
         (status = 422, description = "JSON does not match the request schema", body = String, content_type = "text/plain"))
@@ -803,8 +827,17 @@ async fn handle_update_backend(
         );
     }
 
-    // Validation must complete before the destructive replacement API (#277).
-    if !proxy.remove_backend(&name).await {
+    let _mutation = policy.lock_mutations().await;
+    if let Err(error) = policy.check_management_owner(&name) {
+        return (
+            StatusCode::CONFLICT,
+            Json(BackendOpResponse {
+                ok: false,
+                message: error.to_string(),
+            }),
+        );
+    }
+    if !proxy.backend_namespaces().contains(&name) {
         return (
             StatusCode::NOT_FOUND,
             Json(BackendOpResponse {
@@ -814,13 +847,17 @@ async fn handle_update_backend(
         );
     }
 
-    // Re-add with new config
+    // The replacement is initialized before it takes over; the existing
+    // backend keeps serving until then and stays in place on failure.
     let mut transport = tower_mcp::client::HttpClientTransport::new(&req.url);
     if let Some(token) = &backend.bearer_token {
         transport = transport.bearer_token(token);
     }
 
-    match proxy.add_backend(&name, policy.connections().wrap(transport)).await {
+    match proxy
+        .replace_backend(&name, policy.connections().wrap(transport))
+        .await
+    {
         Ok(()) => (
             StatusCode::OK,
             Json(BackendOpResponse {
@@ -832,7 +869,7 @@ async fn handle_update_backend(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(BackendOpResponse {
                 ok: false,
-                message: "Failed to re-add backend after removal; check backend reachability and configuration".into(),
+                message: "Failed to connect the replacement; the existing backend was kept. Check backend reachability and configuration".into(),
             }),
         ),
     }

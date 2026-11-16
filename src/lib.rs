@@ -187,7 +187,11 @@
 //!
 //! The CLI uses `hot_reload = true` to watch its config file. Library applications
 //! call [`Proxy::enable_hot_reload`]. Plain, unreferenced backends can be added,
-//! removed or reconnected, and discovery indexes are re-indexed. The event wait is
+//! removed or reconnected, and discovery indexes are re-indexed. A reconnected
+//! backend is initialized before it takes over, so a failure keeps the previous
+//! one serving; failed backends are retried with capped backoff. While the
+//! watcher runs, the file owns the backend names it declares, and management
+//! changes to those names are rejected. The event wait is
 //! asynchronous so reloaded stdio, HTTP and WebSocket drivers keep progressing.
 //!
 //! `Proxy` owns one watcher; repeated enable calls keep the original watcher.

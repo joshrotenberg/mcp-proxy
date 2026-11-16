@@ -222,8 +222,9 @@ The configuration module rustdoc records limits and migration. Preserve the
 no-default-feature rejection cases rather than accepting unsupported settings;
 run `cargo test --no-default-features --test config_preparation --test config_env`
 when changing this contract. Low-level cache users can choose fallible `try_new`
-constructors; configured construction must use them. Connection failures during
-otherwise valid live replacement remain the separate #277 limitation.
+constructors; configured construction must use them. Live replacement stages the
+new backend through `McpProxy::replace_backend`; keep connection and initialize
+failures non-destructive.
 
 Run Cargo feature modes sequentially when sharing a target directory, or use
 separate target directories. The build lock does not cover the entire test run:

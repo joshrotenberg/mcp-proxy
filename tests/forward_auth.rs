@@ -151,8 +151,8 @@ async fn fixed_identity_contract(transport: &str, auth: &str, callers: [&str; 2]
         // tower-mcp 0.25+ answers another principal's session with HTTP 404.
         assert_eq!(denied.status(), StatusCode::NOT_FOUND);
         let denied = http::payload(denied).await;
-        // Session ownership is checked before decoding the JSON-RPC body.
-        assert_eq!(denied["id"], Value::Null);
+        // tower-mcp 0.26.1+ echoes the request id on session-not-found errors.
+        assert_eq!(denied["id"], json!(90));
         assert_eq!(
             denied["error"]["code"],
             tower_mcp_types::JsonRpcError::session_not_found_with_id(&first.id).code,
