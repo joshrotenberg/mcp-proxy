@@ -169,7 +169,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: python3 -m unittest discover -s scripts -p 'test_doc_links.py'
@@ -189,7 +189,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: azure/setup-helm@v5.0.1
+      - uses: azure/setup-helm@v5.1.0
         with:
           version: v3.19.0
       - uses: actions/setup-python@v7
