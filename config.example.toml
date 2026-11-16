@@ -133,6 +133,14 @@ url = "http://mcp-server:8080"
 # # Force overwrite existing arguments:
 # # overwrite = true
 
+# --- Locked Arguments ---
+# Values clients cannot override. Conflicting client values are rejected
+# (default) or replaced. Canary, failover, and mirror backends inherit them.
+# [[backends.locked_args]]
+# args = { tenant_id = "acme" }
+# # tools = ["query"]          # omit to lock every tool on the backend
+# # on_conflict = "replace"    # default: "reject"
+
 # --- Concurrency ---
 # [backends.concurrency]
 # max_concurrent = 10

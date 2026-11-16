@@ -904,7 +904,17 @@ fn build_middleware_stack(
         ));
     let mut cache_handle: Option<cache::CacheHandle> = None;
 
-    // Argument injection (innermost -- merges default/per-tool args into CallTool requests)
+    // Locked arguments (innermost -- runs after every layer that rewrites tool
+    // names or arguments, and sees the namespace a request is actually sent to)
+    let lock_rules = crate::locked_args::rules_for_config(config);
+    if !lock_rules.is_empty() {
+        tracing::info!(rules = lock_rules.len(), "Applying locked arguments");
+        service = BoxCloneService::new(crate::locked_args::LockedArgsService::new(
+            service, lock_rules,
+        ));
+    }
+
+    // Argument injection (merges default/per-tool args into CallTool requests)
     let injection_rules: Vec<_> = config
         .backends
         .iter()

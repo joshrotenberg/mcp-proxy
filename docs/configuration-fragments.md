@@ -38,7 +38,7 @@ example rather than keeping a second copy.
 | --- | --- | --- |
 | [Configuration](../src/config.rs) | One complete structure example; proxy settings, transports, backend middleware, separate allowlist/denylist alternatives, routing, three auth alternatives, security and Redis store fragments | `discovery`, `websocket`, `oauth`, `redis-cache`, as declared per fence |
 | [Discovery](../src/discovery.rs) | Two proxy-setting alternatives, each with explicit listen settings and a backend context | `discovery` |
-| [Aliases](../src/alias.rs), [cache](../src/cache.rs), [canary](../src/canary.rs), [failover](../src/failover.rs), [filter](../src/filter.rs), [injection](../src/inject.rs), [mirror](../src/mirror.rs), [outlier](../src/outlier.rs), [retry](../src/retry.rs) | Backend fragments appended to the shared proxy context | None |
+| [Aliases](../src/alias.rs), [cache](../src/cache.rs), [canary](../src/canary.rs), [failover](../src/failover.rs), [filter](../src/filter.rs), [injection](../src/inject.rs), [locked arguments](../src/locked_args.rs), [mirror](../src/mirror.rs), [outlier](../src/outlier.rs), [retry](../src/retry.rs) | Backend fragments appended to the shared proxy context | None |
 | [Composite](../src/composite.rs) | Proxy context followed by the three referenced backend namespaces | None |
 | [Parameter overrides](../src/param_override.rs), [validation](../src/validation.rs) | Append to the existing gateway recipe | None |
 | [Introspection](../src/introspection.rs), [RBAC](../src/rbac.rs) | Gateway recipe followed by the dedicated management-token context | `oauth` |

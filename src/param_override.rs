@@ -25,6 +25,10 @@
 //! parameters are mapped back to their original names before forwarding.
 //! A call that omits `arguments`, or sends `null`, is treated as an empty
 //! object when the tool has hidden defaults.
+//!
+//! Hiding a parameter changes the advertised schema only: a client that sends
+//! the parameter anyway overrides the default. Use [`crate::locked_args`] to
+//! enforce a value.
 
 use std::collections::HashMap;
 use std::convert::Infallible;

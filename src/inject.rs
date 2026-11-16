@@ -8,6 +8,9 @@
 //! object when the tool has anything to inject. Other non-object arguments
 //! are forwarded unchanged.
 //!
+//! Clients can override injected values unless `overwrite = true`. For values
+//! that must always reach the backend, use [`crate::locked_args`].
+//!
 //! # Configuration
 //!
 //! Configuration fragment: append this block after [proxy.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/proxy.toml).
