@@ -11,6 +11,10 @@
 //! Clients can override injected values unless `overwrite = true`. For values
 //! that must always reach the backend, use [`crate::locked_args`].
 //!
+//! Rules are chosen by the namespace the client called: in the configured
+//! stack, a call to `api` keeps `api`'s injected values when canary, failover,
+//! or mirror routing sends it to another backend.
+//!
 //! # Configuration
 //!
 //! Configuration fragment: append this block after [proxy.toml](https://github.com/joshrotenberg/mcp-proxy/blob/main/tests/fixtures/documentation/proxy.toml).

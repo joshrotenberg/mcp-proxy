@@ -29,6 +29,10 @@
 //! Hiding a parameter changes the advertised schema only: a client that sends
 //! the parameter anyway overrides the default. Use [`crate::locked_args`] to
 //! enforce a value.
+//!
+//! Overrides are chosen by the namespace the client called: in the configured
+//! stack, a call to `api` keeps `api`'s renames and defaults when canary,
+//! failover, or mirror routing sends it to another backend.
 
 use std::collections::HashMap;
 use std::convert::Infallible;

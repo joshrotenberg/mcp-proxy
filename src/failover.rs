@@ -39,6 +39,16 @@
 //! 3. If `api` returns an error, the request is retried against `api-backup/search`
 //! 4. If `api-backup` also fails, the request is retried against `api-backup-2/search`
 //! 5. Failover backend tools are hidden from `ListTools` (like canary backends)
+//!
+//! # Arguments and request context
+//!
+//! In the configured stack, `default_args`, `inject_args`, and `param_overrides`
+//! of the backend the client called (`api`) are applied before this layer, so
+//! a failover backend receives the same arguments `api` would. Its own rules apply only to calls
+//! addressed to its own namespace. `locked_args` of `api` are inherited and
+//! enforced after rerouting.
+//! Each failover attempt keeps the original extensions, including the caller's
+//! identity and cancellation.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -48,7 +58,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use tower::{Layer, Service};
-use tower_mcp::router::{Extensions, RouterRequest, RouterResponse};
+use tower_mcp::router::{RouterRequest, RouterResponse};
 use tower_mcp_types::protocol::{CallToolParams, GetPromptParams, McpRequest, ReadResourceParams};
 
 /// Resolved failover mapping for a single primary backend.
@@ -232,10 +242,12 @@ where
                 let failover_request =
                     rewrite_request(&req.inner, &mapping.primary_prefix, failover_prefix);
 
+                // The failover attempt is the client's own request: keep its
+                // caller identity, forwarded credentials, and cancellation.
                 let failover_req = RouterRequest {
                     id: req.id.clone(),
                     inner: failover_request,
-                    extensions: Extensions::new(),
+                    extensions: req.extensions.clone(),
                 };
 
                 let resp = inner.call(failover_req).await?;
@@ -532,6 +544,31 @@ mod tests {
             err.message.contains("backup-2"),
             "expected last failover error, got: {}",
             err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn failover_keeps_request_extensions() {
+        use crate::test_util::{ExtensionProbe, marked_call};
+        use tower::Service;
+        let probe = ExtensionProbe {
+            fail_prefix: Some("primary/"),
+            ..Default::default()
+        };
+        let failovers = [("primary".to_string(), vec!["backup".to_string()])]
+            .into_iter()
+            .collect();
+        let mut svc = FailoverService::new(probe.clone(), failovers, "/");
+        let resp = svc.call(marked_call("primary/tool")).await.unwrap();
+        assert!(resp.inner.is_ok());
+        let seen = probe.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1].0, "backup/tool");
+        assert_eq!(seen[1].1.as_deref(), Some("caller"));
+        assert_eq!(
+            seen[1].2,
+            Some(true),
+            "client cancellation must reach the backup"
         );
     }
 }

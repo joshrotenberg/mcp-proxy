@@ -32,6 +32,17 @@
 //!    fire-and-forget to the `api-v2` backend
 //! 4. The mirror response is discarded; errors are logged but don't
 //!    affect the primary response
+//!
+//! # Arguments and request context
+//!
+//! In the configured stack, `default_args`, `inject_args`, and `param_overrides`
+//! of the backend the client called (`api`) are applied before this layer, so
+//! the mirror receives the same arguments `api` would. Its own rules apply only to calls
+//! addressed to its own namespace. `locked_args` of `api` are inherited and
+//! enforced after rerouting.
+//! The copy keeps the original extensions, such as caller identity, but gets
+//! its own request context: client cancellation and progress reporting belong
+//! to the original call.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -42,7 +53,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 
 use tower::{Layer, Service};
-use tower_mcp::router::{Extensions, RouterRequest, RouterResponse};
+use tower_mcp::router::{RouterRequest, RouterResponse};
 use tower_mcp_types::protocol::{CallToolParams, GetPromptParams, McpRequest, ReadResourceParams};
 
 /// Tower layer that produces a [`MirrorService`].
@@ -169,10 +180,18 @@ fn clone_for_mirror(
         _ => return None,
     };
 
+    // Keep caller identity and forwarded credentials so the mirror backend
+    // sees the same request, but give the fire-and-forget copy its own
+    // request context: the client's cancellation and progress reporting
+    // belong to the original call.
+    let mut extensions = req.extensions.clone();
+    if extensions.contains::<tower_mcp::RequestContext>() {
+        extensions.insert(tower_mcp::RequestContext::new(req.id.clone()));
+    }
     Some(RouterRequest {
         id: req.id.clone(),
         inner: new_inner,
-        extensions: Extensions::new(),
+        extensions,
     })
 }
 
@@ -430,5 +449,32 @@ mod tests {
 
         let resp = call_service(&mut svc, McpRequest::ListTools(Default::default())).await;
         assert!(resp.inner.is_ok());
+    }
+
+    #[tokio::test]
+    async fn mirror_copy_keeps_identity_with_its_own_context() {
+        use crate::test_util::{ExtensionProbe, marked_call};
+        let probe = ExtensionProbe::default();
+        let mut svc = MirrorService::new(probe.clone(), make_mirrors("api", "shadow", 100), "/");
+        svc.call(marked_call("api/tool")).await.unwrap();
+        for _ in 0..100 {
+            if probe.seen.lock().unwrap().len() == 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let seen = probe.seen.lock().unwrap().clone();
+        let original = seen.iter().find(|r| r.0 == "api/tool").unwrap();
+        let copy = seen
+            .iter()
+            .find(|r| r.0 == "shadow/tool")
+            .expect("mirror copy sent");
+        assert_eq!(original.2, Some(true));
+        assert_eq!(copy.1.as_deref(), Some("caller"));
+        assert_eq!(
+            copy.2,
+            Some(false),
+            "the copy must not inherit client cancellation"
+        );
     }
 }
