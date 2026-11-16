@@ -665,7 +665,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mcp-proxy = "0.7"
+mcp-proxy = "0.8"
 ```
 
 Inside an async function returning `anyhow::Result<()>`:
