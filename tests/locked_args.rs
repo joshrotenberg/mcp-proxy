@@ -46,7 +46,10 @@ struct QueryInput {
 async fn backend(label: &'static str, journal: &Journal) -> Server {
     let record = |journal: Journal| {
         move |arguments: Value| {
-            journal.lock().unwrap().push((label.into(), arguments.clone()));
+            journal
+                .lock()
+                .unwrap()
+                .push((label.into(), arguments.clone()));
             async move { Ok(CallToolResult::json(arguments)) }
         }
     };
@@ -63,7 +66,10 @@ async fn backend(label: &'static str, journal: &Journal) -> Server {
                     let typed = typed.clone();
                     async move {
                         let arguments = json!({"sql": input.sql, "tenant": input.tenant});
-                        typed.lock().unwrap().push((label.into(), arguments.clone()));
+                        typed
+                            .lock()
+                            .unwrap()
+                            .push((label.into(), arguments.clone()));
                         Ok(CallToolResult::json(arguments))
                     }
                 })
@@ -79,7 +85,8 @@ async fn fail_tool_calls(request: Request<Body>, next: Next) -> Response {
     if bytes.windows(12).any(|w| w == b"\"tools/call\"") {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    next.run(Request::from_parts(parts, Body::from(bytes))).await
+    next.run(Request::from_parts(parts, Body::from(bytes)))
+        .await
 }
 
 struct Session {
@@ -365,7 +372,10 @@ async fn assert_locked_paths(fixture: &Fixture, search: bool) {
         );
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(fixture.take().is_empty(), "rejected calls reached a backend");
+    assert!(
+        fixture.take().is_empty(),
+        "rejected calls reached a backend"
+    );
 
     // Failover: the primary fails every call, the backup inherits the lock, and
     // replace mode overwrites the client value.

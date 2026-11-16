@@ -24,7 +24,7 @@ For how mcp-proxy relates to other MCP gateways (Docker MCP Gateway, IBM Context
 
 ## What it does
 
-**Aggregates many MCP servers behind one endpoint.** Backends speaking stdio, HTTP, or WebSocket are exposed under per-backend namespaces at a single HTTP endpoint. Tools, resources, and prompts can be allow/deny filtered and aliased per backend; default or per-tool arguments can be injected into calls; composite tools fan one call out across multiple backend tools; hot reload adds new backends from config changes without a restart; and optional BM25 discovery can expose search instead of full tool lists.
+**Aggregates many MCP servers behind one endpoint.** Backends speaking stdio, HTTP, or WebSocket are exposed under per-backend namespaces at a single HTTP endpoint. Tools, resources, and prompts can be allow/deny filtered and aliased per backend; default or per-tool arguments can be injected into calls, and locked values enforced so clients cannot override them; composite tools fan one call out across multiple backend tools; hot reload adds new backends from config changes without a restart; and optional BM25 discovery can expose search instead of full tool lists.
 
 **Contains backend failures.** Each backend gets its own resilience chain: timeouts, rate limits, concurrency caps, retries with exponential backoff and budgets, circuit breakers, request hedging, and outlier detection that temporarily ejects unhealthy backends.
 
@@ -194,6 +194,35 @@ tool = "dangerous_op"
 args = { dry_run = true }
 overwrite = true
 ```
+
+### Locked arguments
+
+Values in `default_args`, `inject_args`, and hidden `param_overrides` defaults
+are conveniences: a client can override them. `locked_args` values always reach
+the backend. A client value that differs is rejected with `-32602 Invalid params`
+(the default) or replaced with `on_conflict = "replace"`. Locked keys are removed
+from `tools/list` schemas, and backends configured with `canary_of`,
+`failover_for`, or `mirror_of` inherit the locks of the backend they name.
+
+<!-- config-fragment -->
+```toml
+[[backends]]
+name = "db"
+transport = "http"
+url = "http://db.internal:8080"
+
+# Every tool on this backend
+[[backends.locked_args]]
+args = { tenant_id = "acme" }
+
+# Only these tools; replace conflicting client values instead of rejecting
+[[backends.locked_args]]
+tools = ["query", "export"]
+args = { read_only = true }
+on_conflict = "replace"
+```
+
+See [`mcp_proxy::locked_args`](src/locked_args.rs) for precedence and validation rules.
 
 ### Traffic mirroring
 
