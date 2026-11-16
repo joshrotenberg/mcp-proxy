@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-11-16
+
+### Bug Fixes
+
+- Inject defaults when tool call arguments are missing or null (closes #358) ([#359](https://github.com/joshrotenberg/mcp-proxy/pull/359))
+- Apply argument rules and request extensions to canary, failover, and mirror traffic (closes #364) ([#366](https://github.com/joshrotenberg/mcp-proxy/pull/366))
+
+### Features
+
+- Run the image and chart non-root with a restricted profile ([#355](https://github.com/joshrotenberg/mcp-proxy/pull/355))
+- Enforce locked argument values on tool calls (closes #300) ([#363](https://github.com/joshrotenberg/mcp-proxy/pull/363))
+
+### Testing
+
+- Correct criterion benchmark composition and verify responses ([#354](https://github.com/joshrotenberg/mcp-proxy/pull/354))
+
+
+
 ## [0.7.0] - 2026-11-15
 
 ### Bug Fixes
