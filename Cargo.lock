@@ -3932,9 +3932,9 @@ checksum = "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e"
 
 [[package]]
 name = "tower-mcp"
-version = "0.26.1"
+version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d346525e8ac2bd61d0a82b9035e31d80dd6c6de8292bab5461969c0814b9407b"
+checksum = "9f1bc942c311aa50229e47187fb86592c96af6a53873ebea921f6ba509fb608e"
 dependencies = [
  "async-trait",
  "axum",
@@ -3969,9 +3969,9 @@ dependencies = [
 
 [[package]]
 name = "tower-mcp-types"
-version = "0.26.1"
+version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d78eb1b3106886eb65d8cf6204f0c4d47c0620136ff0f26f6ebf5df04b300fde"
+checksum = "ba8d731dfc103c852972d3ce4d61f95d2bc813f6afca4ca96c268084313e7859"
 dependencies = [
  "base64 0.23.0",
  "indexmap",
