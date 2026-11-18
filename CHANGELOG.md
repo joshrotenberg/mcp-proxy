@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.1] - 2026-11-18
+
+### Bug Fixes
+
+- One wildcard syntax for filters and scoped token and RBAC tool lists (closes #376) ([#377](https://github.com/joshrotenberg/mcp-proxy/pull/377))
+
+
+
 ## [0.8.0] - 2026-11-18
 
 ### Bug Fixes
