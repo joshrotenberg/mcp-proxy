@@ -997,9 +997,13 @@ pub struct BearerTokenConfig {
     pub token: String,
     /// Tools this token can access (namespaced, e.g. "files/read_file").
     /// Empty means all tools allowed.
+    /// Entries are public tool names or wildcard patterns, the syntax capability
+    /// filters use: `*` matches any run of characters including `/`, `?` one
+    /// character, plus `[...]` sets and `{a,b}` alternatives (e.g.
+    /// `"files/read_*"`, `"github/*"`). `re:` regex entries are rejected.
     #[serde(default)]
     pub allow_tools: Vec<String>,
-    /// Tools this token cannot access.
+    /// Tools this token cannot access. Same syntax as `allow_tools`.
     #[serde(default)]
     pub deny_tools: Vec<String>,
 }
@@ -1012,9 +1016,14 @@ pub struct RoleConfig {
     pub name: String,
     /// Tools this role grants (namespaced, e.g. "files/read_file").
     /// Empty grants all tools. Grants from all mapped roles are combined.
+    /// Entries are public tool names or wildcard patterns, the syntax capability
+    /// filters use: `*` matches any run of characters including `/`, `?` one
+    /// character, plus `[...]` sets and `{a,b}` alternatives (e.g.
+    /// `"files/read_*"`, `"github/*"`). `re:` regex entries are rejected.
     #[serde(default)]
     pub allow_tools: Vec<String>,
     /// Tools denied by this role. A deny overrides grants from every mapped role.
+    /// Same syntax as `allow_tools`.
     #[serde(default)]
     pub deny_tools: Vec<String>,
 }
@@ -1390,7 +1399,8 @@ pub struct BackendFilter {
 /// [`NameFilter::deny_list`].
 #[derive(Debug, Clone)]
 pub enum CompiledPattern {
-    /// A glob pattern (matched via `glob_match`).
+    /// A wildcard pattern: `*` matches any run of characters including `/`,
+    /// `?` one character, plus `[...]` sets and `{a,b}` alternatives.
     Glob(String),
     /// A pre-compiled regex pattern (from `re:` prefix).
     Regex(regex::Regex),
@@ -1405,6 +1415,7 @@ impl CompiledPattern {
                 .with_context(|| format!("invalid regex in filter pattern: {pattern}"))?;
             Ok(Self::Regex(re))
         } else {
+            wildcard_regex(pattern)?;
             Ok(Self::Glob(pattern.to_string()))
         }
     }
@@ -1412,16 +1423,121 @@ impl CompiledPattern {
     /// Check if this pattern matches the given name.
     fn matches(&self, name: &str) -> bool {
         match self {
-            Self::Glob(pat) => glob_match::glob_match(pat, name),
+            Self::Glob(pat) => wildcard_matches(pat, name),
             Self::Regex(re) => re.is_match(name),
         }
     }
 }
 
+/// Translate a wildcard pattern into an anchored regular expression.
+///
+/// `*` matches any run of characters, including `/` and the namespace
+/// separator; `?` matches one character; `[abc]`, `[a-z]` and `[!abc]` match
+/// one character from (or not from) a set; `{a,b}` matches any listed
+/// alternative. Every other character is literal.
+pub(crate) fn wildcard_regex(pattern: &str) -> Result<regex::Regex> {
+    let mut out = String::from("^");
+    let mut chars = pattern.chars().peekable();
+    let mut in_group = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                while chars.peek() == Some(&'*') {
+                    chars.next();
+                }
+                out.push_str(".*");
+            }
+            '?' => out.push('.'),
+            '[' => {
+                let mut class = String::from("[");
+                if chars.peek() == Some(&'!') {
+                    chars.next();
+                    class.push('^');
+                }
+                let mut closed = false;
+                for c in chars.by_ref() {
+                    if c == ']' {
+                        closed = true;
+                        break;
+                    }
+                    if c == '\\' || c == '[' {
+                        class.push('\\');
+                    }
+                    class.push(c);
+                }
+                anyhow::ensure!(closed, "unclosed '[' in pattern '{pattern}'");
+                class.push(']');
+                out.push_str(&class);
+            }
+            '{' if !in_group => {
+                in_group = true;
+                out.push_str("(?:");
+            }
+            ',' if in_group => out.push('|'),
+            '}' if in_group => {
+                in_group = false;
+                out.push(')');
+            }
+            c => out.push_str(&regex::escape(&c.to_string())),
+        }
+    }
+    anyhow::ensure!(!in_group, "unclosed '{{' in pattern '{pattern}'");
+    out.push('$');
+    regex::Regex::new(&out).with_context(|| format!("invalid pattern '{pattern}'"))
+}
+
+/// Whether `name` matches a wildcard pattern (see [`wildcard_regex`]).
+///
+/// Compiled patterns are cached; patterns come from configuration, and the
+/// cache is cleared if it ever grows past a fixed bound. A pattern that does
+/// not compile matches nothing.
+pub(crate) fn wildcard_matches(pattern: &str, name: &str) -> bool {
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<regex::Regex>>>> = OnceLock::new();
+    const MAX_CACHED: usize = 4096;
+    let mut cache = CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cache.len() >= MAX_CACHED && !cache.contains_key(pattern) {
+        cache.clear();
+    }
+    cache
+        .entry(pattern.to_string())
+        .or_insert_with(|| wildcard_regex(pattern).ok())
+        .as_ref()
+        .is_some_and(|re| re.is_match(name))
+}
+
+/// Whether `name` matches a tool-list entry from `allow_tools` or `deny_tools`.
+///
+/// Entries use the same wildcard syntax as capability filters (see
+/// [`wildcard_regex`]): an entry without wildcards matches only that exact
+/// public tool name, and `*` crosses `/`, so `"api/*"` covers `api/read` and
+/// `api/query/nested` alike.
+#[cfg(feature = "oauth")]
+pub(crate) fn tool_pattern_matches(pattern: &str, name: &str) -> bool {
+    wildcard_matches(pattern, name)
+}
+
+/// Reject `re:` entries in a tool list that only accepts glob patterns.
+fn validate_tool_patterns(field: &str, patterns: &[String]) -> Result<()> {
+    if let Some(p) = patterns.iter().find(|p| p.starts_with("re:")) {
+        anyhow::bail!(
+            "{field}: regex entries are not supported (got '{p}'); use wildcard patterns such as 'api/read_*'"
+        );
+    }
+    for p in patterns {
+        wildcard_regex(p).with_context(|| format!("{field}: invalid pattern"))?;
+    }
+    Ok(())
+}
+
 /// A name-based allow/deny filter.
 ///
 /// Patterns support two syntaxes:
-/// - **Glob** (default): `*` matches any sequence, `?` matches one character.
+/// - **Wildcard** (default): `*` matches any sequence, including `/`, `?` matches
+///   one character, `[abc]`/`[!abc]` match a set, `{a,b}` matches alternatives.
 /// - **Regex** (`re:` prefix): e.g. `re:^list_.*$` uses the `regex` crate.
 ///
 /// Regex syntax is checked during configuration validation. Runtime filters
@@ -1625,6 +1741,8 @@ pub(crate) fn validate_rbac(
         if !names.insert(role.name.as_str()) {
             anyhow::bail!("auth.roles contains duplicate role definitions");
         }
+        validate_tool_patterns("auth.roles.allow_tools", &role.allow_tools)?;
+        validate_tool_patterns("auth.roles.deny_tools", &role.deny_tools)?;
     }
     if mapping.claim.trim().is_empty() || mapping.claim.trim() != mapping.claim {
         anyhow::bail!("auth.role_mapping.claim must be nonempty without surrounding whitespace");
@@ -1908,6 +2026,8 @@ impl ProxyConfig {
                         "scoped_tokens: cannot specify both allow_tools and deny_tools for the same token"
                     );
                 }
+                validate_tool_patterns("scoped_tokens.allow_tools", &st.allow_tools)?;
+                validate_tool_patterns("scoped_tokens.deny_tools", &st.deny_tools)?;
             }
         }
 
@@ -3592,6 +3712,18 @@ jwks_uri = "https://issuer.example.test/keys"
     }
 
     #[test]
+    fn name_filter_wildcards_cross_slashes_so_hides_cover_nested_names() {
+        let filter = NameFilter::deny_list(["query/*".to_string(), "admin_*".to_string()]).unwrap();
+        assert!(!filter.allows("query/nested/deep"));
+        assert!(!filter.allows("admin_x/y"));
+        assert!(filter.allows("search"));
+        let filter = NameFilter::allow_list(["read_{file,dir}".to_string()]).unwrap();
+        assert!(filter.allows("read_dir"));
+        assert!(!filter.allows("read_link"));
+        assert!(NameFilter::deny_list(["broken[".to_string()]).is_err());
+    }
+
+    #[test]
     fn test_name_filter_glob_wildcard() {
         let filter = NameFilter::allow_list(["*_file".to_string()]).unwrap();
         assert!(filter.allows("read_file"));
@@ -4240,6 +4372,21 @@ jwks_uri = "https://issuer.example.test/keys"
                 assert!(scoped_tokens[1].allow_tools.is_empty());
             }
             other => panic!("expected Bearer auth, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "oauth")]
+    #[test]
+    fn scoped_token_regex_entries_are_rejected() {
+        for field in ["allow_tools", "deny_tools"] {
+            let toml = format!(
+                "[proxy]\nname = \"scoped\"\n[proxy.listen]\n\n[[backends]]\nname = \"echo\"\ntransport = \"stdio\"\ncommand = \"echo\"\n\n[auth]\ntype = \"bearer\"\n[[auth.scoped_tokens]]\ntoken = \"t\"\n{field} = [\"re:^echo/.*\"]\n"
+            );
+            let err = ProxyConfig::parse(&toml).unwrap_err();
+            assert!(
+                err.to_string().contains("regex entries are not supported"),
+                "{err}"
+            );
         }
     }
 

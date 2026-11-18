@@ -23,7 +23,8 @@
 //!
 //! - **Exact match** -- `"read_file"` matches only `read_file`.
 //! - **Glob patterns** -- `"*_file"` matches `read_file`, `write_file`, etc.
-//!   Standard glob wildcards (`*`, `?`) are supported.
+//!   Wildcards: `*` matches any run of characters (including `/`), `?` one
+//!   character, `[abc]`/`[!abc]` a set, `{a,b}` alternatives.
 //! - **Regex patterns** -- prefix a pattern with `re:` to use a regular
 //!   expression: `"re:^list_.*$"` matches `list_files`, `list_users`, etc.
 //!
