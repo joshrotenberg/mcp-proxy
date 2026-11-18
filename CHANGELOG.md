@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] - 2026-11-18
+
+### Bug Fixes
+
+- One wildcard syntax for filters and scoped token and RBAC tool lists (closes #376) ([#377](https://github.com/joshrotenberg/mcp-proxy/pull/377))
+
+### Features
+
+- Isolate request identity in sessions, cache and coalescing (closes #301) ([#378](https://github.com/joshrotenberg/mcp-proxy/pull/378))
+
+
+
 ## [0.8.0] - 2026-11-18
 
 ### Bug Fixes
