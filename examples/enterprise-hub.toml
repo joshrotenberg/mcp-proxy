@@ -80,6 +80,7 @@ wait_duration_seconds = 30
 
 [[backends]]
 name = "jira"
+tool_effects = [{ tools = ["get_*", "search_*", "list_*"], effect = "read" }]   # cached; other tools are writes
 transport = "http"
 url = "http://jira-mcp.internal:8080"
 hide_tools = ["delete_issue"]
@@ -98,6 +99,7 @@ max_entries = 500
 
 [[backends]]
 name = "docs"
+default_effect = "read"
 transport = "http"
 url = "http://confluence-mcp.internal:8080"
 

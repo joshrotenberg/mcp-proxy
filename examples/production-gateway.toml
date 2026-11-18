@@ -106,6 +106,7 @@ max_concurrent = 20
 # caching/hedging; an allowlist restricts names, not actual tool side effects.
 [[backends]]
 name = "docs"
+tool_effects = [{ tools = ["search", "get_page", "list_spaces"], effect = "read" }]
 transport = "http"
 url = "http://confluence-mcp.internal:8080"
 expose_tools = ["search", "get_page", "list_spaces"]
@@ -125,6 +126,7 @@ max_hedges = 1
 # Internal code/knowledge search. Read-only; hedged for tail latency.
 [[backends]]
 name = "search"
+tool_effects = [{ tools = ["query", "similar"], effect = "read" }]
 transport = "http"
 url = "http://search-mcp.internal:8080"
 expose_tools = ["query", "similar"]
@@ -140,6 +142,7 @@ max_hedges = 1
 # query results cached for a minute after verifying read-only semantics.
 [[backends]]
 name = "db-analytics"
+tool_effects = [{ tools = ["query"], effect = "read" }]
 transport = "stdio"
 command = "/usr/local/bin/db-mcp-server"
 args = ["--read-only"]
@@ -216,6 +219,7 @@ max_concurrent = 2
 # low request rate.
 [[backends]]
 name = "reports"
+tool_effects = [{ tools = ["run_report", "list_reports"], effect = "read" }]
 transport = "http"
 url = "http://warehouse-mcp.internal:8080"
 expose_tools = ["run_report", "list_reports"]
