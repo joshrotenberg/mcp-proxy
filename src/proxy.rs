@@ -478,6 +478,9 @@ struct BackendMiddlewareLayer {
     stages: Vec<MwStage>,
     /// Outermost, after the error fold: observes response-plane errors.
     outlier: Option<crate::outlier::OutlierDetectionLayer>,
+    /// Tool classification: calls that must run once bypass retry and
+    /// hedging. `None` replays every call.
+    effects: Option<std::sync::Arc<crate::execution::BackendEffects>>,
 }
 
 impl BackendMiddlewareLayer {
@@ -521,22 +524,34 @@ where
             match e {}
         }
 
+        use crate::execution::{EffectBranch, Mark, MarkProbe};
+
+        // The transport: reaching it marks the request as dispatched, which
+        // tells failover that the backend may have received it.
+        let base: InfallibleService = BoxCloneService::new(MarkProbe::new(base, Mark::Dispatched));
+
         // Zone A: retry classifies responses over the Infallible base.
         // The hedge adapter promotes failed responses into a private Clone
         // error plane, then restores the original response after all failures.
         let after_retry: InfallibleService = match &self.retry {
-            Some(retry) => BoxCloneService::new(retry.layer(base)),
-            None => BoxCloneService::new(base),
+            Some(retry) => BoxCloneService::new(retry.layer(base.clone())),
+            None => base.clone(),
+        };
+        let replay: InfallibleService = match &self.hedge {
+            Some(hedge) => BoxCloneService::new(crate::outcome::hedged(after_retry, hedge)),
+            None => after_retry,
+        };
+        // Calls that must run once skip retry and hedging entirely.
+        let zone_a: InfallibleService = match &self.effects {
+            Some(effects) if self.retry.is_some() || self.hedge.is_some() => {
+                BoxCloneService::new(EffectBranch::new(effects.clone(), replay, base))
+            }
+            _ => replay,
         };
 
         // Zone B: concurrency/rate/timeout/breaker can produce typed errors.
         // Hedging has already restored its response plane before widening.
-        let mut svc: MwService = match &self.hedge {
-            Some(hedge) => {
-                BoxCloneService::new(crate::outcome::hedged(after_retry, hedge).map_err(widen))
-            }
-            None => BoxCloneService::new(after_retry.map_err(widen)),
-        };
+        let mut svc: MwService = BoxCloneService::new(zone_a.map_err(widen));
         for stage in &self.stages {
             svc = stage(svc);
         }
@@ -546,10 +561,13 @@ where
             BoxCloneService::new(tower_mcp::transport::CatchError::new(svc));
 
         // Zone C: outlier detection observes the response plane.
-        match &self.outlier {
+        let observed = match &self.outlier {
             Some(outlier) => BoxCloneService::new(outlier.layer(folded)),
             None => folded,
-        }
+        };
+        // Entering marks the request, so a response without a dispatch mark
+        // is a rejection by this backend's own middleware.
+        BoxCloneService::new(MarkProbe::new(observed, Mark::Entered))
     }
 }
 
@@ -686,7 +704,12 @@ async fn build_mcp_proxy(
         // Per-backend middleware stack (applied in order: inner -> outer).
         // Collected into one BackendMiddlewareLayer and handed to tower-mcp
         // as a single backend_layer call; see the type's doc comment.
-        let mut mw = BackendMiddlewareLayer::default();
+        let mut mw = BackendMiddlewareLayer {
+            effects: Some(std::sync::Arc::new(
+                crate::execution::BackendEffects::from_backend(backend),
+            )),
+            ..Default::default()
+        };
 
         // Retry (innermost -- retries happen before other middleware)
         if let Some(retry_cfg) = &backend.retry {
@@ -914,6 +937,11 @@ fn build_middleware_stack(
     BoxCloneService<RouterRequest, RouterResponse, Infallible>,
     Option<cache::CacheHandle>,
 )> {
+    // Per-tool effects decide what cache, coalescing, mirror and failover
+    // may duplicate or suppress.
+    let execution = std::sync::Arc::new(crate::execution::ExecutionPolicy::from_config(config));
+    crate::execution::log_protection(config, &execution);
+
     let admin_service = crate::management::Guard::new(proxy.clone(), &config.proxy.separator, true);
     let mut service: BoxCloneService<RouterRequest, RouterResponse, Infallible> =
         BoxCloneService::new(crate::management::Guard::new(
@@ -1001,11 +1029,14 @@ fn build_middleware_stack(
                 "Enabling failover routing"
             );
         }
-        service = BoxCloneService::new(crate::failover::FailoverService::new(
-            service,
-            failover_mappings,
-            &config.proxy.separator,
-        ));
+        service = BoxCloneService::new(
+            crate::failover::FailoverService::new(
+                service,
+                failover_mappings,
+                &config.proxy.separator,
+            )
+            .with_execution_policy(execution.clone()),
+        );
     }
 
     // Traffic mirroring (sends cloned requests through the proxy)
@@ -1028,11 +1059,10 @@ fn build_middleware_stack(
                 "Enabling traffic mirroring"
             );
         }
-        service = BoxCloneService::new(crate::mirror::MirrorService::new(
-            service,
-            mirror_mappings,
-            &config.proxy.separator,
-        ));
+        service = BoxCloneService::new(
+            crate::mirror::MirrorService::new(service, mirror_mappings, &config.proxy.separator)
+                .with_execution_policy(execution.clone()),
+        );
     }
 
     // Argument injection and parameter overrides run outside canary, failover,
@@ -1122,7 +1152,11 @@ fn build_middleware_stack(
         }
         let (cache_svc, handle) =
             cache::CacheService::try_new(service, cache_configs, &config.cache)?;
-        service = BoxCloneService::new(cache_svc.principal_scoped(principal_namespaces.clone()));
+        service = BoxCloneService::new(
+            cache_svc
+                .principal_scoped(principal_namespaces.clone())
+                .with_execution_policy(execution.clone()),
+        );
         cache_handle = Some(handle);
     }
 
@@ -1131,7 +1165,8 @@ fn build_middleware_stack(
         tracing::info!("Request coalescing enabled");
         service = BoxCloneService::new(
             coalesce::CoalesceService::with_config(service, &config.performance.coalesce)?
-                .principal_scoped(principal_namespaces.clone()),
+                .principal_scoped(principal_namespaces.clone())
+                .with_execution_policy(execution.clone()),
         );
     }
 

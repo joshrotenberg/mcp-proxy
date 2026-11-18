@@ -107,6 +107,7 @@ impl<S> Layer<S> for FailoverLayer {
 pub struct FailoverService<S> {
     inner: S,
     mappings: Arc<Vec<FailoverMapping>>,
+    execution: Option<Arc<crate::execution::ExecutionPolicy>>,
 }
 
 impl<S> FailoverService<S> {
@@ -129,8 +130,34 @@ impl<S> FailoverService<S> {
         Self {
             inner,
             mappings: Arc::new(mappings),
+            execution: None,
         }
     }
+
+    /// Re-send a tool call the policy classifies as `write` (without an
+    /// idempotency key) only when the failed backend rejected it locally,
+    /// before it reached the transport; see [`crate::execution`].
+    pub(crate) fn with_execution_policy(
+        mut self,
+        policy: Arc<crate::execution::ExecutionPolicy>,
+    ) -> Self {
+        self.execution = Some(policy);
+        self
+    }
+}
+
+/// Whether a failed attempt may be followed by another backend.
+///
+/// Only backend failures qualify: a client error such as `-32602`, or a tool
+/// `isError` result, would fail the same way elsewhere. A call that must not
+/// run twice continues only after a local rejection.
+fn may_resend(
+    response: &RouterResponse,
+    once_only: bool,
+    probe: &crate::execution::DispatchProbe,
+) -> bool {
+    crate::outcome::Outcome::from_response(response).backend_failure()
+        && (!once_only || probe.locally_rejected())
 }
 
 /// Rewrite a request's namespace from primary to failover.
@@ -197,6 +224,7 @@ where
 
     fn call(&mut self, req: RouterRequest) -> Self::Future {
         let mappings = Arc::clone(&self.mappings);
+        let execution = self.execution.clone();
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
@@ -216,8 +244,21 @@ where
                 }
             };
 
+            // Without a policy, every failure fails over (library default).
+            let once_only = execution
+                .as_ref()
+                .is_some_and(|policy| !policy.replayable(&req.inner));
+            let strict = execution.is_some();
+            let attempt = |request: &RouterRequest| {
+                let probe = crate::execution::DispatchProbe::default();
+                let mut request = request.clone();
+                request.extensions.insert(probe.clone());
+                (request, probe)
+            };
+
             // Try primary
-            let primary_resp = inner.call(req.clone()).await?;
+            let (primary_req, mut probe) = attempt(&req);
+            let primary_resp = inner.call(primary_req).await?;
 
             // If primary succeeded, return it
             if primary_resp.inner.is_ok() {
@@ -232,6 +273,9 @@ where
             let mut last_resp = primary_resp;
 
             for failover_prefix in &mapping.failover_prefixes {
+                if strict && !may_resend(&last_resp, once_only, &probe) {
+                    break;
+                }
                 let failover_name = failover_prefix.trim_end_matches('/');
                 tracing::warn!(
                     primary = %mapping.primary_prefix.trim_end_matches('/'),
@@ -244,11 +288,12 @@ where
 
                 // The failover attempt is the client's own request: keep its
                 // caller identity, forwarded credentials, and cancellation.
-                let failover_req = RouterRequest {
+                let (failover_req, next_probe) = attempt(&RouterRequest {
                     id: req.id.clone(),
                     inner: failover_request,
                     extensions: req.extensions.clone(),
-                };
+                });
+                probe = next_probe;
 
                 let resp = inner.call(failover_req).await?;
 

@@ -641,6 +641,16 @@ pub struct BackendConfig {
     /// on who is calling.
     #[serde(default)]
     pub cache_scope: CacheScope,
+    /// Effect of tools that no `tool_effects` entry matches (default
+    /// `"write"`). Only `read` and `idempotent` tools are retried, hedged,
+    /// mirrored or re-sent by failover, and only `read` tools are cached or
+    /// coalesced. See [`crate::execution`].
+    #[serde(default)]
+    pub default_effect: Effect,
+    /// Per-tool effects, matched in order by backend-local tool name; the
+    /// first matching entry wins. See [`crate::execution`].
+    #[serde(default)]
+    pub tool_effects: Vec<ToolEffectConfig>,
     /// Capability filtering: only expose these tools (allowlist)
     #[serde(default)]
     pub expose_tools: Vec<String>,
@@ -825,6 +835,50 @@ pub enum CacheScope {
     /// a static bearer token, a scoped token, the management credential or an
     /// OAuth subject. Requires configured authentication.
     Principal,
+}
+
+/// What running a tool twice, or answering it without running it, does.
+///
+/// ```
+/// use mcp_proxy::config::Effect;
+/// let effect: Effect = serde_json::from_str("\"idempotent\"").unwrap();
+/// assert_eq!(effect, Effect::Idempotent);
+/// assert_eq!(Effect::default(), Effect::Write);
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Effect {
+    /// No side effects: retry, hedging, mirroring, failover, caching and
+    /// coalescing all apply.
+    Read,
+    /// Repeating the call has the same effect as making it once: retry,
+    /// hedging, mirroring and failover apply; caching and coalescing do not.
+    Idempotent,
+    /// The call changes state (default): it is sent once, never cached or
+    /// coalesced, and failover re-sends it only when the primary backend
+    /// never received it.
+    #[default]
+    Write,
+}
+
+/// One `[[backends.tool_effects]]` entry.
+///
+/// # Configuration
+///
+/// See the checked configuration fragment in [`crate::execution`].
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolEffectConfig {
+    /// Backend-local tool names or wildcard patterns (the syntax of
+    /// `expose_tools` and `hide_tools`).
+    pub tools: Vec<String>,
+    /// Effect of the matching tools.
+    pub effect: Effect,
+    /// For `write` tools: an argument whose non-empty value lets the backend
+    /// deduplicate the call. A call carrying it is treated as `idempotent`.
+    /// Names the backend's argument, after `param_overrides` and `inject_args`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
 }
 
 /// What to do when a client sends a value for a locked argument that differs
@@ -1548,7 +1602,7 @@ pub(crate) fn tool_pattern_matches(pattern: &str, name: &str) -> bool {
 }
 
 /// Reject `re:` entries in a tool list that only accepts glob patterns.
-fn validate_tool_patterns(field: &str, patterns: &[String]) -> Result<()> {
+pub(crate) fn validate_tool_patterns(field: &str, patterns: &[String]) -> Result<()> {
     if let Some(p) = patterns.iter().find(|p| p.starts_with("re:")) {
         anyhow::bail!(
             "{field}: regex entries are not supported (got '{p}'); use wildcard patterns such as 'api/read_*'"

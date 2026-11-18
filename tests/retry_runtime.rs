@@ -50,6 +50,7 @@ type='bearer'
 tokens=['data']
 [[backends]]
 name='api'
+default_effect = "read"
 transport='http'
 url='{}'
 [backends.retry]

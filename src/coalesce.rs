@@ -115,6 +115,7 @@ pub struct CoalesceService<S> {
     in_flight: Flights,
     config: CoalesceConfig,
     principal_namespaces: Arc<Vec<String>>,
+    execution: Option<Arc<crate::execution::ExecutionPolicy>>,
 }
 
 impl<S> CoalesceService<S> {
@@ -135,6 +136,7 @@ impl<S> CoalesceService<S> {
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             config: config.clone(),
             principal_namespaces: Arc::new(Vec::new()),
+            execution: None,
         })
     }
 
@@ -142,6 +144,16 @@ impl<S> CoalesceService<S> {
     /// these namespace prefixes (backends with `cache_scope = "principal"`).
     pub(crate) fn principal_scoped(mut self, namespaces: Vec<String>) -> Self {
         self.principal_namespaces = Arc::new(namespaces);
+        self
+    }
+
+    /// Only tool calls the policy classifies as `read` are coalesced; see
+    /// [`crate::execution`]. Without a policy every tool call qualifies.
+    pub(crate) fn with_execution_policy(
+        mut self,
+        policy: Arc<crate::execution::ExecutionPolicy>,
+    ) -> Self {
+        self.execution = Some(policy);
         self
     }
 
@@ -216,7 +228,11 @@ where
     }
 
     fn call(&mut self, req: RouterRequest) -> Self::Future {
-        let key = if crate::cache::is_task_call(&req.inner) {
+        let excluded = self
+            .execution
+            .as_ref()
+            .is_some_and(|policy| !policy.shareable(&req.inner));
+        let key = if excluded || crate::cache::is_task_call(&req.inner) {
             None
         } else {
             coalesce_key(&req.inner).map(|key| {

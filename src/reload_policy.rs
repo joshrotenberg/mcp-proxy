@@ -296,6 +296,7 @@ mod tests {
             "inject_args":[{"tool":"ping","args":{"x":1}}],
             "param_overrides":[{"tool":"ping","hide":["x"]}],
             "locked_args":[{"args":{"x":1}}], "cache_scope":"principal",
+            "default_effect":"read", "tool_effects":[{"tools":["ping"],"effect":"read"}],
             "expose_tools":["ping"], "hide_tools":["ping"],
             "expose_resources":["fixture://x"], "hide_resources":["fixture://x"],
             "expose_prompts":["prompt"], "hide_prompts":["prompt"],

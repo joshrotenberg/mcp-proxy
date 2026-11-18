@@ -390,6 +390,7 @@ mod config_validation;
 mod config_view;
 #[cfg(feature = "discovery")]
 pub mod discovery;
+pub mod execution;
 pub mod failover;
 pub mod filter;
 pub mod inject;
