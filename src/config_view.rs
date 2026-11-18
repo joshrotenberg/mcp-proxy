@@ -82,6 +82,7 @@ const PUBLIC_PATHS: &[&str] = &[
     "backends[].param_overrides[].hide",
     "backends[].locked_args[].tools",
     "backends[].locked_args[].on_conflict",
+    "backends[].cache_scope",
     "backends[].expose_tools",
     "backends[].hide_tools",
     "backends[].expose_prompts",

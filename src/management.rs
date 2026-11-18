@@ -20,8 +20,22 @@ use crate::config::{AuthConfig, ProxyConfig};
 #[derive(Clone)]
 pub(crate) enum Identity {
     Management,
-    Bearer(usize),
-    Scoped(usize),
+    /// An ordinary bearer token, by [`credential_fingerprint`].
+    Bearer(String),
+    /// A scoped bearer token, by [`credential_fingerprint`].
+    Scoped(String),
+}
+
+/// A stable, non-secret identifier for a static bearer credential.
+///
+/// The first 16 bytes of SHA-256 over a domain-separated token, hex encoded.
+/// The same token yields the same value across restarts, reloads, replicas and
+/// token-list order, so a session principal follows the credential rather than
+/// its position in the configuration.
+pub(crate) fn credential_fingerprint(kind: &str, token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("mcp-proxy:{kind}:{token}").as_bytes());
+    digest[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The management credential never falls back to a data-plane token. Reject
@@ -56,8 +70,8 @@ pub(crate) fn session_principal(extensions: &Extensions) -> Option<String> {
     if let Some(identity) = extensions.get::<Identity>() {
         return Some(match identity {
             Identity::Management => "mcp-proxy:management".to_string(),
-            Identity::Bearer(index) => format!("mcp-proxy:bearer:{index}"),
-            Identity::Scoped(index) => format!("mcp-proxy:scoped:{index}"),
+            Identity::Bearer(id) => format!("mcp-proxy:bearer:{id}"),
+            Identity::Scoped(id) => format!("mcp-proxy:scoped:{id}"),
         });
     }
     #[cfg(feature = "oauth")]
@@ -77,6 +91,33 @@ pub(crate) fn session_principal(extensions: &Extensions) -> Option<String> {
     None
 }
 
+/// Map every configured static credential to the identity it authenticates.
+pub(crate) fn identities(config: &ProxyConfig) -> std::collections::HashMap<String, Identity> {
+    let mut identities = std::collections::HashMap::new();
+    if let Some(AuthConfig::Bearer {
+        tokens,
+        scoped_tokens,
+    }) = &config.auth
+    {
+        for token in tokens {
+            identities.insert(
+                token.clone(),
+                Identity::Bearer(credential_fingerprint("bearer", token)),
+            );
+        }
+        for token in scoped_tokens {
+            identities.insert(
+                token.token.clone(),
+                Identity::Scoped(credential_fingerprint("scoped", &token.token)),
+            );
+        }
+    }
+    if let Some(token) = admin_token(config) {
+        identities.insert(token.to_owned(), Identity::Management);
+    }
+    identities
+}
+
 /// Authenticate the separate admin credential before data-plane auth. The
 /// unauthed transport clone shares sessions and receives only verified admins.
 pub(crate) fn authenticate(
@@ -85,22 +126,7 @@ pub(crate) fn authenticate(
     authenticated: Router,
 ) -> Router {
     // Middleware clones share one lookup table, not copies of every secret.
-    let mut identities = std::collections::HashMap::new();
-    if let Some(AuthConfig::Bearer {
-        tokens,
-        scoped_tokens,
-    }) = &config.auth
-    {
-        for (index, token) in tokens.iter().enumerate() {
-            identities.insert(token.clone(), Identity::Bearer(index));
-        }
-        for (index, token) in scoped_tokens.iter().enumerate() {
-            identities.insert(token.token.clone(), Identity::Scoped(index));
-        }
-    }
-    if let Some(token) = admin_token(config) {
-        identities.insert(token.to_owned(), Identity::Management);
-    }
+    let identities = identities(config);
     let identities = std::sync::Arc::new(identities);
     authenticated.layer(axum::middleware::from_fn(
         move |mut request: axum::extract::Request, next: axum::middleware::Next| {
@@ -289,6 +315,40 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn credential_fingerprints_are_stable_distinct_and_order_independent() {
+        use super::credential_fingerprint as fp;
+        assert_eq!(fp("bearer", "alpha"), fp("bearer", "alpha"));
+        assert_ne!(fp("bearer", "alpha"), fp("bearer", "beta"));
+        assert_ne!(fp("bearer", "alpha"), fp("scoped", "alpha"));
+        assert_eq!(fp("bearer", "alpha").len(), 32);
+        assert!(!fp("bearer", "alpha").contains("alpha"));
+
+        let principal = |tokens: &[&str], token: &str| {
+            let toml = format!(
+                "[proxy]\nname='p'\n[proxy.listen]\n[[backends]]\nname='api'\ntransport='stdio'\ncommand='x'\n[auth]\ntype='bearer'\ntokens=[{}]\n",
+                tokens
+                    .iter()
+                    .map(|t| format!("'{t}'"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            let config = crate::config::ProxyConfig::parse(&toml).unwrap();
+            let identities = super::identities(&config);
+            let mut extensions = tower_mcp::router::Extensions::new();
+            extensions.insert(identities[token].clone());
+            super::session_principal(&extensions).unwrap()
+        };
+        assert_eq!(
+            principal(&["one", "two"], "two"),
+            principal(&["two", "one"], "two")
+        );
+        assert_ne!(
+            principal(&["one", "two"], "one"),
+            principal(&["one", "two"], "two")
+        );
+    }
+
     use super::*;
     use serde_json::json;
     use std::sync::Arc;

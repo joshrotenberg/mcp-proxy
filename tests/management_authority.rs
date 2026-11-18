@@ -73,6 +73,9 @@ impl Fixture {
                     r#"[[auth.scoped_tokens]]
 token = "scoped"
 allow_tools = ["api{separator}ping", "proxy{separator}call_tool"]
+[[auth.scoped_tokens]]
+token = "scoped-two"
+allow_tools = ["api{separator}ping", "proxy{separator}call_tool"]
 "#
                 )
             } else {
@@ -449,7 +452,23 @@ async fn credential_bound_sessions_reject_replay_streaming_and_termination() {
     let manager = fixture.session(Some("manager")).await;
     let user = fixture.session(Some("ordinary")).await;
     let other = fixture.session(Some("other")).await;
-    for (victim, attacker) in [(&manager, &user), (&user, &manager), (&user, &other)] {
+    #[cfg_attr(not(feature = "oauth"), allow(unused_mut))]
+    let mut pairs = vec![(&manager, &user), (&user, &manager), (&user, &other)];
+    // Scoped tokens are distinct principals from each other and from ordinary
+    // bearer tokens (F04, #301).
+    #[cfg(feature = "oauth")]
+    let (scoped, scoped_two) = (
+        fixture.session(Some("scoped")).await,
+        fixture.session(Some("scoped-two")).await,
+    );
+    #[cfg(feature = "oauth")]
+    pairs.extend([
+        (&scoped, &scoped_two),
+        (&scoped_two, &scoped),
+        (&scoped, &user),
+        (&user, &scoped),
+    ]);
+    for (victim, attacker) in pairs {
         let impersonated = Session {
             client: Client::new(),
             url: victim.url.clone(),
