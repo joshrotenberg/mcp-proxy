@@ -432,6 +432,18 @@ impl Service<RouterRequest> for EffectBranch {
     }
 }
 
+/// A policy for one backend named `backend` whose `read_tools` are `read`
+/// and every other tool `write`.
+#[cfg(test)]
+pub(crate) fn test_policy(backend: &str, read_tools: &[&str]) -> Arc<ExecutionPolicy> {
+    let tools = serde_json::to_string(read_tools).unwrap();
+    let config = ProxyConfig::parse(&format!(
+        "[proxy]\nname = \"t\"\n[proxy.listen]\n[[backends]]\nname = \"{backend}\"\ntransport = \"http\"\nurl = \"http://localhost:1\"\n[[backends.tool_effects]]\ntools = {tools}\neffect = \"read\"\n"
+    ))
+    .unwrap();
+    Arc::new(ExecutionPolicy::from_config(&config))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

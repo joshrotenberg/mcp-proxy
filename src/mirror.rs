@@ -495,4 +495,18 @@ mod tests {
             "the copy must not inherit client cancellation"
         );
     }
+
+    #[tokio::test]
+    async fn execution_policy_mirrors_replayable_calls_only() {
+        use crate::test_util::{ExtensionProbe, marked_call};
+        for (read_tools, expected) in [(vec!["tool"], 2), (vec!["other"], 1)] {
+            let probe = ExtensionProbe::default();
+            let mut svc =
+                MirrorService::new(probe.clone(), make_mirrors("api", "shadow", 100), "/")
+                    .with_execution_policy(crate::execution::test_policy("api", &read_tools));
+            svc.call(marked_call("api/tool")).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            assert_eq!(probe.seen.lock().unwrap().len(), expected, "{read_tools:?}");
+        }
+    }
 }

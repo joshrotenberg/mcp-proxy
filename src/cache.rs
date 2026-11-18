@@ -1225,6 +1225,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execution_policy_caches_read_tools_only() {
+        use tower::Service;
+        for (read_tools, expected) in [(vec!["read"], (1, 1)), (vec!["other"], (0, 0))] {
+            let (svc, handle) = cache_for(false);
+            let mut svc =
+                svc.with_execution_policy(crate::execution::test_policy("fs", &read_tools));
+            for _ in 0..2 {
+                let _ = svc.call(principal_call("bearer", "a", false)).await;
+            }
+            let stats = handle.stats().await;
+            assert_eq!((stats[0].hits, stats[0].misses), expected, "{read_tools:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn task_augmented_calls_are_never_cached() {
         use tower::Service;
         let (mut svc, handle) = cache_for(false);

@@ -1118,6 +1118,18 @@ mod lifecycle_tests {
     }
 
     #[tokio::test]
+    async fn execution_policy_coalesces_read_tools_only() {
+        for (read_tools, expected) in [(vec!["tool"], 1), (vec!["other"], 2)] {
+            let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let svc = CoalesceService::new(SlowCounter(count.clone()))
+                .with_execution_policy(crate::execution::test_policy("api", &read_tools));
+            let calls =
+                backend_calls(svc, &count, vec![call_as("a", false), call_as("a", false)]).await;
+            assert_eq!(calls, expected, "{read_tools:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn task_augmented_calls_never_join_a_flight() {
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let svc = CoalesceService::new(SlowCounter(count.clone()));
