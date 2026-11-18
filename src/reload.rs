@@ -328,6 +328,7 @@ async fn watch_loop(
         #[cfg(feature = "discovery")]
         if changed && let Some((ref index, ref schemas, ref separator)) = discovery_index {
             let mut proxy_clone = proxy.clone();
+            #[allow(deprecated)]
             crate::discovery::reindex_with_schemas(index, schemas, &mut proxy_clone, separator)
                 .await;
         }

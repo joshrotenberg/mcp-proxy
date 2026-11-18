@@ -285,6 +285,16 @@ name, description, and complete input schema, then invoke it through
 `proxy/call_tool`. This keeps full schemas out of search result lists while making
 nested parameters and enums available before execution.
 
+Discovery indexes the public tool list, the same names and schemas a client
+gets from `tools/list` in direct mode: aliases, hidden tools, hidden or renamed
+parameters, locked argument keys and composite tools are all reflected. Search
+and `proxy/get_tool` results are limited to the tools the caller may see after
+RBAC and bearer-token scopes; a tool the caller cannot see answers like an
+unknown id. `proxy/similar_tools` and `proxy/tool_categories` require management
+authority. The index follows every backend change (file reload, HTTP or MCP
+management, and backend `list_changed` notifications) and keeps its previous
+contents when a refresh fails.
+
 `proxy/call_tool` authorizes the public **target name**, with the same bearer
 scope/JWT role checks, static filters, aliases, argument transforms, size limits,
 and caches as a direct call. Permission to the wrapper grants no target access;

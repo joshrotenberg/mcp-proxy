@@ -1,5 +1,7 @@
 //! Full tool-schema retrieval and refresh through the discovery meta-tools.
 #![cfg(feature = "discovery")]
+// Exercises the deprecated raw-catalog helpers kept for library users.
+#![allow(deprecated)]
 
 use mcp_proxy::discovery::{
     build_discovery_tools_with_schemas, build_index_with_schemas, reindex_with_schemas,
