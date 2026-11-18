@@ -576,7 +576,12 @@ mod tests {
         assert!(!m("api/*x", "api/read"));
         assert!(m("*", "anything/at/all"));
         assert!(m("a*b*c", "a/x/b/y/c"));
-        assert!(!m("[ab]", "a"), "brackets are literal");
+        assert!(m("api/[rw]*", "api/write"));
+        assert!(!m("api/[!rw]*", "api/write"));
+        assert!(m("api/{read,list}_*", "api/list_all"));
+        assert!(!m("api/{read,list}_*", "api/delete_all"));
+        assert!(m("a.b", "a.b"));
+        assert!(!m("a.b", "axb"), "regex metacharacters are literal");
     }
 
     #[tokio::test]

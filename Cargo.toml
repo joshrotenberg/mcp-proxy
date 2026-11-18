@@ -67,7 +67,6 @@ chrono = { version = "0.4", features = ["serde"] }
 schemars = "1"
 moka = { version = "0.12.14", features = ["future"] }
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
-glob-match = "0.2"
 regex = "1"
 notify-debouncer-mini = "0.7"
 utoipa = { version = "6", features = ["chrono"], optional = true }

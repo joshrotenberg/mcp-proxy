@@ -655,10 +655,12 @@ admin_token = "${ADMIN_TOKEN}"
 ```
 
 Role and scoped-token `allow_tools` and `deny_tools` entries are exact public
-tool names or wildcard patterns: `*` matches any run of characters, including
-`/`, and `?` matches one character. `"files/read_*"` matches `files/read_file`,
-and `"github/*"` matches every `github/` tool, including nested names such as
-`github/repos/delete`. Regex (`re:`) entries are rejected.
+tool names or wildcard patterns, with the same syntax as `expose_tools` and
+`hide_tools`: `*` matches any run of characters, including `/`, `?` matches
+one character, `[abc]`/`[!abc]` match a set and `{a,b}` matches alternatives.
+`"files/read_*"` matches `files/read_file`, and `"github/*"` matches every
+`github/` tool, including nested names such as `github/repos/delete`. Regex
+(`re:`) entries are rejected here; filters accept them.
 
 ### Capability filtering
 

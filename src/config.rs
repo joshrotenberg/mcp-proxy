@@ -997,8 +997,9 @@ pub struct BearerTokenConfig {
     pub token: String,
     /// Tools this token can access (namespaced, e.g. "files/read_file").
     /// Empty means all tools allowed.
-    /// Entries are public tool names or wildcard patterns: `*` matches any run
-    /// of characters including `/`, `?` matches one character (e.g.
+    /// Entries are public tool names or wildcard patterns, the syntax capability
+    /// filters use: `*` matches any run of characters including `/`, `?` one
+    /// character, plus `[...]` sets and `{a,b}` alternatives (e.g.
     /// `"files/read_*"`, `"github/*"`). `re:` regex entries are rejected.
     #[serde(default)]
     pub allow_tools: Vec<String>,
@@ -1015,8 +1016,9 @@ pub struct RoleConfig {
     pub name: String,
     /// Tools this role grants (namespaced, e.g. "files/read_file").
     /// Empty grants all tools. Grants from all mapped roles are combined.
-    /// Entries are public tool names or wildcard patterns: `*` matches any run
-    /// of characters including `/`, `?` matches one character (e.g.
+    /// Entries are public tool names or wildcard patterns, the syntax capability
+    /// filters use: `*` matches any run of characters including `/`, `?` one
+    /// character, plus `[...]` sets and `{a,b}` alternatives (e.g.
     /// `"files/read_*"`, `"github/*"`). `re:` regex entries are rejected.
     #[serde(default)]
     pub allow_tools: Vec<String>,
@@ -1397,7 +1399,8 @@ pub struct BackendFilter {
 /// [`NameFilter::deny_list`].
 #[derive(Debug, Clone)]
 pub enum CompiledPattern {
-    /// A glob pattern (matched via `glob_match`).
+    /// A wildcard pattern: `*` matches any run of characters including `/`,
+    /// `?` one character, plus `[...]` sets and `{a,b}` alternatives.
     Glob(String),
     /// A pre-compiled regex pattern (from `re:` prefix).
     Regex(regex::Regex),
@@ -1412,6 +1415,7 @@ impl CompiledPattern {
                 .with_context(|| format!("invalid regex in filter pattern: {pattern}"))?;
             Ok(Self::Regex(re))
         } else {
+            wildcard_regex(pattern)?;
             Ok(Self::Glob(pattern.to_string()))
         }
     }
@@ -1419,40 +1423,101 @@ impl CompiledPattern {
     /// Check if this pattern matches the given name.
     fn matches(&self, name: &str) -> bool {
         match self {
-            Self::Glob(pat) => glob_match::glob_match(pat, name),
+            Self::Glob(pat) => wildcard_matches(pat, name),
             Self::Regex(re) => re.is_match(name),
         }
     }
 }
 
-/// Whether `name` matches a tool-list entry from `allow_tools` or `deny_tools`.
+/// Translate a wildcard pattern into an anchored regular expression.
 ///
-/// An entry without wildcards matches only that exact public tool name. `*`
-/// matches any run of characters, including `/` and the namespace separator,
-/// so `"api/*"` covers `api/read` and `api/query/nested` alike; `?` matches one
-/// character. No other characters are special.
-#[cfg(feature = "oauth")]
-pub(crate) fn tool_pattern_matches(pattern: &str, name: &str) -> bool {
-    let (p, n): (Vec<char>, Vec<char>) = (pattern.chars().collect(), name.chars().collect());
-    let (mut pi, mut ni) = (0, 0);
-    // Position of the last `*` and the name index it is currently absorbing to.
-    let mut backtrack: Option<(usize, usize)> = None;
-    while ni < n.len() {
-        if pi < p.len() && (p[pi] == '?' || (p[pi] != '*' && p[pi] == n[ni])) {
-            pi += 1;
-            ni += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            backtrack = Some((pi, ni));
-            pi += 1;
-        } else if let Some((star, absorbed)) = backtrack {
-            pi = star + 1;
-            ni = absorbed + 1;
-            backtrack = Some((star, absorbed + 1));
-        } else {
-            return false;
+/// `*` matches any run of characters, including `/` and the namespace
+/// separator; `?` matches one character; `[abc]`, `[a-z]` and `[!abc]` match
+/// one character from (or not from) a set; `{a,b}` matches any listed
+/// alternative. Every other character is literal.
+pub(crate) fn wildcard_regex(pattern: &str) -> Result<regex::Regex> {
+    let mut out = String::from("^");
+    let mut chars = pattern.chars().peekable();
+    let mut in_group = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                while chars.peek() == Some(&'*') {
+                    chars.next();
+                }
+                out.push_str(".*");
+            }
+            '?' => out.push('.'),
+            '[' => {
+                let mut class = String::from("[");
+                if chars.peek() == Some(&'!') {
+                    chars.next();
+                    class.push('^');
+                }
+                let mut closed = false;
+                for c in chars.by_ref() {
+                    if c == ']' {
+                        closed = true;
+                        break;
+                    }
+                    if c == '\\' || c == '[' {
+                        class.push('\\');
+                    }
+                    class.push(c);
+                }
+                anyhow::ensure!(closed, "unclosed '[' in pattern '{pattern}'");
+                class.push(']');
+                out.push_str(&class);
+            }
+            '{' if !in_group => {
+                in_group = true;
+                out.push_str("(?:");
+            }
+            ',' if in_group => out.push('|'),
+            '}' if in_group => {
+                in_group = false;
+                out.push(')');
+            }
+            c => out.push_str(&regex::escape(&c.to_string())),
         }
     }
-    p[pi..].iter().all(|c| *c == '*')
+    anyhow::ensure!(!in_group, "unclosed '{{' in pattern '{pattern}'");
+    out.push('$');
+    regex::Regex::new(&out).with_context(|| format!("invalid pattern '{pattern}'"))
+}
+
+/// Whether `name` matches a wildcard pattern (see [`wildcard_regex`]).
+///
+/// Compiled patterns are cached; patterns come from configuration, and the
+/// cache is cleared if it ever grows past a fixed bound. A pattern that does
+/// not compile matches nothing.
+pub(crate) fn wildcard_matches(pattern: &str, name: &str) -> bool {
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<regex::Regex>>>> = OnceLock::new();
+    const MAX_CACHED: usize = 4096;
+    let mut cache = CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cache.len() >= MAX_CACHED && !cache.contains_key(pattern) {
+        cache.clear();
+    }
+    cache
+        .entry(pattern.to_string())
+        .or_insert_with(|| wildcard_regex(pattern).ok())
+        .as_ref()
+        .is_some_and(|re| re.is_match(name))
+}
+
+/// Whether `name` matches a tool-list entry from `allow_tools` or `deny_tools`.
+///
+/// Entries use the same wildcard syntax as capability filters (see
+/// [`wildcard_regex`]): an entry without wildcards matches only that exact
+/// public tool name, and `*` crosses `/`, so `"api/*"` covers `api/read` and
+/// `api/query/nested` alike.
+#[cfg(feature = "oauth")]
+pub(crate) fn tool_pattern_matches(pattern: &str, name: &str) -> bool {
+    wildcard_matches(pattern, name)
 }
 
 /// Reject `re:` entries in a tool list that only accepts glob patterns.
@@ -1462,13 +1527,17 @@ fn validate_tool_patterns(field: &str, patterns: &[String]) -> Result<()> {
             "{field}: regex entries are not supported (got '{p}'); use wildcard patterns such as 'api/read_*'"
         );
     }
+    for p in patterns {
+        wildcard_regex(p).with_context(|| format!("{field}: invalid pattern"))?;
+    }
     Ok(())
 }
 
 /// A name-based allow/deny filter.
 ///
 /// Patterns support two syntaxes:
-/// - **Glob** (default): `*` matches any sequence, `?` matches one character.
+/// - **Wildcard** (default): `*` matches any sequence, including `/`, `?` matches
+///   one character, `[abc]`/`[!abc]` match a set, `{a,b}` matches alternatives.
 /// - **Regex** (`re:` prefix): e.g. `re:^list_.*$` uses the `regex` crate.
 ///
 /// Regex syntax is checked during configuration validation. Runtime filters
@@ -3640,6 +3709,18 @@ jwks_uri = "https://issuer.example.test/keys"
         let rl = config.proxy.rate_limit.unwrap();
         assert_eq!(rl.requests, 500);
         assert_eq!(rl.period_seconds, 1);
+    }
+
+    #[test]
+    fn name_filter_wildcards_cross_slashes_so_hides_cover_nested_names() {
+        let filter = NameFilter::deny_list(["query/*".to_string(), "admin_*".to_string()]).unwrap();
+        assert!(!filter.allows("query/nested/deep"));
+        assert!(!filter.allows("admin_x/y"));
+        assert!(filter.allows("search"));
+        let filter = NameFilter::allow_list(["read_{file,dir}".to_string()]).unwrap();
+        assert!(filter.allows("read_dir"));
+        assert!(!filter.allows("read_link"));
+        assert!(NameFilter::deny_list(["broken[".to_string()]).is_err());
     }
 
     #[test]
