@@ -997,9 +997,9 @@ pub struct BearerTokenConfig {
     pub token: String,
     /// Tools this token can access (namespaced, e.g. "files/read_file").
     /// Empty means all tools allowed.
-    /// Entries are public tool names or glob patterns: `*` and `?` match within
-    /// one `/`-separated segment, `**` also crosses `/` (e.g. `"files/read_*"`,
-    /// `"github/**"`). `re:` regex entries are rejected.
+    /// Entries are public tool names or wildcard patterns: `*` matches any run
+    /// of characters including `/`, `?` matches one character (e.g.
+    /// `"files/read_*"`, `"github/*"`). `re:` regex entries are rejected.
     #[serde(default)]
     pub allow_tools: Vec<String>,
     /// Tools this token cannot access. Same syntax as `allow_tools`.
@@ -1015,9 +1015,9 @@ pub struct RoleConfig {
     pub name: String,
     /// Tools this role grants (namespaced, e.g. "files/read_file").
     /// Empty grants all tools. Grants from all mapped roles are combined.
-    /// Entries are public tool names or glob patterns: `*` and `?` match within
-    /// one `/`-separated segment, `**` also crosses `/` (e.g. `"files/read_*"`,
-    /// `"github/**"`). `re:` regex entries are rejected.
+    /// Entries are public tool names or wildcard patterns: `*` matches any run
+    /// of characters including `/`, `?` matches one character (e.g.
+    /// `"files/read_*"`, `"github/*"`). `re:` regex entries are rejected.
     #[serde(default)]
     pub allow_tools: Vec<String>,
     /// Tools denied by this role. A deny overrides grants from every mapped role.
@@ -1427,20 +1427,39 @@ impl CompiledPattern {
 
 /// Whether `name` matches a tool-list entry from `allow_tools` or `deny_tools`.
 ///
-/// Entries are glob patterns (the syntax capability filters use without the
-/// `re:` prefix): an entry without metacharacters matches only that exact name,
-/// `*` and `?` match within one `/`-separated segment, `**` also crosses `/`,
-/// and `[...]` and `{a,b}` select characters and alternatives.
+/// An entry without wildcards matches only that exact public tool name. `*`
+/// matches any run of characters, including `/` and the namespace separator,
+/// so `"api/*"` covers `api/read` and `api/query/nested` alike; `?` matches one
+/// character. No other characters are special.
 #[cfg(feature = "oauth")]
 pub(crate) fn tool_pattern_matches(pattern: &str, name: &str) -> bool {
-    glob_match::glob_match(pattern, name)
+    let (p, n): (Vec<char>, Vec<char>) = (pattern.chars().collect(), name.chars().collect());
+    let (mut pi, mut ni) = (0, 0);
+    // Position of the last `*` and the name index it is currently absorbing to.
+    let mut backtrack: Option<(usize, usize)> = None;
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == '?' || (p[pi] != '*' && p[pi] == n[ni])) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            backtrack = Some((pi, ni));
+            pi += 1;
+        } else if let Some((star, absorbed)) = backtrack {
+            pi = star + 1;
+            ni = absorbed + 1;
+            backtrack = Some((star, absorbed + 1));
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|c| *c == '*')
 }
 
 /// Reject `re:` entries in a tool list that only accepts glob patterns.
 fn validate_tool_patterns(field: &str, patterns: &[String]) -> Result<()> {
     if let Some(p) = patterns.iter().find(|p| p.starts_with("re:")) {
         anyhow::bail!(
-            "{field}: regex entries are not supported (got '{p}'); use glob patterns such as 'api/read_*'"
+            "{field}: regex entries are not supported (got '{p}'); use wildcard patterns such as 'api/read_*'"
         );
     }
     Ok(())

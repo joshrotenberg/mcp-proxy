@@ -562,14 +562,32 @@ mod tests {
     }
 
     #[test]
-    fn single_star_stays_within_a_segment() {
+    fn wildcards_cross_slashes_and_exact_names_stay_exact() {
         use crate::config::tool_pattern_matches as m;
         assert!(m("api/read", "api/read"));
         assert!(!m("api/read", "api/read_all"));
         assert!(m("api/*", "api/read"));
-        assert!(!m("api/*", "api/query/nested"));
-        assert!(m("api/**", "api/query/nested"));
+        assert!(m("api/*", "api/query/nested"));
         assert!(m("api::*", "api::read"));
-        assert!(m("api/read_{one,all}", "api/read_all"));
+        assert!(m("*/delete_*", "fs/admin/delete_all"));
+        assert!(m("api/read_?", "api/read_1"));
+        assert!(!m("api/read_?", "api/read_10"));
+        assert!(!m("api/*", "apix/read"));
+        assert!(!m("api/*x", "api/read"));
+        assert!(m("*", "anything/at/all"));
+        assert!(m("a*b*c", "a/x/b/y/c"));
+        assert!(!m("[ab]", "a"), "brackets are literal");
+    }
+
+    #[tokio::test]
+    async fn deny_pattern_covers_nested_tool_names() {
+        let tools = ["api/read", "api/query/nested", "db/query"];
+        let mut svc = BearerScopingService::new(MockService::with_tools(&tools));
+        let req = request_with_bearer_scope(
+            &[],
+            &["api/*"],
+            McpRequest::ListTools(ListToolsParams::default()),
+        );
+        assert_eq!(listed(svc.call(req).await.unwrap()), ["db/query"]);
     }
 }
