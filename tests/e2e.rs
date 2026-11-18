@@ -1783,6 +1783,7 @@ mod websocket_transport {
 // ===========================================================================
 
 #[cfg(feature = "discovery")]
+#[allow(deprecated)] // the raw-catalog helpers kept for library users
 mod tool_discovery {
     use tower::Service;
     use tower_mcp::protocol::{CallToolParams, ListToolsParams, McpRequest, RequestId};
@@ -1924,6 +1925,7 @@ mod tool_discovery {
 // ===========================================================================
 
 #[cfg(feature = "discovery")]
+#[allow(deprecated)] // the raw-catalog helpers kept for library users
 mod search_mode {
     use tower::Service;
     use tower_mcp::protocol::{CallToolParams, ListToolsParams, McpRequest, RequestId};

@@ -36,9 +36,7 @@ pub struct Proxy {
     runtime: std::sync::Arc<crate::lifecycle::Runtime>,
     reload_policy: crate::reload_policy::ReloadPolicy,
     #[cfg(feature = "discovery")]
-    discovery_index: Option<crate::discovery::SharedDiscoveryIndex>,
-    #[cfg(feature = "discovery")]
-    discovery_schemas: Option<crate::discovery::SchemaStore>,
+    discovery_catalog: Option<crate::discovery::DiscoveryCatalog>,
 }
 
 impl Proxy {
@@ -108,12 +106,27 @@ impl Proxy {
         runtime: std::sync::Arc<crate::lifecycle::Runtime>,
         #[cfg(feature = "metrics")] metrics: Option<crate::metrics::MetricsRecorder>,
     ) -> Result<Self> {
-        let (mcp_proxy, cb_handles) = build_mcp_proxy(&config, &runtime.connections).await?;
+        // Discovery keeps a catalog of the public tool list, refreshed from the
+        // proxy's list-changed notifications (search mode implies discovery).
+        #[cfg(feature = "discovery")]
+        let discovery_catalog = (config.proxy.tool_discovery
+            || config.proxy.tool_exposure == crate::config::ToolExposure::Search)
+            .then(|| crate::discovery::DiscoveryCatalog::new(&config.proxy.separator));
+        #[cfg(feature = "discovery")]
+        let (notifications, notification_rx) = match discovery_catalog {
+            Some(_) => {
+                let (tx, rx) = tokio::sync::mpsc::channel(256);
+                (Some(tx), Some(rx))
+            }
+            None => (None, None),
+        };
+        #[cfg(not(feature = "discovery"))]
+        let notifications = None;
+        let (mcp_proxy, cb_handles) =
+            build_mcp_proxy(&config, &runtime.connections, notifications).await?;
         *runtime.proxy.lock().expect("backend owner") = Some(mcp_proxy.clone());
         let proxy_for_admin = mcp_proxy.clone();
-        // Only the discovery index build mutates this clone.
-        #[cfg_attr(not(feature = "discovery"), allow(unused_mut))]
-        let mut proxy_for_caller = mcp_proxy.clone();
+        let proxy_for_caller = mcp_proxy.clone();
         let proxy_for_management = mcp_proxy.clone();
 
         #[cfg(feature = "metrics")]
@@ -123,7 +136,12 @@ impl Proxy {
         #[cfg(not(feature = "metrics"))]
         let metrics_handle = None;
 
-        let (service, cache_handle) = build_middleware_stack(&config, mcp_proxy)?;
+        let (service, cache_handle) = build_middleware_stack(
+            &config,
+            mcp_proxy,
+            #[cfg(feature = "discovery")]
+            discovery_catalog.as_ref(),
+        )?;
         #[cfg(feature = "metrics")]
         let service = if let Some(metrics) = metrics {
             BoxCloneService::new(crate::metrics::MetricsService::with_recorder(
@@ -206,24 +224,15 @@ impl Proxy {
             router
         };
 
-        // Build discovery index if enabled (search mode implies discovery)
+        // Index the public catalog, then follow tool-list changes.
         #[cfg(feature = "discovery")]
-        let discovery_enabled = config.proxy.tool_discovery
-            || config.proxy.tool_exposure == crate::config::ToolExposure::Search;
-        #[cfg(feature = "discovery")]
-        let (discovery_index, discovery_schemas, discovery_tools) = if discovery_enabled {
-            let (index, schemas) = crate::discovery::build_index_with_schemas(
-                &mut proxy_for_caller,
-                &config.proxy.separator,
-            )
-            .await;
-            let tools = crate::discovery::build_discovery_tools_with_schemas(
-                index.clone(),
-                schemas.clone(),
-            );
-            (Some(index), Some(schemas), Some(tools))
-        } else {
-            (None, None, None)
+        let discovery_tools = match (&discovery_catalog, notification_rx) {
+            (Some(catalog), Some(rx)) => {
+                catalog.refresh().await;
+                catalog.listen(rx);
+                Some(catalog.tools())
+            }
+            _ => None,
         };
         #[cfg(not(feature = "discovery"))]
         let discovery_tools: Option<Vec<tower_mcp::Tool>> = None;
@@ -252,15 +261,28 @@ impl Proxy {
             runtime,
             reload_policy,
             #[cfg(feature = "discovery")]
-            discovery_index,
-            #[cfg(feature = "discovery")]
-            discovery_schemas,
+            discovery_catalog,
         })
     }
 
     /// Get a reference to the session handle for monitoring active sessions.
     pub fn session_handle(&self) -> &SessionHandle {
         &self.session_handle
+    }
+
+    /// The discovery catalog, when `tool_discovery` or search mode is enabled.
+    ///
+    /// The catalog follows backend changes on its own, including changes made
+    /// through [`Self::mcp_proxy`]. See [`crate::discovery::DiscoveryCatalog`].
+    ///
+    /// ```no_run
+    /// # async fn demo(proxy: &mcp_proxy::Proxy) {
+    /// let revision = proxy.discovery_catalog().map(|c| c.revision());
+    /// # }
+    /// ```
+    #[cfg(feature = "discovery")]
+    pub fn discovery_catalog(&self) -> Option<&crate::discovery::DiscoveryCatalog> {
+        self.discovery_catalog.as_ref()
     }
 
     /// Get a reference to the underlying [`McpProxy`] for dynamic operations.
@@ -290,17 +312,9 @@ impl Proxy {
         *watcher = Some(crate::reload::spawn_config_watcher_with_policy(
             config_path,
             self.inner.clone(),
+            // Reloaded backends notify the discovery catalog directly.
             #[cfg(feature = "discovery")]
-            self.discovery_index
-                .as_ref()
-                .zip(self.discovery_schemas.as_ref())
-                .map(|(idx, schemas)| {
-                    (
-                        idx.clone(),
-                        schemas.clone(),
-                        self.config.proxy.separator.clone(),
-                    )
-                }),
+            None,
             Ok(self.reload_policy.clone()),
         ));
     }
@@ -578,9 +592,13 @@ pub(crate) fn build_http_transport(url: &str, backend: &BackendConfig) -> HttpCl
 async fn build_mcp_proxy(
     config: &ProxyConfig,
     connections: &crate::lifecycle::Connections,
+    notifications: Option<tower_mcp::context::NotificationSender>,
 ) -> Result<(McpProxy, HashMap<String, CbHandle>)> {
     let mut builder = McpProxy::builder(&config.proxy.name, &config.proxy.version)
         .separator(&config.proxy.separator);
+    if let Some(tx) = notifications {
+        builder = builder.notification_sender(tx);
+    }
     let mut cb_handles: HashMap<String, CbHandle> = HashMap::new();
 
     if let Some(instructions) = &config.proxy.instructions {
@@ -891,6 +909,7 @@ fn invocation_policy(
 fn build_middleware_stack(
     config: &ProxyConfig,
     proxy: McpProxy,
+    #[cfg(feature = "discovery")] catalog: Option<&crate::discovery::DiscoveryCatalog>,
 ) -> Result<(
     BoxCloneService<RouterRequest, RouterResponse, Infallible>,
     Option<cache::CacheHandle>,
@@ -1182,7 +1201,23 @@ fn build_middleware_stack(
         ));
     }
 
+    // The discovery catalog lists the public catalog below caller policy...
+    #[cfg(feature = "discovery")]
+    if let Some(catalog) = catalog {
+        catalog.set_source(service.clone());
+    }
+
     service = invocation_policy(config, service)?;
+
+    // ...and answers each discovery call for its caller, just outside policy.
+    #[cfg(feature = "discovery")]
+    if let Some(catalog) = catalog {
+        service = BoxCloneService::new(crate::discovery::DiscoveryService::new(
+            service,
+            catalog.clone(),
+            &config.proxy.separator,
+        ));
+    }
 
     // Resolve the search wrapper before the ordinary target's policy stack.
     if config.proxy.tool_exposure == crate::config::ToolExposure::Search {
@@ -1848,7 +1883,13 @@ mod middleware_stack_tests {
             .await
             .unwrap();
         let config = ProxyConfig::parse("[proxy]\nname='rate-test'\n[proxy.listen]\n[proxy.rate_limit]\nrequests=1\nperiod_seconds=60\n[[backends]]\nname='api'\ntransport='stdio'\ncommand='fixture'\n").unwrap();
-        let (service, _) = build_middleware_stack(&config, proxy).unwrap();
+        let (service, _) = build_middleware_stack(
+            &config,
+            proxy,
+            #[cfg(feature = "discovery")]
+            None,
+        )
+        .unwrap();
         let mut extensions = Extensions::new();
         extensions.insert(crate::management::Identity::Management);
         let response = service

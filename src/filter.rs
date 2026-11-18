@@ -364,6 +364,14 @@ impl<S> Layer<S> for SearchModeFilterLayer {
     }
 }
 
+/// Request marker that exempts a `ListTools` from search-mode hiding.
+///
+/// Only the proxy inserts it, on the internal listings the discovery catalog
+/// uses to see backend tools. Clients cannot set request extensions, and every
+/// other filter still applies to marked requests.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UnfilteredListing;
+
 /// Middleware that filters `ListTools` responses to only show tools under
 /// a specific namespace prefix.
 ///
@@ -402,6 +410,9 @@ where
     }
 
     fn call(&mut self, req: RouterRequest) -> Self::Future {
+        if req.extensions.get::<UnfilteredListing>().is_some() {
+            return Box::pin(self.inner.call(req));
+        }
         let prefix = self.prefix.clone();
         let fut = self.inner.call(req);
 

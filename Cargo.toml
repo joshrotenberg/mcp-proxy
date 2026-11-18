@@ -89,7 +89,7 @@ jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_r
 reqwest = { version = "0.13", features = ["json"] }
 tokio-stream = "0.1"
 tower-resilience-chaos = "0.14"
-tower-mcp = { version = "0.27.0", features = ["http", "http-client", "proxy", "websocket"] }
+tower-mcp = { version = "0.27.0", features = ["http", "http-client", "proxy", "websocket", "dynamic-tools"] }
 futures-util = "0.3"
 docker-wrapper = { version = "0.11.1", features = ["testing", "templates"] }
 tempfile = "3"

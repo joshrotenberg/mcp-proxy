@@ -94,7 +94,7 @@
 //! ```text
 //! HTTP spans -> Auth (axum) -> MCP spans -> Metrics -> Global Rate Limit
 //!   -> Audit -> Access Log -> Management Dispatch -> Ordinary Guard
-//!   -> Search Invocation -> Token Validation -> RBAC -> Bearer Scoping
+//!   -> Search Invocation -> Discovery -> Token Validation -> RBAC -> Bearer Scoping
 //!   -> Composite -> Alias -> Search Mode Filter -> Capability Filter
 //!   -> Validation -> Coalesce -> Cache -> Parameter Overrides -> Inject Args
 //!   -> Mirror -> Failover -> Canary -> Locked Args -> Backend Management Guard
@@ -109,7 +109,10 @@
 //! raw proxy, sharing the incoming rate limit, audit/access records and metrics,
 //! while bypassing data-plane policy/transforms/caches. Ordinary requests cannot
 //! use that branch. Search Invocation resolves the public target before caller
-//! authorization. Composite targets independently re-enter caller policy and
+//! authorization. Discovery answers `proxy/search_tools` and `proxy/get_tool`
+//! from a catalog of the public tool list (the stack below caller policy),
+//! limited to what the caller's own `tools/list` returns through policy.
+//! Composite targets independently re-enter caller policy and
 //! the ordinary stack below composite expansion; nested expansion is unsupported.
 //!
 //! Aliases map public request names to backend names before capability filtering;
