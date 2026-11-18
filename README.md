@@ -654,6 +654,12 @@ default_deny = true
 admin_token = "${ADMIN_TOKEN}"
 ```
 
+Role and scoped-token `allow_tools` and `deny_tools` entries are exact public
+tool names or glob patterns: `*` and `?` match within one `/`-separated
+segment and `**` also crosses `/`, so `"files/read_*"` matches
+`files/read_file` and `"github/**"` matches every `github/` tool. Regex (`re:`)
+entries are rejected.
+
 ### Capability filtering
 
 <!-- config-fragment -->

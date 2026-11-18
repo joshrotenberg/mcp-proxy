@@ -91,7 +91,7 @@
 //! a message identifying the denied tool. Library callers must handle the
 //! `Result` returned by [`RbacConfig::new`].
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
@@ -124,9 +124,9 @@ pub struct RbacConfig {
     /// Map of claim value -> role name
     claim_to_role: HashMap<String, String>,
     /// Map of role name -> allowed tools (empty = all allowed)
-    role_allow: HashMap<String, HashSet<String>>,
+    role_allow: HashMap<String, Vec<String>>,
     /// Map of role name -> denied tools
-    role_deny: HashMap<String, HashSet<String>>,
+    role_deny: HashMap<String, Vec<String>>,
     /// Deny authenticated requests whose claim value is not in `claim_to_role`.
     default_deny: bool,
 }
@@ -142,12 +142,9 @@ impl RbacConfig {
         let mut role_deny = HashMap::new();
 
         for role in roles {
-            role_allow.insert(
-                role.name.clone(),
-                role.allow_tools.iter().cloned().collect(),
-            );
+            role_allow.insert(role.name.clone(), role.allow_tools.clone());
             if !role.deny_tools.is_empty() {
-                role_deny.insert(role.name.clone(), role.deny_tools.iter().cloned().collect());
+                role_deny.insert(role.name.clone(), role.deny_tools.clone());
             }
         }
 
@@ -219,14 +216,20 @@ impl RbacConfig {
             if self
                 .role_deny
                 .get(role)
-                .is_some_and(|denied| denied.contains(tool_name))
+                .is_some_and(|denied| matches_any(denied, tool_name))
             {
                 return false;
             }
-            granted |= allowed.is_empty() || allowed.contains(tool_name);
+            granted |= allowed.is_empty() || matches_any(allowed, tool_name);
         }
         granted
     }
+}
+
+fn matches_any(patterns: &[String], tool_name: &str) -> bool {
+    patterns
+        .iter()
+        .any(|p| crate::config::tool_pattern_matches(p, tool_name))
 }
 
 /// Middleware that enforces RBAC on tool calls and list responses.
@@ -696,5 +699,82 @@ mod tests {
                 default_deny
             );
         }
+    }
+
+    #[tokio::test]
+    async fn role_patterns_apply_to_calls_and_listings() {
+        let roles = vec![RoleConfig {
+            name: "developer".into(),
+            allow_tools: vec!["github/*".into(), "docs/*".into()],
+            deny_tools: vec!["github/delete_*".into()],
+        }];
+        let mapping = RoleMappingConfig {
+            claim: "scope".into(),
+            mapping: HashMap::from([("dev".into(), "developer".into())]),
+            default_deny: false,
+        };
+        let config = RbacConfig::new(&roles, &mapping).unwrap();
+        let tools = [
+            "github/issues",
+            "github/delete_repo",
+            "docs/search",
+            "db/query",
+        ];
+        let mut svc = RbacService::new(MockService::with_tools(&tools), config);
+
+        let resp = svc
+            .call(request_with_scope(
+                "dev",
+                McpRequest::ListTools(Default::default()),
+            ))
+            .await
+            .unwrap();
+        let McpResponse::ListTools(result) = resp.inner.unwrap() else {
+            panic!("expected ListTools");
+        };
+        let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["github/issues", "docs/search"]);
+
+        for (name, allowed) in [
+            ("github/issues", true),
+            ("github/delete_repo", false),
+            ("db/query", false),
+        ] {
+            let req = request_with_scope(
+                "dev",
+                McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                    name: name.to_string(),
+                    arguments: serde_json::json!({}),
+                    input_responses: None,
+                    request_state: None,
+                    meta: None,
+                    task: None,
+                }),
+            );
+            assert_eq!(
+                svc.call(req).await.unwrap().inner.is_ok(),
+                allowed,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn regex_entries_are_rejected() {
+        let mapping = RoleMappingConfig {
+            claim: "scope".into(),
+            mapping: HashMap::from([("dev".into(), "developer".into())]),
+            default_deny: false,
+        };
+        let roles = [RoleConfig {
+            name: "developer".into(),
+            allow_tools: vec!["re:^github/.*".into()],
+            deny_tools: vec![],
+        }];
+        let err = RbacConfig::new(&roles, &mapping).err().unwrap();
+        assert!(
+            err.to_string().contains("regex entries are not supported"),
+            "{err}"
+        );
     }
 }

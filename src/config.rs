@@ -997,9 +997,12 @@ pub struct BearerTokenConfig {
     pub token: String,
     /// Tools this token can access (namespaced, e.g. "files/read_file").
     /// Empty means all tools allowed.
+    /// Entries are public tool names or glob patterns: `*` and `?` match within
+    /// one `/`-separated segment, `**` also crosses `/` (e.g. `"files/read_*"`,
+    /// `"github/**"`). `re:` regex entries are rejected.
     #[serde(default)]
     pub allow_tools: Vec<String>,
-    /// Tools this token cannot access.
+    /// Tools this token cannot access. Same syntax as `allow_tools`.
     #[serde(default)]
     pub deny_tools: Vec<String>,
 }
@@ -1012,9 +1015,13 @@ pub struct RoleConfig {
     pub name: String,
     /// Tools this role grants (namespaced, e.g. "files/read_file").
     /// Empty grants all tools. Grants from all mapped roles are combined.
+    /// Entries are public tool names or glob patterns: `*` and `?` match within
+    /// one `/`-separated segment, `**` also crosses `/` (e.g. `"files/read_*"`,
+    /// `"github/**"`). `re:` regex entries are rejected.
     #[serde(default)]
     pub allow_tools: Vec<String>,
     /// Tools denied by this role. A deny overrides grants from every mapped role.
+    /// Same syntax as `allow_tools`.
     #[serde(default)]
     pub deny_tools: Vec<String>,
 }
@@ -1418,6 +1425,27 @@ impl CompiledPattern {
     }
 }
 
+/// Whether `name` matches a tool-list entry from `allow_tools` or `deny_tools`.
+///
+/// Entries are glob patterns (the syntax capability filters use without the
+/// `re:` prefix): an entry without metacharacters matches only that exact name,
+/// `*` and `?` match within one `/`-separated segment, `**` also crosses `/`,
+/// and `[...]` and `{a,b}` select characters and alternatives.
+#[cfg(feature = "oauth")]
+pub(crate) fn tool_pattern_matches(pattern: &str, name: &str) -> bool {
+    glob_match::glob_match(pattern, name)
+}
+
+/// Reject `re:` entries in a tool list that only accepts glob patterns.
+fn validate_tool_patterns(field: &str, patterns: &[String]) -> Result<()> {
+    if let Some(p) = patterns.iter().find(|p| p.starts_with("re:")) {
+        anyhow::bail!(
+            "{field}: regex entries are not supported (got '{p}'); use glob patterns such as 'api/read_*'"
+        );
+    }
+    Ok(())
+}
+
 /// A name-based allow/deny filter.
 ///
 /// Patterns support two syntaxes:
@@ -1625,6 +1653,8 @@ pub(crate) fn validate_rbac(
         if !names.insert(role.name.as_str()) {
             anyhow::bail!("auth.roles contains duplicate role definitions");
         }
+        validate_tool_patterns("auth.roles.allow_tools", &role.allow_tools)?;
+        validate_tool_patterns("auth.roles.deny_tools", &role.deny_tools)?;
     }
     if mapping.claim.trim().is_empty() || mapping.claim.trim() != mapping.claim {
         anyhow::bail!("auth.role_mapping.claim must be nonempty without surrounding whitespace");
@@ -1908,6 +1938,8 @@ impl ProxyConfig {
                         "scoped_tokens: cannot specify both allow_tools and deny_tools for the same token"
                     );
                 }
+                validate_tool_patterns("scoped_tokens.allow_tools", &st.allow_tools)?;
+                validate_tool_patterns("scoped_tokens.deny_tools", &st.deny_tools)?;
             }
         }
 
@@ -4240,6 +4272,21 @@ jwks_uri = "https://issuer.example.test/keys"
                 assert!(scoped_tokens[1].allow_tools.is_empty());
             }
             other => panic!("expected Bearer auth, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "oauth")]
+    #[test]
+    fn scoped_token_regex_entries_are_rejected() {
+        for field in ["allow_tools", "deny_tools"] {
+            let toml = format!(
+                "[proxy]\nname = \"scoped\"\n[proxy.listen]\n\n[[backends]]\nname = \"echo\"\ntransport = \"stdio\"\ncommand = \"echo\"\n\n[auth]\ntype = \"bearer\"\n[[auth.scoped_tokens]]\ntoken = \"t\"\n{field} = [\"re:^echo/.*\"]\n"
+            );
+            let err = ProxyConfig::parse(&toml).unwrap_err();
+            assert!(
+                err.to_string().contains("regex entries are not supported"),
+                "{err}"
+            );
         }
     }
 

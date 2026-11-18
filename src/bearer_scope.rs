@@ -189,8 +189,8 @@ fn unauthorized_response(message: &str) -> axum::response::Response {
 /// Resolved bearer token scope (allow/deny tool sets).
 #[derive(Debug, Clone)]
 struct ResolvedScope {
-    allow: HashSet<String>,
-    deny: HashSet<String>,
+    allow: Vec<String>,
+    deny: Vec<String>,
 }
 
 impl ResolvedScope {
@@ -198,7 +198,7 @@ impl ResolvedScope {
     fn from_claims(claims: &TokenClaims) -> Option<Self> {
         let scope_val = claims.extra.get(BEARER_SCOPE_KEY)?;
 
-        let allow: HashSet<String> = scope_val
+        let allow: Vec<String> = scope_val
             .get("allow")
             .and_then(|v| v.as_array())
             .map(|arr| {
@@ -208,7 +208,7 @@ impl ResolvedScope {
             })
             .unwrap_or_default();
 
-        let deny: HashSet<String> = scope_val
+        let deny: Vec<String> = scope_val
             .get("deny")
             .and_then(|v| v.as_array())
             .map(|arr| {
@@ -228,10 +228,15 @@ impl ResolvedScope {
 
     /// Check if a tool is allowed under this scope.
     fn is_tool_allowed(&self, tool_name: &str) -> bool {
-        if !self.allow.is_empty() && !self.allow.contains(tool_name) {
+        let matches = |patterns: &[String]| {
+            patterns
+                .iter()
+                .any(|p| crate::config::tool_pattern_matches(p, tool_name))
+        };
+        if !self.allow.is_empty() && !matches(&self.allow) {
             return false;
         }
-        if self.deny.contains(tool_name) {
+        if matches(&self.deny) {
             return false;
         }
         true
@@ -475,5 +480,96 @@ mod tests {
         );
         let resp = svc.call(req).await.unwrap();
         assert!(resp.inner.is_err(), "should block denied tool call");
+    }
+
+    fn listed(resp: tower_mcp::RouterResponse) -> Vec<String> {
+        match resp.inner.unwrap() {
+            McpResponse::ListTools(r) => r.tools.into_iter().map(|t| t.name).collect(),
+            other => panic!("expected ListTools, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn deny_patterns_refuse_matching_calls_and_hide_tools() {
+        let tools = ["fs/read", "fs/delete_one", "fs/delete_all", "db/query"];
+        let mut svc = BearerScopingService::new(MockService::with_tools(&tools));
+        for name in ["fs/delete_one", "fs/delete_all"] {
+            let req = request_with_bearer_scope(
+                &[],
+                &["fs/delete_*"],
+                McpRequest::CallTool(CallToolParams {
+                    name: name.to_string(),
+                    arguments: serde_json::json!({}),
+                    input_responses: None,
+                    request_state: None,
+                    meta: None,
+                    task: None,
+                }),
+            );
+            let resp = svc.call(req).await.unwrap();
+            assert!(resp.inner.is_err(), "{name} must be refused");
+        }
+        let req = request_with_bearer_scope(
+            &[],
+            &["fs/delete_*"],
+            McpRequest::CallTool(CallToolParams {
+                name: "fs/read".to_string(),
+                arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
+                meta: None,
+                task: None,
+            }),
+        );
+        assert!(svc.call(req).await.unwrap().inner.is_ok());
+        let req = request_with_bearer_scope(
+            &[],
+            &["fs/delete_*"],
+            McpRequest::ListTools(ListToolsParams::default()),
+        );
+        assert_eq!(
+            listed(svc.call(req).await.unwrap()),
+            ["fs/read", "db/query"]
+        );
+    }
+
+    #[tokio::test]
+    async fn allow_patterns_grant_matching_tools_only() {
+        let tools = ["github/issues", "github/pulls", "jira/search", "db/query"];
+        let mut svc = BearerScopingService::new(MockService::with_tools(&tools));
+        let req = request_with_bearer_scope(
+            &["github/*", "jira/search"],
+            &[],
+            McpRequest::ListTools(ListToolsParams::default()),
+        );
+        assert_eq!(
+            listed(svc.call(req).await.unwrap()),
+            ["github/issues", "github/pulls", "jira/search"]
+        );
+        let req = request_with_bearer_scope(
+            &["github/*"],
+            &[],
+            McpRequest::CallTool(CallToolParams {
+                name: "db/query".to_string(),
+                arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
+                meta: None,
+                task: None,
+            }),
+        );
+        assert!(svc.call(req).await.unwrap().inner.is_err());
+    }
+
+    #[test]
+    fn single_star_stays_within_a_segment() {
+        use crate::config::tool_pattern_matches as m;
+        assert!(m("api/read", "api/read"));
+        assert!(!m("api/read", "api/read_all"));
+        assert!(m("api/*", "api/read"));
+        assert!(!m("api/*", "api/query/nested"));
+        assert!(m("api/**", "api/query/nested"));
+        assert!(m("api::*", "api::read"));
+        assert!(m("api/read_{one,all}", "api/read_all"));
     }
 }

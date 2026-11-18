@@ -341,6 +341,30 @@ allow_tools = ["proxy/call_tool", "denied_composite"]
 
 #[cfg(feature = "oauth")]
 #[tokio::test]
+async fn deny_patterns_refuse_direct_and_wrapped_calls() {
+    let fixture = Fixture::new(
+        r#"
+[auth]
+type = "bearer"
+[[auth.scoped_tokens]]
+token = "no-private"
+deny_tools = ["api/priv*"]
+"#,
+        "/",
+    )
+    .await;
+    let scoped = Session::new(&fixture.server.url, "no-private").await;
+    denied(&scoped.call("api/private", json!({})).await);
+    denied(&scoped.wrapped("/", "api/private", json!({})).await);
+    assert!(
+        fixture.calls.lock().unwrap().is_empty(),
+        "denied target reached the backend"
+    );
+    success(&scoped.call("api/public", json!({})).await);
+}
+
+#[cfg(feature = "oauth")]
+#[tokio::test]
 async fn signed_jwt_preserves_role_authority_for_wrappers_and_composites() {
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
     let jwk: Value = serde_json::from_str(include_str!("fixtures/rsa_public.jwk.json")).unwrap();
