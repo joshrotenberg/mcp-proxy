@@ -4,6 +4,10 @@
 //! When multiple identical requests arrive concurrently, only one is forwarded
 //! to the backend; all callers receive the same response.
 //!
+//! Task-augmented tool calls are never coalesced. For a backend with
+//! `cache_scope = "principal"`, only callers with the same session principal
+//! share a flight.
+//!
 //! Leader election and follower registration are atomic. Dropping the leader
 //! cancels its backend future, removes its own generation and wakes followers
 //! with an error; tool calls are never replayed automatically. Active keys,
@@ -110,6 +114,7 @@ pub struct CoalesceService<S> {
     inner: S,
     in_flight: Flights,
     config: CoalesceConfig,
+    principal_namespaces: Arc<Vec<String>>,
 }
 
 impl<S> CoalesceService<S> {
@@ -129,7 +134,15 @@ impl<S> CoalesceService<S> {
             inner,
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             config: config.clone(),
+            principal_namespaces: Arc::new(Vec::new()),
         })
+    }
+
+    /// Never join callers with different session principals on requests to
+    /// these namespace prefixes (backends with `cache_scope = "principal"`).
+    pub(crate) fn principal_scoped(mut self, namespaces: Vec<String>) -> Self {
+        self.principal_namespaces = Arc::new(namespaces);
+        self
     }
 
     fn elect(&self, key: String) -> Election {
@@ -203,7 +216,21 @@ where
     }
 
     fn call(&mut self, req: RouterRequest) -> Self::Future {
-        let Some(key) = coalesce_key(&req.inner) else {
+        let key = if crate::cache::is_task_call(&req.inner) {
+            None
+        } else {
+            coalesce_key(&req.inner).map(|key| {
+                let partition = crate::cache::request_target(&req.inner).and_then(|target| {
+                    crate::cache::principal_partition(
+                        &self.principal_namespaces,
+                        target,
+                        &req.extensions,
+                    )
+                });
+                key + partition.as_deref().unwrap_or("")
+            })
+        };
+        let Some(key) = key else {
             // Non-coalesceable request, pass through
             return Box::pin(self.inner.clone().oneshot(req));
         };
@@ -1008,5 +1035,100 @@ mod lifecycle_tests {
         assert_eq!(response.id, RequestId::String("follower".into()));
         assert!(matches!(response.inner, Ok(McpResponse::ReadResource(_))));
         assert_eq!(service.inner.calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Counts backend calls; each call waits so concurrent requests overlap.
+    #[derive(Clone)]
+    struct SlowCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl tower::Service<tower_mcp::router::RouterRequest> for SlowCounter {
+        type Response = tower_mcp::router::RouterResponse;
+        type Error = std::convert::Infallible;
+        type Future = std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+        >;
+        fn poll_ready(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, req: tower_mcp::router::RouterRequest) -> Self::Future {
+            let count = self.0.clone();
+            Box::pin(async move {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                Ok(tower_mcp::router::RouterResponse {
+                    id: req.id,
+                    inner: Ok(McpResponse::CallTool(
+                        tower_mcp::protocol::CallToolResult::text("result"),
+                    )),
+                })
+            })
+        }
+    }
+
+    fn call_as(principal: &str, task: bool) -> tower_mcp::router::RouterRequest {
+        let mut extensions = tower_mcp::router::Extensions::new();
+        extensions.insert(crate::management::Identity::Scoped(principal.to_string()));
+        tower_mcp::router::RouterRequest {
+            id: tower_mcp::protocol::RequestId::Number(1),
+            inner: McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "api/tool".to_string(),
+                arguments: serde_json::json!({"x": 1}),
+                input_responses: None,
+                request_state: None,
+                meta: None,
+                task: task.then(|| serde_json::from_value(serde_json::json!({})).unwrap()),
+            }),
+            extensions,
+        }
+    }
+
+    async fn backend_calls(
+        svc: CoalesceService<SlowCounter>,
+        count: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        requests: Vec<tower_mcp::router::RouterRequest>,
+    ) -> usize {
+        use tower::ServiceExt;
+        let handles: Vec<_> = requests
+            .into_iter()
+            .map(|req| tokio::spawn(svc.clone().oneshot(req)))
+            .collect();
+        for handle in handles {
+            assert!(handle.await.unwrap().is_ok());
+        }
+        count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn task_augmented_calls_never_join_a_flight() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let svc = CoalesceService::new(SlowCounter(count.clone()));
+        let calls = backend_calls(
+            svc,
+            &count,
+            vec![call_as("a", false), call_as("a", true), call_as("a", true)],
+        )
+        .await;
+        assert_eq!(calls, 3);
+    }
+
+    #[tokio::test]
+    async fn principal_scope_keeps_callers_in_separate_flights() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let svc = CoalesceService::new(SlowCounter(count.clone()))
+            .principal_scoped(vec!["api/".to_string()]);
+        let calls = backend_calls(
+            svc,
+            &count,
+            vec![
+                call_as("a", false),
+                call_as("b", false),
+                call_as("a", false),
+            ],
+        )
+        .await;
+        assert_eq!(calls, 2, "a and b each lead one flight; the second a joins");
     }
 }

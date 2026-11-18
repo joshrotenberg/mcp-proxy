@@ -635,6 +635,12 @@ pub struct BackendConfig {
     /// See [`crate::locked_args`].
     #[serde(default)]
     pub locked_args: Vec<LockedArgsConfig>,
+    /// Whether cached and coalesced responses for this backend are shared by
+    /// every caller (`"shared"`, default) or kept per session principal
+    /// (`"principal"`). Use `"principal"` when the backend's responses depend
+    /// on who is calling.
+    #[serde(default)]
+    pub cache_scope: CacheScope,
     /// Capability filtering: only expose these tools (allowlist)
     #[serde(default)]
     pub expose_tools: Vec<String>,
@@ -798,6 +804,27 @@ pub struct InjectArgsConfig {
     /// Whether injected args should overwrite existing values (default: false).
     #[serde(default)]
     pub overwrite: bool,
+}
+
+/// Who may share a backend's cached and coalesced responses.
+///
+/// ```
+/// use mcp_proxy::config::CacheScope;
+/// let scope: CacheScope = serde_json::from_str("\"principal\"").unwrap();
+/// assert_eq!(scope, CacheScope::Principal);
+/// assert_eq!(CacheScope::default(), CacheScope::Shared);
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheScope {
+    /// Every caller shares entries and in-flight requests (default). Correct
+    /// while responses do not depend on the caller.
+    #[default]
+    Shared,
+    /// Entries and in-flight requests are partitioned by session principal:
+    /// a static bearer token, a scoped token, the management credential or an
+    /// OAuth subject. Requires configured authentication.
+    Principal,
 }
 
 /// What to do when a client sends a value for a locked argument that differs

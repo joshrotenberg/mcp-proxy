@@ -21,7 +21,14 @@
 //! generation and backend namespace; tool/resource entries use separate keys and
 //! share `max_entries`. Clear/count affect only the exact scope, never a prefix
 //! wildcard. Request identities are hashed before storage. Hashes do not add
-//! caller authorization: caller-aware caching remains a separate concern.
+//! caller authorization; caller policy runs before the cache.
+//!
+//! # Caller identity
+//!
+//! Entries are shared by every caller by default (`cache_scope = "shared"`).
+//! A backend with `cache_scope = "principal"` adds the caller's session
+//! principal to the key, so callers never read each other's entries.
+//! Task-augmented tool calls bypass the cache entirely.
 //!
 //! Set a non-secret generation only when all sharing instances have equivalent
 //! backend configuration, response and authorization semantics. Bump it when any
@@ -475,6 +482,7 @@ impl<S> Layer<S> for CacheLayer {
         CacheService {
             inner,
             caches: Arc::clone(&self.caches),
+            principal_namespaces: Arc::new(Vec::new()),
         }
     }
 }
@@ -484,9 +492,17 @@ impl<S> Layer<S> for CacheLayer {
 pub struct CacheService<S> {
     inner: S,
     caches: Arc<Vec<BackendCache>>,
+    principal_namespaces: Arc<Vec<String>>,
 }
 
 impl<S> CacheService<S> {
+    /// Partition entries by session principal for tools and resources under
+    /// these namespace prefixes (backends with `cache_scope = "principal"`).
+    pub(crate) fn principal_scoped(mut self, namespaces: Vec<String>) -> Self {
+        self.principal_namespaces = Arc::new(namespaces);
+        self
+    }
+
     /// Create a new cache service and return it with a shareable handle.
     pub fn new(
         inner: S,
@@ -497,7 +513,14 @@ impl<S> CacheService<S> {
         let handle = CacheHandle {
             caches: Arc::clone(&caches),
         };
-        (Self { inner, caches }, handle)
+        (
+            Self {
+                inner,
+                caches,
+                principal_namespaces: Arc::new(Vec::new()),
+            },
+            handle,
+        )
     }
 
     /// Create a cache service with fallible offline validation, as in
@@ -512,9 +535,44 @@ impl<S> CacheService<S> {
             Self {
                 inner,
                 caches: layer.caches,
+                principal_namespaces: Arc::new(Vec::new()),
             },
             handle,
         ))
+    }
+}
+
+/// Task-augmented tool calls create per-caller task state; they are never
+/// cached or coalesced.
+pub(crate) fn is_task_call(req: &McpRequest) -> bool {
+    matches!(req, McpRequest::CallTool(params) if params.task.is_some())
+}
+
+/// The key suffix that keeps callers apart for `cache_scope = "principal"`
+/// backends, or `None` when `target` belongs to a shared backend.
+pub(crate) fn principal_partition(
+    principal_namespaces: &[String],
+    target: &str,
+    extensions: &tower_mcp::router::Extensions,
+) -> Option<String> {
+    principal_namespaces
+        .iter()
+        .any(|ns| target.starts_with(ns.as_str()))
+        .then(|| {
+            let principal = crate::management::session_principal(extensions);
+            format!(
+                ":principal:{}",
+                serde_json::to_string(&principal).unwrap_or_default()
+            )
+        })
+}
+
+/// The tool name or resource URI a cacheable request targets.
+pub(crate) fn request_target(req: &McpRequest) -> Option<&str> {
+    match req {
+        McpRequest::CallTool(params) => Some(&params.name),
+        McpRequest::ReadResource(params) => Some(&params.uri),
+        _ => None,
     }
 }
 
@@ -576,8 +634,18 @@ where
 
     fn call(&mut self, req: RouterRequest) -> Self::Future {
         let caches = Arc::clone(&self.caches);
+        let resolved = if is_task_call(&req.inner) {
+            None
+        } else {
+            resolve_cache(&caches, &req.inner).map(|(store, key, stats)| {
+                let partition = request_target(&req.inner).and_then(|target| {
+                    principal_partition(&self.principal_namespaces, target, &req.extensions)
+                });
+                (store, key + partition.as_deref().unwrap_or(""), stats)
+            })
+        };
 
-        if let Some((store, key, stats)) = resolve_cache(&caches, &req.inner) {
+        if let Some((store, key, stats)) = resolved {
             let store = store.clone();
             let stats = Arc::clone(stats);
             let mut inner = self.inner.clone();
@@ -1098,4 +1166,87 @@ mod tests {
     }
 
     use std::time::Duration;
+
+    fn principal_call(token_kind: &str, id: &str, task: bool) -> tower_mcp::RouterRequest {
+        let mut extensions = tower_mcp::router::Extensions::new();
+        extensions.insert(match token_kind {
+            "bearer" => crate::management::Identity::Bearer(id.to_string()),
+            _ => crate::management::Identity::Scoped(id.to_string()),
+        });
+        tower_mcp::RouterRequest {
+            id: tower_mcp::protocol::RequestId::Number(1),
+            inner: McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: "fs/read".to_string(),
+                arguments: serde_json::json!({"key": "value"}),
+                input_responses: None,
+                request_state: None,
+                meta: None,
+                task: task.then(|| serde_json::from_value(serde_json::json!({})).unwrap()),
+            }),
+            extensions,
+        }
+    }
+
+    fn cache_for(scoped: bool) -> (CacheService<MockService>, super::CacheHandle) {
+        let cfg = BackendCacheConfig {
+            resource_ttl_seconds: 60,
+            tool_ttl_seconds: 60,
+            max_entries: 100,
+        };
+        let (svc, handle) = CacheService::new(
+            MockService::with_tools(&["fs/read"]),
+            vec![("fs/".to_string(), &cfg)],
+            &default_backend_config(),
+        );
+        let svc = if scoped {
+            svc.principal_scoped(vec!["fs/".to_string()])
+        } else {
+            svc
+        };
+        (svc, handle)
+    }
+
+    #[tokio::test]
+    async fn task_augmented_calls_are_never_cached() {
+        use tower::Service;
+        let (mut svc, handle) = cache_for(false);
+        for _ in 0..2 {
+            let _ = svc.call(principal_call("bearer", "a", true)).await;
+        }
+        let stats = handle.stats().await;
+        assert_eq!(
+            (stats[0].hits, stats[0].misses),
+            (0, 0),
+            "bypassed entirely"
+        );
+        // A plain call does not hit an entry a task call could have stored.
+        let _ = svc.call(principal_call("bearer", "a", false)).await;
+        assert_eq!(handle.stats().await[0].misses, 1);
+    }
+
+    #[tokio::test]
+    async fn principal_scope_partitions_entries_by_caller() {
+        use tower::Service;
+        let (mut svc, handle) = cache_for(true);
+        let _ = svc.call(principal_call("scoped", "a", false)).await;
+        let _ = svc.call(principal_call("scoped", "b", false)).await;
+        let _ = svc.call(principal_call("bearer", "a", false)).await;
+        let stats = handle.stats().await;
+        assert_eq!(
+            (stats[0].hits, stats[0].misses),
+            (0, 3),
+            "distinct principals miss"
+        );
+        let _ = svc.call(principal_call("scoped", "a", false)).await;
+        assert_eq!(handle.stats().await[0].hits, 1, "the same principal hits");
+
+        let (mut shared, handle) = cache_for(false);
+        let _ = shared.call(principal_call("scoped", "a", false)).await;
+        let _ = shared.call(principal_call("scoped", "b", false)).await;
+        assert_eq!(
+            handle.stats().await[0].hits,
+            1,
+            "shared scope ignores the caller"
+        );
+    }
 }

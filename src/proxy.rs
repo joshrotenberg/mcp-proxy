@@ -1091,6 +1091,14 @@ fn build_middleware_stack(
         ));
     }
 
+    // Backends whose cached and coalesced responses are kept per caller.
+    let principal_namespaces: Vec<String> = config
+        .backends
+        .iter()
+        .filter(|b| b.cache_scope == crate::config::CacheScope::Principal)
+        .map(|b| format!("{}{}", b.name, config.proxy.separator))
+        .collect();
+
     // Response caching
     let cache_configs: Vec<_> = config
         .backends
@@ -1114,17 +1122,17 @@ fn build_middleware_stack(
         }
         let (cache_svc, handle) =
             cache::CacheService::try_new(service, cache_configs, &config.cache)?;
-        service = BoxCloneService::new(cache_svc);
+        service = BoxCloneService::new(cache_svc.principal_scoped(principal_namespaces.clone()));
         cache_handle = Some(handle);
     }
 
     // Request coalescing
     if config.performance.coalesce_requests {
         tracing::info!("Request coalescing enabled");
-        service = BoxCloneService::new(coalesce::CoalesceService::with_config(
-            service,
-            &config.performance.coalesce,
-        )?);
+        service = BoxCloneService::new(
+            coalesce::CoalesceService::with_config(service, &config.performance.coalesce)?
+                .principal_scoped(principal_namespaces.clone()),
+        );
     }
 
     // Request validation

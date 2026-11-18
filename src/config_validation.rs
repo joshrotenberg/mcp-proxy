@@ -410,6 +410,11 @@ pub(crate) fn validate(config: &ProxyConfig) -> Result<()> {
             }
         }
         locked_args(config, backend)?;
+        if backend.cache_scope == crate::config::CacheScope::Principal && config.auth.is_none() {
+            anyhow::bail!(
+                "backend.cache_scope = \"principal\" requires [auth]; without it every caller is the same anonymous principal"
+            );
+        }
     }
 
     // Multi-character separators can overlap across a name/separator boundary

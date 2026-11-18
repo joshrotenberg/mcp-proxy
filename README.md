@@ -341,6 +341,35 @@ cancellation or expiry; remote execution or side effects may already have occurr
 This adds a finite deadline to coalesced operations, including leaders; raise it
 explicitly for legitimately long operations. Changes to these limits require restart.
 
+### Caller identity in caching and coalescing
+
+Cache entries and coalesced flights are shared by every caller unless the
+backend's responses depend on who is calling. For such backends, set
+`cache_scope = "principal"` so each session principal (a static bearer token, a
+scoped token, the management credential or an OAuth subject) gets its own
+entries and flights:
+
+<!-- config-fragment -->
+```toml
+[[backends]]
+name = "crm"
+transport = "http"
+url = "http://crm.internal:8080/"
+cache_scope = "principal" # default "shared"
+[backends.cache]
+tool_ttl_seconds = 60
+
+[auth]
+type = "bearer"
+tokens = ["${ALICE_TOKEN}", "${BOB_TOKEN}"]
+```
+
+`"principal"` requires `[auth]`; without it every caller is the same anonymous
+principal. Task-augmented tool calls are never cached or coalesced, whatever the
+scope. Session principals for static tokens are derived from the credential
+itself, so a token keeps its principal across restarts, reloads and changes to
+the order of `tokens` and `scoped_tokens`, and two tokens never share a session.
+
 ### MCP request logging
 
 <!-- config-fragment -->
