@@ -657,6 +657,15 @@ behavior with one line in its `[[backends]]` table: `default_effect = "read"`.
 At startup, each backend that enables one of these features while some of its
 tools resolve to `write` logs an `info` line naming the features.
 
+**Failover sends `write` calls to the backup only when the primary never
+received them.** A refused connection or a timeout does not prove that, so with
+failover alone, calls to unlisted tools fail instead of moving to the backup
+when the primary is down. To keep failover for those tools, list the tools that
+are safe to resend as `read` or `idempotent`, set `default_effect = "read"`, or
+add a `circuit_breaker` to the primary: once the breaker opens, it rejects calls
+before they are sent, and those calls fail over. Failover also no longer resends
+client errors such as `-32602`, for any effect.
+
 **`*` crosses `/` in every tool list.** In `expose_tools`, `hide_tools` and the
 other capability filters, `*` used to stop at `/`; it now matches any run of
 characters, so `expose_tools = ["query/*"]` exposes `query/admin/drop` as well
