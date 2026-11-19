@@ -122,6 +122,7 @@ admin_token="manager"
 enabled={}
 [[backends]]
 name="cache"
+default_effect = "read"
 transport="http"
 url="{cache}"
 [backends.cache]
@@ -131,6 +132,7 @@ max_retries=2
 initial_backoff_ms=0
 [[backends]]
 name="app"
+default_effect = "read"
 transport="http"
 url="{app}"
 [backends.retry]
@@ -144,6 +146,7 @@ consecutive_errors=2
 max_ejection_percent=100
 [[backends]]
 name="rpc"
+default_effect = "read"
 transport="http"
 url="{rpc}"
 [backends.circuit_breaker]
@@ -151,6 +154,7 @@ minimum_calls=2
 failure_rate_threshold=0.5
 [[backends]]
 name="hedge"
+default_effect = "read"
 transport="http"
 url="{hedge}"
 [backends.hedging]

@@ -134,6 +134,7 @@ tokens = ["alice", "bob"]
 
 [[backends]]
 name = "shared"
+default_effect = "read"
 transport = "http"
 url = "{shared}/"
 [backends.cache]
@@ -141,6 +142,7 @@ tool_ttl_seconds = 60
 
 [[backends]]
 name = "private"
+default_effect = "read"
 transport = "http"
 url = "{private}/"
 cache_scope = "principal"
@@ -197,6 +199,7 @@ name = "identity"
 [proxy.listen]
 [[backends]]
 name = "private"
+default_effect = "read"
 transport = "stdio"
 command = "fixture"
 cache_scope = "principal"

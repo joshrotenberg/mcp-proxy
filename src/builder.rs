@@ -510,6 +510,8 @@ fn default_backend() -> BackendConfig {
         param_overrides: Vec::new(),
         locked_args: Vec::new(),
         cache_scope: Default::default(),
+        default_effect: Default::default(),
+        tool_effects: Default::default(),
         expose_tools: Vec::new(),
         hide_tools: Vec::new(),
         expose_resources: Vec::new(),

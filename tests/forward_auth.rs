@@ -130,7 +130,7 @@ async fn fixed_identity_contract(transport: &str, auth: &str, callers: [&str; 2]
             backend.url.clone()
         };
         let config = format!(
-            "[proxy]\nname='fixed-identity'\n[proxy.listen]\n[security]\nadmin_token='manager'\n{auth}\n[[backends]]\nname='api'\ntransport='{transport}'\nurl='{url}/'\nforward_auth=false\n{credentials}\n[backends.cache]\ntool_ttl_seconds=60\n"
+            "[proxy]\nname='fixed-identity'\n[proxy.listen]\n[security]\nadmin_token='manager'\n{auth}\n[[backends]]\nname='api'\ndefault_effect='read'\ntransport='{transport}'\nurl='{url}/'\nforward_auth=false\n{credentials}\n[backends.cache]\ntool_ttl_seconds=60\n"
         );
         let mut app = app::App::embedded(&config).await;
         let first = http::Session::start(&app.url, callers[0]).await;

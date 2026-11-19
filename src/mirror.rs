@@ -105,6 +105,7 @@ struct MirrorMapping {
 pub struct MirrorService<S> {
     inner: S,
     mappings: Arc<Vec<MirrorMapping>>,
+    execution: Option<Arc<crate::execution::ExecutionPolicy>>,
 }
 
 impl<S> MirrorService<S> {
@@ -126,7 +127,19 @@ impl<S> MirrorService<S> {
         Self {
             inner,
             mappings: Arc::new(mappings),
+            execution: None,
         }
+    }
+
+    /// Mirror only tool calls the policy allows to run more than once
+    /// (`read`, `idempotent`, or `write` with an idempotency key); see
+    /// [`crate::execution`]. Without a policy every matching call is mirrored.
+    pub(crate) fn with_execution_policy(
+        mut self,
+        policy: Arc<crate::execution::ExecutionPolicy>,
+    ) -> Self {
+        self.execution = Some(policy);
+        self
     }
 }
 
@@ -234,6 +247,11 @@ where
         // Check if this request should be mirrored
         let mirror_req = request_name(&req.inner)
             .and_then(|name| find_mirror(name, &self.mappings))
+            .filter(|_| {
+                self.execution
+                    .as_ref()
+                    .is_none_or(|policy| policy.replayable(&req.inner))
+            })
             .filter(|mapping| should_mirror(mapping))
             .and_then(|mapping| {
                 clone_for_mirror(&req, &mapping.source_prefix, &mapping.mirror_prefix)
@@ -476,5 +494,19 @@ mod tests {
             Some(false),
             "the copy must not inherit client cancellation"
         );
+    }
+
+    #[tokio::test]
+    async fn execution_policy_mirrors_replayable_calls_only() {
+        use crate::test_util::{ExtensionProbe, marked_call};
+        for (read_tools, expected) in [(vec!["tool"], 2), (vec!["other"], 1)] {
+            let probe = ExtensionProbe::default();
+            let mut svc =
+                MirrorService::new(probe.clone(), make_mirrors("api", "shadow", 100), "/")
+                    .with_execution_policy(crate::execution::test_policy("api", &read_tools));
+            svc.call(marked_call("api/tool")).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            assert_eq!(probe.seen.lock().unwrap().len(), expected, "{read_tools:?}");
+        }
     }
 }

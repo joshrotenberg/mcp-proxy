@@ -36,9 +36,19 @@
 //!
 //! 1. Request arrives targeting `api/search`
 //! 2. Request is forwarded to the `api` backend
-//! 3. If `api` returns an error, the request is retried against `api-backup/search`
+//! 3. If `api` returns a backend failure, the request is retried against `api-backup/search`
 //! 4. If `api-backup` also fails, the request is retried against `api-backup-2/search`
 //! 5. Failover backend tools are hidden from `ListTools` (like canary backends)
+//!
+//! # Which failures fail over
+//!
+//! In a configured proxy, only backend failures (internal, server and
+//! transport errors) fail over; client errors such as `-32602` and tool
+//! `isError` results are returned as they are. A tool call that the
+//! [execution policy](crate::execution) classifies as `write` (without an
+//! idempotency key) fails over only when the primary's own middleware
+//! rejected it before sending. A [`FailoverService`] built directly, without a
+//! policy, fails over on every error.
 //!
 //! # Arguments and request context
 //!
@@ -107,6 +117,7 @@ impl<S> Layer<S> for FailoverLayer {
 pub struct FailoverService<S> {
     inner: S,
     mappings: Arc<Vec<FailoverMapping>>,
+    execution: Option<Arc<crate::execution::ExecutionPolicy>>,
 }
 
 impl<S> FailoverService<S> {
@@ -129,8 +140,34 @@ impl<S> FailoverService<S> {
         Self {
             inner,
             mappings: Arc::new(mappings),
+            execution: None,
         }
     }
+
+    /// Re-send a tool call the policy classifies as `write` (without an
+    /// idempotency key) only when the failed backend rejected it locally,
+    /// before it reached the transport; see [`crate::execution`].
+    pub(crate) fn with_execution_policy(
+        mut self,
+        policy: Arc<crate::execution::ExecutionPolicy>,
+    ) -> Self {
+        self.execution = Some(policy);
+        self
+    }
+}
+
+/// Whether a failed attempt may be followed by another backend.
+///
+/// Only backend failures qualify: a client error such as `-32602`, or a tool
+/// `isError` result, would fail the same way elsewhere. A call that must not
+/// run twice continues only after a local rejection.
+fn may_resend(
+    response: &RouterResponse,
+    once_only: bool,
+    probe: &crate::execution::DispatchProbe,
+) -> bool {
+    crate::outcome::Outcome::from_response(response).backend_failure()
+        && (!once_only || probe.locally_rejected())
 }
 
 /// Rewrite a request's namespace from primary to failover.
@@ -197,6 +234,7 @@ where
 
     fn call(&mut self, req: RouterRequest) -> Self::Future {
         let mappings = Arc::clone(&self.mappings);
+        let execution = self.execution.clone();
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
@@ -216,8 +254,21 @@ where
                 }
             };
 
+            // Without a policy, every failure fails over (library default).
+            let once_only = execution
+                .as_ref()
+                .is_some_and(|policy| !policy.replayable(&req.inner));
+            let strict = execution.is_some();
+            let attempt = |request: &RouterRequest| {
+                let probe = crate::execution::DispatchProbe::default();
+                let mut request = request.clone();
+                request.extensions.insert(probe.clone());
+                (request, probe)
+            };
+
             // Try primary
-            let primary_resp = inner.call(req.clone()).await?;
+            let (primary_req, mut probe) = attempt(&req);
+            let primary_resp = inner.call(primary_req).await?;
 
             // If primary succeeded, return it
             if primary_resp.inner.is_ok() {
@@ -232,6 +283,9 @@ where
             let mut last_resp = primary_resp;
 
             for failover_prefix in &mapping.failover_prefixes {
+                if strict && !may_resend(&last_resp, once_only, &probe) {
+                    break;
+                }
                 let failover_name = failover_prefix.trim_end_matches('/');
                 tracing::warn!(
                     primary = %mapping.primary_prefix.trim_end_matches('/'),
@@ -244,11 +298,12 @@ where
 
                 // The failover attempt is the client's own request: keep its
                 // caller identity, forwarded credentials, and cancellation.
-                let failover_req = RouterRequest {
+                let (failover_req, next_probe) = attempt(&RouterRequest {
                     id: req.id.clone(),
                     inner: failover_request,
                     extensions: req.extensions.clone(),
-                };
+                });
+                probe = next_probe;
 
                 let resp = inner.call(failover_req).await?;
 
@@ -267,6 +322,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use tower_mcp::protocol::{McpRequest, McpResponse};
 
     use super::{FailoverService, rewrite_request};
@@ -297,6 +353,110 @@ mod tests {
         assert_eq!(params.name, "backup/tool");
         assert!(params.input_responses.is_some());
         assert_eq!(params.request_state.as_deref(), Some("continuation-1"));
+    }
+
+    /// Fails every `primary/` call with `code` and counts calls per backend.
+    #[derive(Clone)]
+    struct Counting {
+        code: i32,
+        calls: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Service<RouterRequest> for Counting {
+        type Response = RouterResponse;
+        type Error = Infallible;
+        type Future = Pin<Box<dyn Future<Output = Result<RouterResponse, Infallible>> + Send>>;
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, req: RouterRequest) -> Self::Future {
+            let McpRequest::CallTool(params) = &req.inner else {
+                unreachable!()
+            };
+            self.calls.lock().unwrap().push(params.name.clone());
+            let inner = if params.name.starts_with("primary/") {
+                Err(tower_mcp_types::JsonRpcError {
+                    code: self.code,
+                    message: "failed".into(),
+                    data: None,
+                })
+            } else {
+                Ok(McpResponse::CallTool(
+                    tower_mcp::protocol::CallToolResult::text("backup"),
+                ))
+            };
+            let id = req.id;
+            Box::pin(async move { Ok(RouterResponse { id, inner }) })
+        }
+    }
+
+    async fn attempts(code: i32, tool: &str) -> Vec<String> {
+        let mock = Counting {
+            code,
+            calls: Default::default(),
+        };
+        let failovers = [("primary".to_string(), vec!["backup".to_string()])]
+            .into_iter()
+            .collect();
+        let mut svc = FailoverService::new(mock.clone(), failovers, "/")
+            .with_execution_policy(crate::execution::test_policy("primary", &["read"]));
+        let _ = call_service(
+            &mut svc,
+            McpRequest::CallTool(tower_mcp::protocol::CallToolParams {
+                name: format!("primary/{tool}"),
+                arguments: serde_json::json!({}),
+                input_responses: None,
+                request_state: None,
+                meta: None,
+                task: None,
+            }),
+        )
+        .await;
+        mock.calls.lock().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn execution_policy_limits_failover_to_backend_failures_and_replayable_calls() {
+        assert_eq!(attempts(-32603, "read").await.len(), 2, "read fails over");
+        assert_eq!(attempts(-32602, "read").await.len(), 1, "client error");
+        assert_eq!(
+            attempts(-32603, "write").await.len(),
+            1,
+            "a dispatched write is not re-sent"
+        );
+    }
+
+    #[test]
+    fn local_rejections_allow_a_write_to_fail_over() {
+        let failure = RouterResponse {
+            id: tower_mcp::protocol::RequestId::Number(1),
+            inner: Err(tower_mcp_types::JsonRpcError::internal_error(
+                "breaker open",
+            )),
+        };
+        let probe = crate::execution::DispatchProbe::default();
+        assert!(may_resend(&failure, false, &probe));
+        assert!(!may_resend(&failure, true, &probe), "unmarked: dispatched");
+        let mut request = RouterRequest {
+            id: tower_mcp::protocol::RequestId::Number(1),
+            inner: McpRequest::Ping,
+            extensions: Default::default(),
+        };
+        request.extensions.insert(probe.clone());
+        let mut entry = crate::execution::MarkProbe::new(
+            tower::service_fn(|r: RouterRequest| async move {
+                Ok::<_, Infallible>(RouterResponse {
+                    id: r.id,
+                    inner: Ok(McpResponse::Pong(Default::default())),
+                })
+            }),
+            crate::execution::Mark::Entered,
+        );
+        drop(entry.call(request));
+        assert!(
+            may_resend(&failure, true, &probe),
+            "entered, never dispatched"
+        );
     }
 
     #[tokio::test]

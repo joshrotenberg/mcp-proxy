@@ -483,6 +483,7 @@ impl<S> Layer<S> for CacheLayer {
             inner,
             caches: Arc::clone(&self.caches),
             principal_namespaces: Arc::new(Vec::new()),
+            execution: None,
         }
     }
 }
@@ -493,6 +494,7 @@ pub struct CacheService<S> {
     inner: S,
     caches: Arc<Vec<BackendCache>>,
     principal_namespaces: Arc<Vec<String>>,
+    execution: Option<Arc<crate::execution::ExecutionPolicy>>,
 }
 
 impl<S> CacheService<S> {
@@ -500,6 +502,16 @@ impl<S> CacheService<S> {
     /// these namespace prefixes (backends with `cache_scope = "principal"`).
     pub(crate) fn principal_scoped(mut self, namespaces: Vec<String>) -> Self {
         self.principal_namespaces = Arc::new(namespaces);
+        self
+    }
+
+    /// Only tool calls the policy classifies as `read` are cached; see
+    /// [`crate::execution`]. Without a policy every tool call qualifies.
+    pub(crate) fn with_execution_policy(
+        mut self,
+        policy: Arc<crate::execution::ExecutionPolicy>,
+    ) -> Self {
+        self.execution = Some(policy);
         self
     }
 
@@ -518,6 +530,7 @@ impl<S> CacheService<S> {
                 inner,
                 caches,
                 principal_namespaces: Arc::new(Vec::new()),
+                execution: None,
             },
             handle,
         )
@@ -536,6 +549,7 @@ impl<S> CacheService<S> {
                 inner,
                 caches: layer.caches,
                 principal_namespaces: Arc::new(Vec::new()),
+                execution: None,
             },
             handle,
         ))
@@ -634,7 +648,11 @@ where
 
     fn call(&mut self, req: RouterRequest) -> Self::Future {
         let caches = Arc::clone(&self.caches);
-        let resolved = if is_task_call(&req.inner) {
+        let excluded = self
+            .execution
+            .as_ref()
+            .is_some_and(|policy| !policy.shareable(&req.inner));
+        let resolved = if excluded || is_task_call(&req.inner) {
             None
         } else {
             resolve_cache(&caches, &req.inner).map(|(store, key, stats)| {
@@ -1204,6 +1222,21 @@ mod tests {
             svc
         };
         (svc, handle)
+    }
+
+    #[tokio::test]
+    async fn execution_policy_caches_read_tools_only() {
+        use tower::Service;
+        for (read_tools, expected) in [(vec!["read"], (1, 1)), (vec!["other"], (0, 0))] {
+            let (svc, handle) = cache_for(false);
+            let mut svc =
+                svc.with_execution_policy(crate::execution::test_policy("fs", &read_tools));
+            for _ in 0..2 {
+                let _ = svc.call(principal_call("bearer", "a", false)).await;
+            }
+            let stats = handle.stats().await;
+            assert_eq!((stats[0].hits, stats[0].misses), expected, "{read_tools:?}");
+        }
     }
 
     #[tokio::test]

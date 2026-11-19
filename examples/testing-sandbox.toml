@@ -45,6 +45,7 @@ max_concurrent = 1
 # Echo server for integration testing -- returns inputs as outputs
 [[backends]]
 name = "echo"
+default_effect = "read"   # retry every tool
 transport = "stdio"
 command = "/usr/local/bin/echo-mcp-server"
 
@@ -57,6 +58,7 @@ max_retries = 0
 # Slow/flaky backend for resilience testing
 [[backends]]
 name = "flaky"
+default_effect = "read"
 transport = "http"
 url = "http://localhost:9999"
 

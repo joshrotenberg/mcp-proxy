@@ -56,6 +56,7 @@ max_waiters = 1
 timeout_seconds = 1
 [[backends]]
 name = "api"
+default_effect = "read"
 transport = "http"
 url = "{backend_url}"
 "#

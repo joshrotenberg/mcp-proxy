@@ -126,6 +126,40 @@ fn locks_overlap(a: &LockedArgsConfig, b: &LockedArgsConfig) -> bool {
 /// Validate a backend's own lock rules and the effective set it inherits from
 /// `canary_of`, `failover_for`, and `mirror_of`. Messages name keys and tools,
 /// never values.
+fn tool_effects(config: &ProxyConfig, backend: &BackendConfig) -> Result<()> {
+    let mut earlier: Vec<&str> = Vec::new();
+    for entry in &backend.tool_effects {
+        ensure!(
+            !entry.tools.is_empty(),
+            "backend.tool_effects.tools must not be empty"
+        );
+        crate::config::validate_tool_patterns("backend.tool_effects.tools", &entry.tools)?;
+        for tool in &entry.tools {
+            local(tool, &config.proxy.separator, "backend.tool_effects.tools")?;
+            // Exact names and repeated patterns are checked; overlap between
+            // two distinct wildcards is allowed and resolved by order.
+            let literal = !tool.contains(['*', '?', '[', '{']);
+            if let Some(shadow) = earlier.iter().find(|p| {
+                **p == tool || **p == "*" || (literal && crate::config::wildcard_matches(p, tool))
+            }) {
+                anyhow::bail!(
+                    "backend.tool_effects: '{tool}' on backend '{}' is already matched by an earlier entry ('{shadow}'), so this entry never applies to it",
+                    backend.name
+                );
+            }
+        }
+        earlier.extend(entry.tools.iter().map(String::as_str));
+        if let Some(key) = &entry.idempotency_key {
+            nonempty(key, "backend.tool_effects.idempotency_key")?;
+            ensure!(
+                entry.effect == crate::config::Effect::Write,
+                "backend.tool_effects.idempotency_key applies only to effect = \"write\""
+            );
+        }
+    }
+    Ok(())
+}
+
 fn locked_args(config: &ProxyConfig, backend: &BackendConfig) -> Result<()> {
     for lock in &backend.locked_args {
         ensure!(
@@ -410,6 +444,7 @@ pub(crate) fn validate(config: &ProxyConfig) -> Result<()> {
             }
         }
         locked_args(config, backend)?;
+        tool_effects(config, backend)?;
         if backend.cache_scope == crate::config::CacheScope::Principal && config.auth.is_none() {
             anyhow::bail!(
                 "backend.cache_scope = \"principal\" requires [auth]; without it every caller is the same anonymous principal"

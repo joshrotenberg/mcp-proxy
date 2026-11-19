@@ -206,6 +206,7 @@ tool_exposure = "{exposure}"
 
 [[backends]]
 name = "api"
+default_effect = "read"
 transport = "http"
 url = "{api}/"
 weight = 1
@@ -221,6 +222,7 @@ args = {{ tenant = "acme" }}
 
 [[backends]]
 name = "api-canary"
+default_effect = "read"
 transport = "http"
 url = "{canary}/"
 canary_of = "api"
@@ -228,6 +230,7 @@ weight = 99
 
 [[backends]]
 name = "api-shadow"
+default_effect = "read"
 transport = "http"
 url = "{shadow}/"
 mirror_of = "api"
@@ -235,6 +238,7 @@ mirror_percent = 100
 
 [[backends]]
 name = "pay"
+default_effect = "read"
 transport = "http"
 url = "{pay}/"
 [[backends.inject_args]]
@@ -247,6 +251,7 @@ on_conflict = "replace"
 
 [[backends]]
 name = "pay-backup"
+default_effect = "read"
 transport = "http"
 url = "{pay_backup}/"
 failover_for = "pay"

@@ -146,6 +146,7 @@ max_argument_size = 256
 coalesce_requests = true
 [[backends]]
 name = "api"
+default_effect = "read"
 transport = "http"
 url = "{backend_url}/"
 hide_tools = ["hidden"]

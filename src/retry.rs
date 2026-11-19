@@ -5,6 +5,10 @@
 //! timeouts), using the shared [`crate::outcome`] policy. Tool `isError` results,
 //! unknown application codes and known client/protocol errors are not retried.
 //!
+//! In a configured proxy, only tool calls the [execution policy](crate::execution)
+//! allows to run more than once are retried; other tool calls bypass retry and
+//! hedging.
+//!
 //! # Retry Budget
 //!
 //! When `budget_percent` is configured, each layer shares a budget across its

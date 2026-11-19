@@ -49,6 +49,7 @@ prefix='runtime[*]'
 {generation}
 [[backends]]
 name='api'
+default_effect='read'
 transport='http'
 url='{}'
 [backends.cache]

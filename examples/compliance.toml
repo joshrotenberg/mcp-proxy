@@ -55,6 +55,7 @@ mapping = { "mcp:analyst" = "analyst", "mcp:trader" = "trader", "mcp:compliance"
 
 [[backends]]
 name = "market-data"
+tool_effects = [{ tools = ["get_quote", "get_history", "get_instrument"], effect = "read" }]
 transport = "http"
 url = "http://market-data-mcp.internal:8080"
 expose_tools = ["get_quote", "get_history", "get_instrument"]
@@ -78,6 +79,7 @@ max_entries = 5000
 
 [[backends]]
 name = "orders"
+tool_effects = [{ tools = ["get_status"], effect = "read" }]   # create_order and cancel_order are never retried
 transport = "http"
 url = "http://order-mcp.internal:8080"
 expose_tools = ["create_order", "cancel_order", "get_status"]
@@ -108,6 +110,7 @@ seconds = 15
 
 [[backends]]
 name = "docs"
+default_effect = "read"
 transport = "http"
 url = "http://docs-mcp.internal:8080"
 

@@ -24,6 +24,7 @@ generation = "multi-proxy-v1"
 
 [[backends]]
 name = "api"
+default_effect = "read"   # every tool is read-only; cache all of them
 transport = "http"
 url = "http://api:8080"
 
@@ -35,6 +36,7 @@ max_entries = 5000
 
 [[backends]]
 name = "search"
+default_effect = "read"
 transport = "http"
 url = "http://search:8080"
 

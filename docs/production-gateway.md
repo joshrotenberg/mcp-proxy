@@ -56,6 +56,7 @@ an alternative ordering diagram.
 | Third-party API limits are respected | `[backends.rate_limit]` | `github` (30/s), `reports` (2/s) |
 | A failing backend stops receiving traffic | `[backends.circuit_breaker]` | `github`, `orders-api`, `legacy-crm` |
 | Transient failures are retried, without retry storms | `[backends.retry]` with `budget_percent` | `github`, `orders-api` |
+| Only listed side-effect-free tools are replayed, cached or coalesced | `[[backends.tool_effects]]` | `docs`, `search`, `db-analytics`, `reports` |
 | Tail latency on read-only lookups is cut | `[backends.hedging]` | `docs`, `search` |
 | Limit logical backend requests (hedges can add attempts; not a DB pool size) | `[backends.concurrency]` | `db-analytics` (5), `payments` (2) |
 | A misbehaving instance is temporarily ejected | `[backends.outlier_detection]` | `orders-api`, `legacy-crm` |
@@ -70,46 +71,47 @@ an alternative ordering diagram.
 
 ## Safety: middleware that re-executes or short-circuits tool calls
 
-Five mechanisms change how many times a tool call actually executes, or
-whether it executes at all. Read-only tools still need freshness/caller-sharing review; mutating tools
-need an explicit side-effect/idempotency contract. The proxy cannot know which tools mutate; you declare it by
-construction, with `expose_tools` and per-backend placement.
+Six mechanisms change how many times a tool call actually executes, or
+whether it executes at all: caching, coalescing, mirroring, hedging, retries
+and failover. Each backend declares which tools tolerate that with
+`tool_effects` (see the [execution policy](https://docs.rs/mcp-proxy/latest/mcp_proxy/execution/)).
+Unlisted tools are `write`: sent once, never cached or coalesced. Read-only
+tools still need freshness and caller-sharing review.
 
-**Caching short-circuits execution.** `tool_ttl_seconds` caches every tool on
-that backend; there is no per-tool cacheability flag. Cache only backends
-whose exposed tools you have verified read-only, then use `expose_tools`
-to restrict the surface (`docs`, `db-analytics`, `reports` here). A cached
-`create_refund` would return a stale success without executing; accordingly,
-`payments`, `jira`, `orders-api`, and `legacy-crm` have no cache block.
+**Caching short-circuits execution.** Only tools listed as `read` are cached.
+`docs`, `db-analytics` and `reports` list exactly their exposed tools as
+`read`; a cached `create_refund` would return a stale success without
+executing, so `payments`, `jira`, `orders-api` and `legacy-crm` have no cache
+block, and an unlisted tool on a cached backend is never cached.
 
 **Mirroring re-executes for real.** A mirrored tool call is not a dry run:
-the canary receives and executes it. Mirror only backends whose state you
-can afford to touch twice, or point the canary at isolated state. Here
-`orders-canary` targets `orders-v2.staging.internal`, so mirrored writes land
-in staging, never in production data.
+the canary receives and executes it. Only `read` and `idempotent` calls are
+mirrored, so `orders-api` writes stay on the primary. To shadow writes too,
+point the canary at isolated state and list them as `idempotent`.
 
 **Hedging duplicates in-flight calls.** When the original request is slow, a
 hedge fires another copy and a successful alternative can beat a failed
 primary, so a single client call can execute more than once on the backend.
-If all attempts fail, the original primary result is retained. Only `docs` and
-`search`, whose exposed tools must be verified read-only, are hedged. Never hedge a backend with mutating tools.
+If all attempts fail, the original primary result is retained. `docs` and
+`search` are hedged, and only their `read` tools are copied.
 
 **Retries re-execute after ambiguous failures.** A timeout can fire after the
-backend applied the change, so a retry may double-execute. The example retry
-blocks on `github`, `orders-api` and `legacy-crm` illustrate backoff/budget
-settings; they do not establish those peers' side-effect contracts. Verify that
-every exposed operation is idempotent or deduplicated by the backend before
-enabling retries. A read-dominant backend can still contain unsafe writes;
-remove its retry block if that contract is unavailable. `payments` gets no
-retries: a failed refund is investigated, not replayed.
+backend applied the change, so a retry may double-execute. Retries apply only
+to `read` and `idempotent` tools and to `write` tools called with their
+`idempotency_key`. The retry blocks on `github`, `orders-api` and
+`legacy-crm` list no tools, so as written they retry nothing; add the
+operations each backend documents as idempotent. `payments` gets no retries:
+a failed refund is investigated, not replayed.
+
+**Failover re-sends after backend failures.** A `write` call is re-sent to a
+backup only when the primary's own middleware rejected it before sending, for
+example an open circuit breaker.
 
 Request coalescing collapses identical concurrent calls (same backend, tool,
-and arguments) into one execution and fans the response out. That is the
-point for reads; for mutating tools it means N identical concurrent submits
-execute once. That is not a safe default for independent writes: disable
-global coalescing unless every affected tool can share one result. Cancellation
-or a group deadline wakes followers with errors without replay; remote side
-effects may already have happened. See the [coalescing contract](https://docs.rs/mcp-proxy/latest/mcp_proxy/coalesce/).
+and arguments) into one execution and fans the response out. Only `read`
+tools are coalesced. Cancellation or a group deadline wakes followers with
+errors without replay; remote side effects may already have happened. See the
+[coalescing contract](https://docs.rs/mcp-proxy/latest/mcp_proxy/coalesce/).
 
 ## Operating it
 

@@ -170,6 +170,53 @@ tool_ttl_seconds = 60
 resource_ttl_seconds = 300
 ```
 
+### Execution policy
+
+Retry, hedging, mirroring and failover can execute one tool call more than
+once; caching and coalescing can answer it without executing it. Each backend
+declares which of its tools tolerate that:
+
+<!-- config-fragment -->
+```toml
+[[backends]]
+name = "orders"
+transport = "http"
+url = "http://orders:8080"
+default_effect = "write"        # default for tools no entry lists
+
+[backends.retry]
+max_retries = 2
+
+[backends.cache]
+tool_ttl_seconds = 30
+
+[[backends.tool_effects]]
+tools = ["get_*", "list_*"]
+effect = "read"                 # retried, hedged, mirrored, cached, coalesced
+
+[[backends.tool_effects]]
+tools = ["set_status"]
+effect = "idempotent"           # retried, hedged, mirrored; never cached
+
+[[backends.tool_effects]]
+tools = ["create_order"]
+effect = "write"
+idempotency_key = "request_id"  # retried only when the call carries one
+```
+
+| Effect | Retry, hedging | Failover re-send | Mirror | Cache, coalescing |
+|---|---|---|---|---|
+| `read` | yes | yes | yes | yes |
+| `idempotent` | yes | yes | yes | no |
+| `write` (default) | no | only when the primary never received the call | no | no |
+
+Failover re-sends only after a backend failure, never after a client error
+such as `-32602`. A `write` call is re-sent only when the primary backend's own
+middleware rejected it before sending (open circuit breaker, rate or
+concurrency limit, outlier ejection, timeout while queued). Upstream tool
+annotations are not used. See
+[`mcp_proxy::execution`](https://docs.rs/mcp-proxy/latest/mcp_proxy/execution/).
+
 ### Argument injection
 
 <!-- config-fragment -->
@@ -598,6 +645,35 @@ layer rejects missing verified claims, malformed custom claims, and unknown
 roles. Valid claims with no mapped values, including an absent role claim,
 follow `default_deny`; set it to `true` for gateways. Its legacy default of
 `false` permits those unmapped principals without RBAC restrictions.
+
+### Upgrading to 0.9
+
+**Tools default to `write`.** Retry, hedging, mirroring, failover re-sends,
+caching and coalescing now apply only to tools a backend lists as `read` or
+`idempotent` in `tool_effects` (see [Execution policy](#execution-policy)).
+A backend that relied on these features for every tool keeps the previous
+behavior with one line in its `[[backends]]` table: `default_effect = "read"`.
+
+At startup, each backend that enables one of these features while some of its
+tools resolve to `write` logs an `info` line naming the features.
+
+**Failover sends `write` calls to the backup only when the primary never
+received them.** A refused connection or a timeout does not prove that, so with
+failover alone, calls to unlisted tools fail instead of moving to the backup
+when the primary is down. To keep failover for those tools, list the tools that
+are safe to resend as `read` or `idempotent`, set `default_effect = "read"`, or
+add a `circuit_breaker` to the primary: once the breaker opens, it rejects calls
+before they are sent, and those calls fail over. Failover also no longer resends
+client errors such as `-32602`, for any effect.
+
+**`*` crosses `/` in every tool list.** In `expose_tools`, `hide_tools` and the
+other capability filters, `*` used to stop at `/`; it now matches any run of
+characters, so `expose_tools = ["query/*"]` exposes `query/admin/drop` as well
+as `query/run`. Scoped token and RBAC `allow_tools`/`deny_tools` entries used
+to match exact names only and now use the same wildcard syntax. Review allow
+lists that sit above nested tool names. `[`, `]`, `{`, `}` and `?` are now
+pattern characters, so a list that used them literally fails validation or
+matches differently.
 
 ### Upgrading to 0.6
 

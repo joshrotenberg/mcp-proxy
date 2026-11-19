@@ -21,6 +21,7 @@ port = 8080
 # Free/cheap backend -- minimal restrictions
 [[backends]]
 name = "local-docs"
+default_effect = "read"
 transport = "stdio"
 command = "/usr/local/bin/docs-mcp-server"
 args = ["--index", "/var/data/docs"]
@@ -33,6 +34,7 @@ max_entries = 10000
 # Moderate cost -- search API with per-query pricing
 [[backends]]
 name = "search"
+default_effect = "read"
 transport = "http"
 url = "http://search-mcp.internal:8080"
 
@@ -56,6 +58,7 @@ wait_duration_seconds = 120
 # High cost -- LLM-backed summarization/analysis
 [[backends]]
 name = "ai-analysis"
+tool_effects = [{ tools = ["summarize", "classify", "extract_entities"], effect = "read" }]
 transport = "http"
 url = "http://analysis-mcp.internal:8080"
 expose_tools = ["summarize", "classify", "extract_entities"]
@@ -83,6 +86,7 @@ max_backoff_ms = 5000
 # Very high cost -- cloud infrastructure operations
 [[backends]]
 name = "cloud"
+tool_effects = [{ tools = ["list_instances", "get_costs", "get_metrics"], effect = "read" }]
 transport = "http"
 url = "http://cloud-mcp.internal:8080"
 # Allowlist only; everything else (create/delete/resize instances) stays hidden

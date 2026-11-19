@@ -10,6 +10,7 @@ port = 8080
 # Primary backend (receives ~95% of traffic)
 [[backends]]
 name = "api"
+tool_effects = [{ tools = ["get_*", "list_*", "search*"], effect = "read" }]   # mirrored; other tools are writes and are not
 transport = "http"
 url = "http://api-v1:8080"
 
