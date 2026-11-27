@@ -3,7 +3,7 @@ name: mcp-proxy
 description: Config-driven MCP reverse proxy with auth, resilience, and observability
 type: application
 version: 0.3.0
-appVersion: "0.8.0"
+appVersion: "0.9.0"
 home: https://github.com/joshrotenberg/mcp-proxy
 sources:
   - https://github.com/joshrotenberg/mcp-proxy
